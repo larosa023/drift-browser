@@ -362,9 +362,18 @@ $('#resizer').addEventListener('mousedown', (e) => {
 });
 
 // ---------------------------------------------------------------------- command palette
+// Bring up an overlay without a flash: the UI layer moves above the page when the overlay
+// opens, so first draw the see-through hole over the page area (and hide the page frame),
+// wait for that frame to be painted, and only then ask for the layer to come up.
+function raiseOverlay(mode) {
+  if (S) S.overlay = mode;
+  document.body.classList.add('over-palette');
+  applyHole();
+  requestAnimationFrame(() => requestAnimationFrame(() => send('overlay', mode)));
+}
 function openPalette(newTab, anchored) {
   preparePalette(newTab, anchored);
-  send('overlay', 'palette');
+  raiseOverlay('palette');
 }
 // anchored = drop down from the toolbar address field instead of the centered command bar
 function preparePalette(newTab, anchored) {
@@ -752,7 +761,7 @@ function openExtMenu() {
   const left = Math.max(8, Math.min(window.innerWidth - 308, r.right - 300));
   m.style.left = left + 'px'; m.style.top = (r.bottom + 6) + 'px';
   m.tabIndex = -1;
-  send('overlay', 'extmenu');
+  raiseOverlay('extmenu');
   setTimeout(() => m.focus({ preventScroll: true }), 0);
 }
 function closeExtMenu(keepFocus) { $('#extmenu-wrap').hidden = true; if (S && S.overlay === 'extmenu') send('overlay', null, !!keepFocus); }
@@ -998,7 +1007,7 @@ function openModal(html, onSubmit, focusSel) {
   m.innerHTML = html;
   modalSubmit = onSubmit;
   $('#modal-wrap').hidden = false;
-  send('overlay', 'modal');
+  raiseOverlay('modal');
   setTimeout(() => { const f = m.querySelector(focusSel || 'input'); if (f) { f.focus(); f.select(); } }, 30);
 }
 function closeModal() { modalSubmit = null; send('overlay', null); }
@@ -1159,7 +1168,7 @@ window.drift.on('layout', (l) => {
   placeFind();
   applyHole();
 });
-window.drift.on('palette', ({ newTab }) => preparePalette(newTab, !newTab));
+window.drift.on('palette', ({ newTab }) => { preparePalette(newTab, !newTab); raiseOverlay('palette'); });
 window.drift.on('panel', (name) => { if (panel !== name) togglePanel(name); });
 window.drift.on('find-open', () => {
   $('#findbar').hidden = false;

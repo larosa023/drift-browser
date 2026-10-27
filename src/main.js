@@ -669,7 +669,6 @@ function splitWith(otherId) {
   if (otherId === 'new') {
     activate(other.id);
     ui.webContents.send('palette', { newTab: false });
-    setOverlay('palette');
   } else { layout(); push(); saveSession(); }
 }
 
@@ -939,8 +938,8 @@ function handleShortcut(input) {
 
   if (mod && !input.shift && !input.alt) {
     switch (k) {
-      case 't': case 'n': ui.webContents.send('palette', { newTab: true }); setOverlay('palette'); return true;
-      case 'l': ui.webContents.send('palette', { newTab: false }); setOverlay('palette'); return true;
+      case 't': case 'n': ui.webContents.send('palette', { newTab: true }); return true;
+      case 'l': ui.webContents.send('palette', { newTab: false }); return true;
       case 'w': if (t) closeTab(t.id); return true;
       case 'r': if (wc) wc.reload(); return true;
       case 'f': openFind(); return true;
@@ -976,12 +975,12 @@ function handleShortcut(input) {
   if (input.alt && !mod && !input.shift) {
     if (k === 'ArrowLeft') { if (wc && wc.navigationHistory.canGoBack()) wc.navigationHistory.goBack(); return true; }
     if (k === 'ArrowRight') { if (wc && wc.navigationHistory.canGoForward()) wc.navigationHistory.goForward(); return true; }
-    if (k === 'd') { ui.webContents.send('palette', { newTab: false }); setOverlay('palette'); return true; }
+    if (k === 'd') { ui.webContents.send('palette', { newTab: false }); return true; }
     if (k === 'Home') { navigate(NEWTAB); return true; }
   }
   if (!mod && !input.alt) {
     if (k === 'F5') { if (wc) input.shift ? wc.reloadIgnoringCache() : wc.reload(); return true; }
-    if (k === 'F6') { ui.webContents.send('palette', { newTab: false }); setOverlay('palette'); return true; }
+    if (k === 'F6') { ui.webContents.send('palette', { newTab: false }); return true; }
     if (k === 'F11') { win.setFullScreen(!win.isFullScreen()); return true; }
     if (k === 'F12') { if (wc) wc.toggleDevTools(); return true; }
     if (k === 'Escape' && findOpen) { closeFind(); return true; }
@@ -2113,7 +2112,7 @@ function setupIPC() {
   on('ready', () => { push(); layout(); sendBookmarks(); });
   on('activate', (id) => activate(id));
   on('close-tab', (id) => closeTab(id));
-  on('new-tab', () => { ui.webContents.send('palette', { newTab: true }); setOverlay('palette'); });
+  on('new-tab', () => { ui.webContents.send('palette', { newTab: true }); });
   on('tab-menu', (id) => tabContextMenu(id));
   on('move-tab', (id, idx, pinned) => moveTab(id, idx, pinned));
   on('toggle-pin', (id) => togglePin(id));
@@ -2391,6 +2390,7 @@ if (!app.requestSingleInstanceLock()) {
     const uiReady = new Promise(r => ui.webContents.once('did-finish-load', r)).then(() => { setTimeout(prepareBookmarkMenuIcons, 300); return initIdentity(); });
     Promise.race([Promise.all([shieldsReady, uiReady]), new Promise(r => setTimeout(r, 2000))]).then(() => { PERF('gate open'); openGate(); });
     setupUpdates();
+
 
 
     // Taskbar right-click menu (Windows jump list).
