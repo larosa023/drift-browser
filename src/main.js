@@ -106,30 +106,68 @@ function searchUrl(q) {
 // Google's sign-in pages refuse browsers that look tampered with. Since mid-2026 the
 // old trick (claiming to be Firefox) fails, because Chromium still sends its client-hint
 // headers and JS features. A clean, consistent Chrome identity everywhere passes.
-function uaFor(url) { return chromeUA(); }
-// Load a URL with the right user agent for where it's going.
-function loadIn(wc, url) {
+// On Google's sign-in pages (accounts.google.com) Drift shows its true, untouched identity:
+// Chromium as Electron ships it, with no version claim, no DevTools-protocol session and no
+// page patches. Claiming to be Chrome there makes Google run Chrome-only checks that an
+// embedded engine fails ("This browser or app may not be secure"); the honest engine passes.
+// Every other site sees the Chrome identity below.
+const GOOGLE_SIGNIN = /^accounts\.google\.[a-z.]+$/i;
+function isSignin(url) { try { return GOOGLE_SIGNIN.test(new URL(url).hostname); } catch { return false; } }
+function engineUA() {
+  const plat = process.platform === 'win32' ? 'Windows NT 10.0; Win64; x64'
+    : process.platform === 'darwin' ? 'Macintosh; Intel Mac OS X 10_15_7' : 'X11; Linux x86_64';
+  return `Mozilla/5.0 (${plat}) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/${process.versions.chrome} Electron/${process.versions.electron} Safari/537.36`;
+}
+function uaFor(url) { return isSignin(url) ? engineUA() : chromeUA(); }
+// Put a page into sign-in mode or normal mode before it loads `url`.
+function setMode(wc, url) {
+  const signin = isSignin(url);
+  wc.__driftSignin = signin;
+  if (signin) {
+    try { if (wc.debugger.isAttached()) wc.debugger.detach(); } catch {}
+    wc.__driftIdentity = false;
+  }
   const want = uaFor(url);
   if (wc.getUserAgent() !== want) wc.setUserAgent(want);
+  if (!signin && /^https?:/.test(url || '')) applyIdentity(wc);
+}
+// Load a URL with the right identity for where it's going.
+function loadIn(wc, url) {
+  setMode(wc, url);
   return wc.loadURL(url).catch(() => {});
 }
-// Switch user agent when a page navigates or redirects into / out of Google sign-in.
+// Switch identity when a page navigates or redirects into Google sign-in. The first request
+// to Google has to carry the honest identity, so restart that navigation after switching.
+// Leaving sign-in (the cookie-setting redirects back to the site) is never interrupted; the
+// page switches back once it lands.
 function guardUserAgent(wc) {
-  const check = (e) => {
+  const enter = (e) => {
     if (e.isMainFrame === false) return;
     const url = e.url; if (!/^https?:/.test(url || '')) return;
-    const want = uaFor(url);
-    if (wc.getUserAgent() === want) return;
+    if (!isSignin(url) || wc.__driftSignin) return;
     e.preventDefault();
-    wc.setUserAgent(want);
+    setMode(wc, url);
     wc.loadURL(url).catch(() => {});
   };
-  wc.on('will-navigate', check);
-  wc.on('will-redirect', check);
+  wc.on('will-navigate', enter);
+  wc.on('will-redirect', enter);
+  // Back on the site, switch to the Chrome identity at the next link the user follows (before
+  // its request goes out). Changing identity on a page that has already loaded makes Chromium
+  // re-request it, which would replay sign-in's one-time redirect, so the page sign-in lands on
+  // keeps the engine identity. Google's own hops on the way back are left alone.
+  wc.on('will-navigate', (e) => {
+    if (!wc.__driftSignin || e.isMainFrame === false) return;
+    const url = e.url; if (!/^https?:/.test(url || '') || isSignin(url)) return;
+    let from = ''; try { from = new URL(wc.getURL()).hostname; } catch {}
+    if (/^accounts\.(google\.[a-z.]+|youtube\.com)$/i.test(from)) return;
+    e.preventDefault();
+    setMode(wc, url);
+    wc.loadURL(url).catch(() => {});
+  });
   // "Sign in with Google" popups: their first load happens before these hooks can act.
   wc.on('did-create-window', (child, details) => {
-    const want = uaFor(details.url);
-    if (child.webContents.getUserAgent() !== want) { child.webContents.setUserAgent(want); child.webContents.loadURL(details.url).catch(() => {}); }
+    const cwc = child.webContents;
+    if (isSignin(details.url) && !cwc.__driftSignin) { setMode(cwc, details.url); cwc.loadURL(details.url).catch(() => {}); }
   });
 }
 
@@ -392,7 +430,7 @@ function ensureView(tab, restore) {
   wcToTab.set(wc.id, tab);
   wireTab(tab, wc);
   if (extensions) extensions.addTab(wc, win);
-  wc.setUserAgent(uaFor(tab.url));
+  setMode(wc, tab.url);
   if (restore && restore.entries.length) wc.navigationHistory.restore(restore).catch(() => loadIn(wc, tab.url));
   else loadIn(wc, tab.url);
   return view;
@@ -1142,7 +1180,7 @@ function hintsPath() {
 // request headers all agree natively, without patching anything in the page.
 let uaMeta = null;
 function applyIdentity(wc) {
-  if (!uaMeta || !wc || wc.isDestroyed()) return;
+  if (!uaMeta || !wc || wc.isDestroyed() || wc.__driftSignin) return;
   const type = wc.getType();
   if (type !== 'window' && type !== 'browserView' && type !== 'webview') return;
   const dbg = wc.debugger;
@@ -1150,7 +1188,7 @@ function applyIdentity(wc) {
   if (!wc.__driftIdentity) {
     wc.__driftIdentity = true;
     // DevTools or a crash can drop the session; put it back.
-    dbg.on('detach', () => { wc.__driftIdentity = false; setTimeout(() => applyIdentity(wc), 500); });
+    dbg.on('detach', () => { wc.__driftIdentity = false; if (!wc.__driftSignin) setTimeout(() => applyIdentity(wc), 500); });
   }
   dbg.sendCommand('Emulation.setUserAgentOverride', { userAgent: chromeUA(), userAgentMetadata: uaMeta }).catch(() => {});
 }
@@ -1175,7 +1213,7 @@ async function loadHints() {
           fullVersion: CLAIM.chromeFull, platform: real.platform, platformVersion: real.platformVersion || '',
           architecture: real.architecture || '', model: real.model || '', mobile: false, bitness: real.bitness || '', wow64: !!real.wow64,
         };
-        for (const w of webContents.getAllWebContents()) if (/^https?:/.test(w.getURL())) applyIdentity(w);
+        for (const w of webContents.getAllWebContents()) if (/^https?:/.test(w.getURL()) && !isSignin(w.getURL())) applyIdentity(w);
       }
     }
   } catch (e) { console.error('[hints] could not load:', e.message); }
@@ -2210,7 +2248,7 @@ if (!app.requestSingleInstanceLock()) {
     // Web pages (tabs and their popups) get the reported Chrome identity on their first web load.
     if (wc.getType() === 'window' || wc.getType() === 'browserView') {
       wc.on('did-start-navigation', (e) => {
-        if (!wc.__driftIdentity && e.isMainFrame && /^https?:/.test(e.url)) applyIdentity(wc);
+        if (!wc.__driftIdentity && !wc.__driftSignin && e.isMainFrame && /^https?:/.test(e.url) && !isSignin(e.url)) applyIdentity(wc);
       });
     }
   });
