@@ -345,8 +345,12 @@ function restack() {
   const have = win.contentView.children;
   if (have.length === want.length && have.every((v, i) => v === want[i])) return;
   for (const c of have) if (!want.includes(c)) win.contentView.removeChildView(c);
-  for (const v of want) { try { win.contentView.removeChildView(v); } catch {} }
-  for (const v of want) win.contentView.addChildView(v);
+  // Only touch views from the first one out of place: adding a view that's already attached
+  // moves it to the top without detaching it. Detaching the sidebar UI would drop its focus
+  // and cancel anything in progress there (like dragging a tab).
+  const cur = win.contentView.children;
+  let i = 0; while (i < want.length && cur[i] === want[i]) i++;
+  for (let j = i; j < want.length; j++) win.contentView.addChildView(want[j]);
 }
 
 function layout() {
@@ -372,7 +376,7 @@ function layout() {
 function setOverlay(mode, keepFocus) {
   overlay = mode;
   layout();
-  if (mode === 'palette' || mode === 'modal' || mode === 'extmenu') ui.webContents.focus();
+  if (['palette', 'modal', 'extmenu', 'siteinfo'].includes(mode)) ui.webContents.focus();
   else if (!keepFocus) focusPage();   // keepFocus: an extension popup just opened and must keep focus
   push();
 }
@@ -561,7 +565,7 @@ function refreshNewTabs() {
   for (const t of tabs) if (t.view && t.url.startsWith(NEWTAB)) t.view.webContents.reload();
 }
 
-function activate(id) {
+function activate(id, opts = {}) {
   const tab = tabs.find(t => t.id === id);
   if (!tab) return;
   const prev = activeTab();
@@ -573,7 +577,9 @@ function activate(id) {
   if (tab.crashed) { tab.crashed = false; tab.view.webContents.reload(); }
   else if (tab.url.startsWith(NEWTAB) && prev !== tab && !tab.view.webContents.isLoading()) tab.view.webContents.reload(); // fresh top sites
   layout();
-  if (overlay !== 'palette') focusPage();
+  // noFocus: the tab was pressed in the sidebar and may be about to be dragged; moving focus
+  // into the page now would cancel the drag. The sidebar asks for focus on release instead.
+  if (overlay !== 'palette' && !opts.noFocus) focusPage();
   push(); saveSession();
 }
 
@@ -1551,7 +1557,8 @@ async function setupExtensions(ses) {
       const tab = createTab(details.url || NEWTAB, { activate: details.active !== false });
       return [tab.view.webContents, win];
     },
-    selectTab(wc) { const t = wcToTab.get(wc.id); if (t) activate(t.id); },
+    // (Drift's own activate() tells the library too, which calls back here; skip that echo.)
+    selectTab(wc) { const t = wcToTab.get(wc.id); if (t && t.id !== activeId) activate(t.id); },
     // chrome.tabs.remove, and also called when a page closes itself (window.close()).
     removeTab(wc) {
       try {
@@ -1665,6 +1672,63 @@ function setupPermissions(ses) {
     if (AUTO_ALLOW.has(perm)) return true;
     return settings.permissions[`${origin}|${perm}`] === true;
   });
+}
+
+// Site info (the lock icon): remember each site's certificate as Chromium verifies it.
+// -3 tells Chromium to keep its own verdict; this only records what it saw.
+const certs = new Map();   // hostname -> certificate summary
+function setupCertificates(ses) {
+  ses.setCertificateVerifyProc((req, cb) => {
+    try {
+      const c = req.certificate;
+      if (c) {
+        certs.set(req.hostname, {
+          subject: (c.subject && c.subject.commonName) || c.subjectName || '',
+          issuer: (c.issuer && (c.issuer.organizations && c.issuer.organizations[0] || c.issuer.commonName)) || c.issuerName || '',
+          issuerCN: (c.issuer && c.issuer.commonName) || '',
+          validStart: c.validStart * 1000, validExpiry: c.validExpiry * 1000,
+          fingerprint: c.fingerprint || '', ok: req.errorCode === 0, error: req.errorCode === 0 ? '' : req.verificationResult,
+        });
+        if (certs.size > 500) certs.delete(certs.keys().next().value);
+      }
+    } catch {}
+    cb(-3);
+  });
+}
+// Permission rows shown in site info: the common ones always, plus any others the site was asked about.
+const SITE_PERMS = [['media', 'Camera & microphone'], ['geolocation', 'Location'], ['notifications', 'Notifications'], ['clipboard-read', 'Clipboard'], ['display-capture', 'Screen sharing']];
+async function siteInfo() {
+  const t = activeTab();
+  if (!t || !t.view || !/^https?:/.test(t.url)) return null;
+  const u = new URL(t.url), origin = u.origin;
+  const perms = SITE_PERMS.map(([perm, label]) => ({ perm, label }));
+  for (const key of Object.keys(settings.permissions)) {
+    const [o, perm] = key.split('|');
+    if (o === origin && !perms.some(p => p.perm === perm)) perms.push({ perm, label: ASK[perm] ? ASK[perm].replace(/^\w/, c => c.toUpperCase()) : perm });
+  }
+  for (const p of perms) { const v = settings.permissions[`${origin}|${p.perm}`]; p.value = v === true ? 'allow' : v === false ? 'block' : 'ask'; }
+  let cookies = 0;
+  try { const base = u.hostname.replace(/^www\./, ''); cookies = (await session.defaultSession.cookies.get({ domain: base })).length; } catch {}
+  return {
+    origin, host: u.hostname.replace(/^www\./, ''), secure: u.protocol === 'https:',
+    cert: u.protocol === 'https:' ? certs.get(u.hostname) || null : null,
+    perms, cookies, blocked: t.blocked || 0, shields: shieldsOnFor(t.url), ubo: settings.shieldsEngine === 'ubo' && !!uboId,
+  };
+}
+async function clearSiteData(origin) {
+  let u; try { u = new URL(origin); } catch { return false; }
+  if (!/^https?:$/.test(u.protocol)) return false;
+  const ses = session.defaultSession, base = u.hostname.replace(/^www\./, '');
+  try {
+    for (const c of await ses.cookies.get({ domain: base })) {
+      const url = `${c.secure ? 'https' : 'http'}://${c.domain.replace(/^\./, '')}${c.path}`;
+      await ses.cookies.remove(url, c.name).catch(() => {});
+    }
+    for (const o of new Set([u.origin, `${u.protocol}//www.${base}`, `${u.protocol}//${base}`])) {
+      await ses.clearStorageData({ origin: o, storages: ['localstorage', 'indexdb', 'cachestorage', 'serviceworkers', 'websql', 'filesystem', 'shadercache'] }).catch(() => {});
+    }
+    return true;
+  } catch { return false; }
 }
 
 // ---------------------------------------------------------------------------
@@ -2121,7 +2185,8 @@ function setupIPC() {
   const handle = (ch, fn) => ipcMain.handle(ch, (e, ...a) => (ui && e.sender === ui.webContents) ? fn(...a) : null);
 
   on('ready', () => { push(); layout(); sendBookmarks(); });
-  on('activate', (id) => activate(id));
+  on('activate', (id, noFocus) => activate(id, { noFocus: !!noFocus }));
+  on('focus-page', () => { if (!overlay) focusPage(); });
   on('close-tab', (id) => closeTab(id));
   on('new-tab', () => { ui.webContents.send('palette', { newTab: true }); });
   on('tab-menu', (id) => tabContextMenu(id));
@@ -2205,6 +2270,17 @@ function setupIPC() {
   on('bm-list', () => sendBookmarks());
   on('bm-toggle', () => toggleBookmarkActive());
   on('bm-open', (id, newTab) => { const h = bookmarks.find(id); if (h) openBookmark(h.item, newTab, false); });
+  handle('site-info', () => siteInfo());
+  on('site-perm', (origin, perm, value) => {
+    if (!ASK[perm] || typeof origin !== 'string') return;
+    const key = `${origin}|${perm}`;
+    if (value === 'allow') settings.permissions[key] = true;
+    else if (value === 'block') settings.permissions[key] = false;
+    else delete settings.permissions[key];
+    saveSettings();
+  });
+  handle('site-clear', async (origin) => { const ok = await clearSiteData(origin); if (ok) { const t = activeTab(); if (t && t.view) t.view.webContents.reload(); } return ok; });
+  on('bm-open-background', (id) => { const h = bookmarks.find(id); if (h) openBookmark(h.item, true, true); });
   on('bm-menu', (id) => bookmarkContextMenu(id));
   on('bm-bar-menu', () => {
     const t = activeTab();
@@ -2383,6 +2459,7 @@ if (!app.requestSingleInstanceLock()) {
     ses.setSpellCheckerLanguages(['en-US']);
     setupProtocol();
     setupPermissions(ses);
+    setupCertificates(ses);
     ses.registerPreloadScript({ id: 'drift-page', type: 'frame', filePath: path.join(__dirname, 'page-preload.js') });
     setupDownloads(ses);
     setupIPC();
@@ -2404,6 +2481,7 @@ if (!app.requestSingleInstanceLock()) {
     const uiReady = new Promise(r => ui.webContents.once('did-finish-load', r)).then(() => { setTimeout(prepareBookmarkMenuIcons, 300); return initIdentity(); });
     Promise.race([Promise.all([shieldsReady, uiReady]), new Promise(r => setTimeout(r, 2000))]).then(() => { PERF('gate open'); openGate(); });
     setupUpdates();
+
 
 
 

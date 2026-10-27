@@ -27,7 +27,7 @@ To build the Windows installer locally: `npm run dist` (output goes to `dist/`).
 
 ## Features
 
-- **Vertical tabs** in a resizable sidebar, with drag-to-reorder. Drag the sidebar's edge all the way in (or click the sidebar icon at the top left) for an **icon-only sidebar**.
+- **Vertical tabs** in a resizable sidebar; drag a tab up or down to reorder. Drag the sidebar's edge all the way in (or click the sidebar icon at the top left) for an **icon-only sidebar**.
 - **Pinned tabs** shown as tiles at the top (drag a tab up there, or right-click → Pin)
 - **Command bar** (Ctrl+T / Ctrl+L): search, open sites, jump to open tabs and history. Sites you've visited autocomplete as you type ("tw" → twitch.tv); Esc clears the completion.
 - **Shields = built-in uBlock Origin 1.75.0.** Click the shield in the address bar for its popup (per-site switch, counts, and the dynamic-filtering grid in advanced mode). Settings → Shields → *uBlock Origin dashboard* opens My filters, filter lists, and advanced settings. A lighter built-in blocker can be chosen instead.
@@ -35,8 +35,9 @@ To build the Windows installer locally: `npm run dist` (output goes to `dist/`).
 - **Tab sleeping**: background tabs are unloaded after 20 minutes to save memory
 - **Chrome extensions**: click the puzzle icon → *Get extensions*, then **Add to Chrome** on any Chrome Web Store page. The puzzle button in the toolbar lists every extension (click one to open its popup); pin the ones you want to keep in the toolbar. Popups, badges and options pages work.
 - **Volume mixer** (sliders icon at the bottom of the sidebar): per-tab volume from 0 to 300%, mute, reset. Scroll on a tab's speaker icon to adjust it, or right-click a tab → Volume.
+- **Site info**: click the lock in the address bar for the connection and certificate, per-site permissions (camera, mic, location, notifications, clipboard, screen sharing), blocked trackers, cookies, and *Clear cookies and site data*.
 - **Top toolbar** with back/forward/reload, an **address bar** you can click into (suggestions drop down from it), bookmark star, Shields, extension buttons, and window buttons. Drag empty space to move the window.
-- **Bookmarks bar** under the address bar (Ctrl+Shift+B). Ctrl+D or the star bookmarks a page; drag a tab onto the bar to bookmark it; drag bookmarks to reorder, or onto a folder to move them inside; right-click to edit or delete. Folders open as menus with site icons. Import straight from Chrome, Edge, Brave, Opera or Vivaldi on the same PC, or from any browser's bookmarks.html file.
+- **Bookmarks bar** under the address bar (Ctrl+Shift+B). Ctrl+D or the star bookmarks a page; drag a tab onto the bar to bookmark it; drag bookmarks to reorder, or onto a folder to move them inside; middle-click opens a bookmark in a background tab (or all of a folder's); right-click to edit or delete. Folders open as menus with site icons. Import straight from Chrome, Edge, Brave, Opera or Vivaldi on the same PC, or from any browser's bookmarks.html file.
 - **Split view**: the split button next to reload puts two tabs side by side (or stacked). Pick a new tab or any open tab; drag the divider to resize (double-click it to even them out); click a page to make it the one the toolbar controls. Right-click a tab → *Open in split view* also works.
 - **Wallpapers** (Settings → Appearance): 8 built-in, your own image, or your Windows desktop background. Shows behind the sidebar and toolbar and on the new tab page, with dim and blur sliders.
 - **Force dark pages** (Settings → Appearance), the same Chromium feature Opera uses. The moon in the address bar turns it off for one site.

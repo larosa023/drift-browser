@@ -91,3 +91,22 @@ if (!src.includes(MARK)) {
   fs.writeFileSync(file, src);
   console.log('patch-deps: patched electron-chrome-extensions preload');
 }
+
+// electron-chrome-extensions (main process): every newly tracked tab was reported as
+// activated, which made Drift switch to tabs meant to open in the background (middle-click,
+// Ctrl+click, "Open all"). The store already picks an active tab when a window has none.
+for (const variant of ['cjs/index.js', 'esm/index.mjs']) {
+  const f = path.join(__dirname, '..', 'node_modules', 'electron-chrome-extensions', 'dist', ...variant.split('/'));
+  if (!fs.existsSync(f)) continue;
+  let s = fs.readFileSync(f, 'utf8');
+  const MARK2 = '/* drift: no auto-activate v1 */';
+  if (s.includes(MARK2)) continue;
+  const from = `    this.onCreated(tabId);
+    this.onActivated(tabId);`;
+  if (!s.includes(from)) throw new Error(`patch-deps: observeTab changed in ${variant}; update scripts/patch-deps.js`);
+  s = s.replace(from, `    this.onCreated(tabId);
+    ${MARK2}
+    if (this.ctx.store.getActiveTabFromWebContents(tab) === tab) this.onActivated(tabId);`);
+  fs.writeFileSync(f, s);
+  console.log(`patch-deps: patched electron-chrome-extensions ${variant}`);
+}

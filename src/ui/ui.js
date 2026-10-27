@@ -55,7 +55,7 @@ function render() {
   b.classList.toggle('light', !S.dark);
   b.classList.toggle('hidden-bar', S.settings.sidebarHidden);
   b.classList.toggle('docked', !S.settings.sidebarHidden);
-  b.classList.toggle('over-palette', S.overlay === 'palette' || S.overlay === 'modal' || S.overlay === 'extmenu');
+  b.classList.toggle('over-palette', ['palette', 'modal', 'extmenu', 'siteinfo'].includes(S.overlay));
   b.classList.toggle('rail', !!S.settings.sidebarRail && !S.settings.sidebarHidden);
   b.classList.toggle('bm-on', !!S.settings.titleBar && !!S.settings.bookmarksBar);
   b.classList.toggle('over-peek', S.overlay === 'peek');
@@ -117,6 +117,7 @@ function render() {
   $('#palette-wrap').hidden = S.overlay !== 'palette';
   $('#modal-wrap').hidden = S.overlay !== 'modal';
   if (S.overlay !== 'extmenu') $('#extmenu-wrap').hidden = true;
+  if (S.overlay !== 'siteinfo') $('#siteinfo-wrap').hidden = true;
   if (panel === 'passwords') renderPasswords();
   placeActions();
   $('#findbar').hidden = !S.findOpen;
@@ -128,13 +129,14 @@ function renderAddr() {
   const at = $('#a-text'), ai = $('#a-icon');
   if (isInternal(url)) {
     at.textContent = 'Search or enter address'; at.className = 'a-text placeholder';
-    ai.innerHTML = icon('search', 15); ai.className = 'a-icon';
+    ai.innerHTML = icon('search', 15); ai.className = 'a-icon'; ai.title = '';
   } else {
     let host = url, rest = '';
     try { const u = new URL(url); host = u.hostname.replace(/^www\./, ''); rest = (u.pathname === '/' ? '' : u.pathname) + u.search; } catch {}
     at.innerHTML = `${esc(host)}<span class="path">${esc(rest)}</span>`; at.className = 'a-text';
     ai.innerHTML = icon(S.nav.secure ? 'lock' : 'info', 14); ai.className = 'a-icon' + (S.nav.secure ? ' secure' : '');
-    ai.title = S.nav.secure ? 'Connection is secure' : 'Connection is not secure';
+    ai.title = (S.nav.secure ? 'Connection is secure' : 'Connection is not secure') + ' · click for site info';
+    ai.classList.add('clickable');
   }
   const internal = isInternal(url);
   const star = $('#a-star');
@@ -178,21 +180,41 @@ function placeActions() {
 
 function applyHole() {
   const w = $('#wash');
-  if (S && (S.overlay === 'palette' || S.overlay === 'modal' || S.overlay === 'extmenu')) {
+  if (S && ['palette', 'modal', 'extmenu', 'siteinfo'].includes(S.overlay)) {
     const { x, y, width: cw, height: ch } = content;
     w.style.clipPath = `polygon(evenodd, 0 0, 100% 0, 100% 100%, 0 100%, 0 0, ${x}px ${y}px, ${x + cw}px ${y}px, ${x + cw}px ${y + ch}px, ${x}px ${y + ch}px, ${x}px ${y}px)`;
   } else w.style.clipPath = '';
 }
 
+// Tabs are updated in place (keyed by tab id) instead of rebuilt, so a tab you're pressing or
+// dragging is never replaced mid-gesture: a rebuild would cancel the drag. While a drag is in
+// progress, updates wait until it ends.
+let tabsPending = false;
+function syncKeyed(container, items) {
+  const have = new Map([...container.children].filter(el => el.dataset.id).map(el => [el.dataset.id, el]));
+  items.forEach((it, i) => {
+    let el = have.get(String(it.id));
+    if (!el) { el = document.createElement('div'); el.dataset.id = String(it.id); el.draggable = true; }
+    else have.delete(String(it.id));
+    if (el.className !== it.cls) el.className = it.cls;
+    if (el.title !== it.title) el.title = it.title;
+    if (el.__html !== it.html) { el.innerHTML = it.html; el.__html = it.html; }
+    const at = container.children[i];
+    if (at !== el) container.insertBefore(el, at || null);
+  });
+  for (const el of have.values()) el.remove();
+  for (const el of [...container.children]) if (!el.dataset.id) el.remove();   // stray drop markers
+}
 function renderTabs() {
+  if (dragId != null) { tabsPending = true; return; }
+  tabsPending = false;
   const ess = $('#essentials'), list = $('#tablist');
   const pinned = S.tabs.filter(t => t.pinned);
   const normal = S.tabs.filter(t => !t.pinned);
-  ess.innerHTML = pinned.map(t => `
-    <div class="ess ${t.id === S.activeId ? 'active' : ''} ${t.asleep ? 'asleep' : ''}" data-id="${t.id}" draggable="true" title="${esc(tabTitle(t))}">
-      ${favHTML(t, 18)}
-      ${t.audible || t.muted ? `<button class="audio" data-act="mute" title="${t.muted ? 'Unmute' : 'Mute'} tab">${icon(t.muted ? 'muted' : 'sound', 13)}</button>` : ''}
-    </div>`).join('');
+  syncKeyed(ess, pinned.map(t => ({
+    id: t.id, cls: `ess ${t.id === S.activeId ? 'active' : ''} ${t.asleep ? 'asleep' : ''}`.trim(), title: tabTitle(t),
+    html: `${favHTML(t, 18)}${t.audible || t.muted ? `<button class="audio" data-act="mute" title="${t.muted ? 'Unmute' : 'Mute'} tab">${icon(t.muted ? 'muted' : 'sound', 13)}</button>` : ''}`,
+  })));
   const splitClass = (t) => {
     const sp = (S.splits || []).find(x => x.a === t.id || x.b === t.id);
     if (!sp) return '';
@@ -200,13 +222,11 @@ function renderTabs() {
     const prevIs = normal[i - 1] && normal[i - 1].id === partner, nextIs = normal[i + 1] && normal[i + 1].id === partner;
     return 'in-split' + (nextIs ? ' split-first' : prevIs ? ' split-last' : '');
   };
-  list.innerHTML = normal.map(t => `
-    <div class="tab ${t.id === S.activeId ? 'active' : ''} ${t.asleep ? 'asleep' : ''} ${splitClass(t)}" data-id="${t.id}" draggable="true" title="${esc(tabTitle(t))}${t.asleep ? ' (sleeping)' : ''}">
-      ${favHTML(t)}
-      <span class="title">${esc(tabTitle(t))}</span>
-      ${t.audible || t.muted || t.volume !== 1 ? `<button class="audio" data-act="mute" title="${t.muted ? 'Unmute' : 'Mute'} · volume ${Math.round(t.volume * 100)}% (scroll to adjust)">${icon(t.muted ? 'muted' : 'sound', 18)}</button>` : ''}
-      <button class="close" data-act="close" title="Close (Ctrl+W)">${icon('x', 9)}</button>
-    </div>`).join('');
+  syncKeyed(list, normal.map(t => ({
+    id: t.id, cls: `tab ${t.id === S.activeId ? 'active' : ''} ${t.asleep ? 'asleep' : ''} ${splitClass(t)}`.replace(/\s+/g, ' ').trim(),
+    title: tabTitle(t) + (t.asleep ? ' (sleeping)' : ''),
+    html: `${favHTML(t)}<span class="title">${esc(tabTitle(t))}</span>${t.audible || t.muted || t.volume !== 1 ? `<button class="audio" data-act="mute" title="${t.muted ? 'Unmute' : 'Mute'} · volume ${Math.round(t.volume * 100)}% (scroll to adjust)">${icon(t.muted ? 'muted' : 'sound', 18)}</button>` : ''}<button class="close" data-act="close" title="Close (Ctrl+W)">${icon('x', 9)}</button>`,
+  })));
 }
 
 // ---------------------------------------------------------------------- tab interactions
@@ -217,7 +237,7 @@ function tabEvents(container) {
     if (e.button === 1) { e.preventDefault(); send('close-tab', id); return; }
     if (e.button !== 0) return;
     const act = e.target.closest('[data-act]');
-    if (!act) send('activate', id);
+    if (!act) send('activate', id, true);   // focus moves to the page on release (or after a drag)
   });
   container.addEventListener('click', (e) => {
     const el = e.target.closest('[data-id]'); if (!el) return;
@@ -225,6 +245,7 @@ function tabEvents(container) {
     const act = e.target.closest('[data-act]');
     if (act && act.dataset.act === 'close') send('close-tab', id);
     if (act && act.dataset.act === 'mute') send('toggle-mute', id);
+    if (!act) send('focus-page');
   });
   container.addEventListener('contextmenu', (e) => {
     const el = e.target.closest('[data-id]'); if (!el) return;
@@ -243,6 +264,10 @@ function tabEvents(container) {
     document.querySelectorAll('.dragging').forEach(x => x.classList.remove('dragging'));
     document.querySelectorAll('.drop-line').forEach(x => x.remove());
     $('#essentials').classList.remove('drop-target');
+    clearBmDrop();
+    send('focus-page');
+    if (tabsPending && S) renderTabs();
+    if (bmPending) renderBookmarks();
   });
 }
 tabEvents($('#tablist'));
@@ -291,7 +316,10 @@ const toggleRail = () => {
 };
 $('#btn-collapse').onclick = toggleRail;
 $('#tb-sidebar').onclick = toggleRail;
-$('#addr').addEventListener('click', (e) => { if (!e.target.closest('.a-btn, .a-shield')) openPalette(false, true); });
+$('#addr').addEventListener('click', (e) => {
+  if (e.target.closest('#a-icon.clickable')) { openSiteInfo(); return; }
+  if (!e.target.closest('.a-btn, .a-shield')) openPalette(false, true);
+});
 $('#a-star').onclick = () => send('bm-toggle');
 $('#a-dark').onclick = () => send('force-dark-site');
 // With uBlock Origin as the engine, the shield opens its popup (per-site switch, counts, logger).
@@ -365,7 +393,9 @@ $('#resizer').addEventListener('mousedown', (e) => {
 // Bring up an overlay without a flash: the UI layer moves above the page when the overlay
 // opens, so first draw the see-through hole over the page area (and hide the page frame),
 // wait for that frame to be painted, and only then ask for the layer to come up.
+let pendingOverlay = null;
 function raiseOverlay(mode) {
+  pendingOverlay = { mode, at: Date.now() };
   if (S) S.overlay = mode;
   document.body.classList.add('over-palette');
   applyHole();
@@ -392,7 +422,7 @@ function preparePalette(newTab, anchored) {
   setTimeout(() => { inp.focus(); inp.select(); }, 0);
   updatePalette();
 }
-function closePalette() { send('overlay', null); }
+function closePalette() { pendingOverlay = null; send('overlay', null); }
 
 function looksLikeUrl(t) {
   return /^(https?|file|drift|about):/i.test(t) || /^localhost(:\d+)?/i.test(t) ||
@@ -764,7 +794,7 @@ function openExtMenu() {
   raiseOverlay('extmenu');
   setTimeout(() => m.focus({ preventScroll: true }), 0);
 }
-function closeExtMenu(keepFocus) { $('#extmenu-wrap').hidden = true; if (S && S.overlay === 'extmenu') send('overlay', null, !!keepFocus); }
+function closeExtMenu(keepFocus) { pendingOverlay = null; $('#extmenu-wrap').hidden = true; if (S && S.overlay === 'extmenu') send('overlay', null, !!keepFocus); }
 $('#ext-menu-btn').addEventListener('click', () => { if (S && S.overlay === 'extmenu') closeExtMenu(); else openExtMenu(); });
 $('#extmenu-wrap').addEventListener('mousedown', (e) => { if (e.target.id === 'extmenu-wrap') closeExtMenu(); });
 document.addEventListener('keydown', (e) => { if (e.key === 'Escape' && S && S.overlay === 'extmenu') closeExtMenu(); });
@@ -895,7 +925,10 @@ function bmIcon(it) {
   if (it.type === 'folder') return icon('folder', 14);
   return favHTML({ url: it.url, favicon: it.icon }, 14);
 }
+let bmPending = false;
 function renderBookmarks() {
+  if (bmDrag != null || dragId != null) { bmPending = true; return; }
+  bmPending = false;
   const box = $('#bm-items');
   box.innerHTML = BM.length ? BM.map(it => `
     <button class="bm ${it.type === 'folder' ? 'folder' : ''}" data-bm="${esc(it.id)}" draggable="true" title="${esc(it.type === 'folder' ? it.title : (it.title ? it.title + '\n' : '') + it.url)}">
@@ -943,9 +976,13 @@ $('#bm-items').addEventListener('click', (e) => {
   if (it.type === 'folder') { const r = b.getBoundingClientRect(); send('bm-folder', it.id, r.left, r.bottom + 2); }
   else send('bm-open', it.id, e.ctrlKey || e.metaKey || e.shiftKey);
 });
+// Middle-click (scroll-wheel click) opens a bookmark in a background tab, or a folder's
+// bookmarks all at once. Pressing the wheel would otherwise start autoscroll on Windows,
+// which swallows the click.
+$('#bm-items').addEventListener('mousedown', (e) => { if (e.button === 1 && e.target.closest('[data-bm]')) e.preventDefault(); });
 $('#bm-items').addEventListener('auxclick', (e) => {
   const b = e.target.closest('[data-bm]'); if (!b || e.button !== 1) return;
-  e.preventDefault(); send('bm-open', b.dataset.bm, true);
+  e.preventDefault(); send('bm-open-background', b.dataset.bm);
 });
 $('#bmbar').addEventListener('contextmenu', (e) => {
   e.preventDefault();
@@ -959,7 +996,7 @@ $('#bm-items').addEventListener('dragstart', (e) => {
   bmDrag = b.dataset.bm; e.dataTransfer.effectAllowed = 'move'; e.dataTransfer.setData('text/plain', bmDrag);
   requestAnimationFrame(() => b.classList.add('dragging'));
 });
-$('#bm-items').addEventListener('dragend', () => { bmDrag = null; document.querySelectorAll('.bm.dragging').forEach(x => x.classList.remove('dragging')); clearBmDrop(); });
+$('#bm-items').addEventListener('dragend', () => { bmDrag = null; document.querySelectorAll('.bm.dragging').forEach(x => x.classList.remove('dragging')); clearBmDrop(); if (bmPending) renderBookmarks(); });
 function clearBmDrop() { document.querySelectorAll('.bm-drop').forEach(x => x.remove()); document.querySelectorAll('.bm.drop-into').forEach(x => x.classList.remove('drop-into')); $('#bmbar').classList.remove('drop-target'); }
 function bmDropIndex(x) {
   const items = [...$('#bm-items').querySelectorAll('.bm')].filter(b => b.style.display !== 'none' && b.dataset.bm !== bmDrag);
@@ -1010,7 +1047,7 @@ function openModal(html, onSubmit, focusSel) {
   raiseOverlay('modal');
   setTimeout(() => { const f = m.querySelector(focusSel || 'input'); if (f) { f.focus(); f.select(); } }, 30);
 }
-function closeModal() { modalSubmit = null; send('overlay', null); }
+function closeModal() { pendingOverlay = null; modalSubmit = null; send('overlay', null); }
 $('#modal').addEventListener('submit', (e) => {
   e.preventDefault();
   const data = Object.fromEntries(new FormData($('#modal')).entries());
@@ -1142,7 +1179,15 @@ function toast(html) {
 }
 
 // ---------------------------------------------------------------------- messages from main
-window.drift.on('state', (s) => { S = s; render(); });
+// An overlay opened here is shown before Drift confirms it; a state update sent just before
+// the confirmation still says "no overlay" and must not close it.
+window.drift.on('state', (s) => {
+  if (pendingOverlay) {
+    if (s.overlay === pendingOverlay.mode || Date.now() - pendingOverlay.at > 1000) pendingOverlay = null;
+    else s.overlay = pendingOverlay.mode;
+  }
+  S = s; render();
+});
 window.drift.on('extensions', (list) => { EXT = list; render(); });
 window.drift.on('bookmarks', (list) => { BM = list; renderBookmarks(); });
 window.drift.on('passwords', (list) => { PW = list; if (panel === 'passwords') renderPasswords(true); });
@@ -1184,3 +1229,65 @@ window.drift.on('download-started', (name) => toast(`${icon('download')}<span>Do
 send('ready');
 send('ext-list');
 send('bm-list');
+
+
+// ---------------------------------------------------------------------- site info (lock icon)
+let siteData = null;
+const fmtDate = (ms) => { try { return new Date(ms).toLocaleDateString([], { year: 'numeric', month: 'short', day: 'numeric' }); } catch { return ''; } };
+function renderSiteInfo() {
+  const d = siteData, box = $('#siteinfo');
+  if (!d) { box.innerHTML = `<div class="si-sec">Site info isn't available for this page.</div>`; return; }
+  const c = d.cert;
+  const secure = d.secure && (!c || c.ok);
+  const certHtml = !d.secure ? `<div class="si-warn">Information you send to this site (like passwords or card numbers) can be read by others on the network.</div>`
+    : !c ? `<div class="si-row"><span class="n">Certificate details appear after the page loads over a new connection.</span></div>`
+    : `<div class="si-kv">
+        <span>Issued to</span><span>${esc(c.subject)}</span>
+        <span>Issued by</span><span>${esc(c.issuer)}${c.issuerCN && c.issuerCN !== c.issuer ? ` (${esc(c.issuerCN)})` : ''}</span>
+        <span>Valid</span><span>${esc(fmtDate(c.validStart))} – ${esc(fmtDate(c.validExpiry))}</span>
+        <span>Fingerprint</span><span class="si-fp">${esc(c.fingerprint.replace(/^sha256\//, 'SHA-256 '))}</span>
+        ${c.ok ? '' : `<span>Problem</span><span class="si-warn">${esc(c.error)}</span>`}
+      </div>`;
+  box.innerHTML = `
+    <div class="si-head ${secure ? '' : 'insecure'}"><span class="si-ic">${icon(secure ? 'lock' : 'info', 16)}</span>
+      <span style="min-width:0"><b>${esc(d.host)}</b><small>${secure ? 'Connection is secure' : d.secure ? 'Certificate problem' : 'Connection is not secure'}</small></span></div>
+    <div class="si-sec"><h4>Connection</h4>${certHtml}</div>
+    <div class="si-sec"><h4>Permissions</h4>
+      ${d.perms.map(p => `<div class="si-row"><span>${esc(p.label)}</span>
+        <select data-perm="${esc(p.perm)}" class="${p.value}">
+          <option value="ask" ${p.value === 'ask' ? 'selected' : ''}>Ask</option>
+          <option value="allow" ${p.value === 'allow' ? 'selected' : ''}>Allow</option>
+          <option value="block" ${p.value === 'block' ? 'selected' : ''}>Block</option>
+        </select></div>`).join('')}
+    </div>
+    <div class="si-sec"><h4>Privacy</h4>
+      <div class="si-row"><span>Ads & trackers blocked</span><span class="n">${d.shields ? d.blocked.toLocaleString() + ' on this page' : 'Shields off for this site'}</span></div>
+      <div class="si-row"><span>Cookies</span><span class="n">${d.cookies} stored by this site</span></div>
+      <button class="si-btn" id="si-clear">Clear cookies and site data</button>
+    </div>`;
+}
+async function openSiteInfo() {
+  const r = $('#a-icon').getBoundingClientRect(), box = $('#siteinfo');
+  siteData = await window.drift.invoke('site-info');
+  renderSiteInfo();
+  box.style.left = Math.max(8, Math.min(window.innerWidth - 348, r.left - 6)) + 'px';
+  box.style.top = (r.bottom + 10) + 'px';
+  $('#siteinfo-wrap').hidden = false;
+  raiseOverlay('siteinfo');
+  setTimeout(() => box.focus({ preventScroll: true }), 0);
+}
+function closeSiteInfo() { pendingOverlay = null; $('#siteinfo-wrap').hidden = true; if (S && S.overlay === 'siteinfo') send('overlay', null); }
+$('#siteinfo-wrap').addEventListener('mousedown', (e) => { if (e.target.id === 'siteinfo-wrap') closeSiteInfo(); });
+document.addEventListener('keydown', (e) => { if (e.key === 'Escape' && S && S.overlay === 'siteinfo') closeSiteInfo(); });
+$('#siteinfo').addEventListener('change', (e) => {
+  const sel = e.target.closest('select[data-perm]'); if (!sel || !siteData) return;
+  sel.className = sel.value;
+  send('site-perm', siteData.origin, sel.dataset.perm, sel.value);
+});
+$('#siteinfo').addEventListener('click', async (e) => {
+  const b = e.target.closest('#si-clear'); if (!b || !siteData) return;
+  b.disabled = true; b.textContent = 'Clearing…';
+  const ok = await window.drift.invoke('site-clear', siteData.origin);
+  b.textContent = ok ? 'Cleared — page reloaded' : "Couldn't clear site data";
+  if (ok) { siteData.cookies = 0; const n = [...$('#siteinfo').querySelectorAll('.si-row')].find(r => r.textContent.includes('Cookies')); if (n) n.querySelector('.n').textContent = '0 stored by this site'; }
+});
