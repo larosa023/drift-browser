@@ -1,0 +1,27 @@
+# Builds the Windows installer and publishes it as a GitHub Release.
+# Run by pushing a version tag:   git tag v1.8.1 && git push origin v1.8.1
+# Installed copies of Drift pick the new release up automatically.
+name: Release
+
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  windows:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - name: Build and publish
+        run: npm run release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}

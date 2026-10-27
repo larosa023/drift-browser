@@ -1,0 +1,1055 @@
+/* Drift sidebar UI */
+const $ = (s) => document.querySelector(s);
+const esc = (s) => String(s ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+const send = (...a) => window.drift.send(...a);
+
+let S = null;          // last state from main
+let content = { x: 0, y: 0, width: 0, height: 0 };
+let panel = null;      // null | 'settings' | 'downloads'
+let paletteNewTab = false;
+let paletteItems = [];
+let paletteSel = 0;
+let dragId = null;
+let EXT = [];          // installed extensions
+let BM = [];           // bookmarks bar items
+let PW = [];           // saved password list (no secrets)
+let lastLayout = null;
+let paletteAnchored = false;
+
+// Fill static icons
+document.querySelectorAll('[data-i]').forEach(el => { el.insertAdjacentHTML('afterbegin', icon(el.dataset.i, el.classList.contains('wb') ? 14 : 16)); });
+
+function hostOf(u) { try { return new URL(u).hostname.replace(/^www\./, ''); } catch { return ''; } }
+function isInternal(u) { return !u || u.startsWith('drift:') || u === 'about:blank'; }
+
+const PALETTE = ['#e5484d', '#f76b15', '#ffb224', '#30a46c', '#12a594', '#0090ff', '#6e56cf', '#d6409f'];
+function letterColor(s) { let h = 0; for (const c of s) h = (h * 31 + c.charCodeAt(0)) >>> 0; return PALETTE[h % PALETTE.length]; }
+
+function favHTML(t, size = 16) {
+  if (t.loading && !t.asleep) return `<span class="fav"><span class="spinner"></span></span>`;
+  if (isInternal(t.url)) return `<span class="fav" style="color:var(--accent)">${icon('globe', size)}</span>`;
+  const h = hostOf(t.url) || '?';
+  const letter = `<span class="letter" style="background:${letterColor(h)};width:${size}px;height:${size}px">${esc(h[0])}</span>`;
+  if (!t.favicon) return `<span class="fav" style="width:${size}px;height:${size}px">${letter}</span>`;
+  return `<span class="fav" style="width:${size}px;height:${size}px"><img src="${esc(t.favicon)}" style="width:${size}px;height:${size}px"><template>${letter}</template></span>`;
+}
+
+// Broken favicon → fall back to a letter badge (CSP forbids inline onerror)
+document.addEventListener('error', (e) => {
+  const img = e.target;
+  if (img.tagName === 'IMG' && img.nextElementSibling && img.nextElementSibling.tagName === 'TEMPLATE')
+    img.replaceWith(img.nextElementSibling.content.cloneNode(true));
+}, true);
+
+function tabTitle(t) {
+  if (t.title) return t.title;
+  if (isInternal(t.url)) return 'New Tab';
+  return hostOf(t.url) || t.url;
+}
+
+// ---------------------------------------------------------------------- render
+function render() {
+  if (!S) return;
+  const b = document.body;
+  b.classList.toggle('dark', S.dark);
+  b.classList.toggle('light', !S.dark);
+  b.classList.toggle('hidden-bar', S.settings.sidebarHidden);
+  b.classList.toggle('docked', !S.settings.sidebarHidden);
+  b.classList.toggle('over-palette', S.overlay === 'palette' || S.overlay === 'modal');
+  b.classList.toggle('rail', !!S.settings.sidebarRail && !S.settings.sidebarHidden);
+  b.classList.toggle('bm-on', !!S.settings.titleBar && !!S.settings.bookmarksBar);
+  b.classList.toggle('over-peek', S.overlay === 'peek');
+  b.classList.toggle('no-titlebar', !S.settings.titleBar);
+  const act = S.tabs.find(t => t.id === S.activeId);
+  document.title = act ? (tabTitle(act) + ' — Drift') : 'Drift';
+  b.className = b.className.replace(/platform-\w+/g, '') + ' platform-' + S.platform;
+  document.documentElement.style.setProperty('--accent', S.settings.accent);
+  document.documentElement.style.setProperty('--sw', S.settings.sidebarWidth + 'px');
+  applyHole();
+  applyWallpaper();
+  const inSplit = (S.splits || []).find(sp => sp.a === S.activeId || sp.b === S.activeId);
+  const spb = $('#a-split');
+  spb.classList.toggle('on', !!inSplit);
+  spb.innerHTML = icon(inSplit && inSplit.dir === 'col' ? 'splitcol' : 'split');
+  spb.title = inSplit ? 'Split view options' : 'Split view';
+
+  // nav
+  document.querySelectorAll('[data-nav=back]').forEach(b => b.disabled = !S.nav.canGoBack);
+  document.querySelectorAll('[data-nav=fwd]').forEach(b => b.disabled = !S.nav.canGoForward);
+  document.querySelectorAll('[data-nav=reload]').forEach(b => { b.innerHTML = icon(S.nav.loading ? 'stop' : 'reload'); b.title = S.nav.loading ? 'Stop' : 'Reload (Ctrl+R)'; });
+  const railTitle = S.settings.sidebarRail ? 'Expand sidebar' : 'Collapse sidebar to icons';
+  $('#tb-sidebar').title = railTitle; $('#btn-collapse').title = railTitle;
+  renderAddr();
+  document.querySelectorAll('[data-win=max]').forEach(b => { b.innerHTML = icon(S.maximized ? 'restore' : 'max', 14); b.title = S.maximized ? 'Restore' : 'Maximize'; });
+
+  // url pill
+  const url = S.nav.url;
+  const ut = $('#u-text'), ui = $('#u-icon');
+  if (isInternal(url)) {
+    ut.textContent = 'Search or enter address'; ut.className = 'u-text placeholder';
+    ui.innerHTML = icon('search'); ui.className = 'u-icon';
+  } else {
+    let host = url, rest = '';
+    try { const u = new URL(url); host = u.hostname.replace(/^www\./, ''); rest = (u.pathname === '/' ? '' : u.pathname) + u.search; } catch {}
+    ut.innerHTML = `${esc(host)}<span class="path">${esc(rest)}</span>`; ut.className = 'u-text';
+    ui.innerHTML = icon(S.nav.secure ? 'lock' : 'info', 15); ui.className = 'u-icon' + (S.nav.secure ? ' secure' : '');
+    ui.title = S.nav.secure ? 'Connection is secure' : 'Connection is not secure';
+  }
+  const sh = $('#btn-shield');
+  sh.classList.toggle('off', !S.nav.shieldsOn);
+  sh.querySelector('span').innerHTML = icon(S.nav.shieldsOn ? 'shield' : 'shieldoff');
+  $('#shield-count').textContent = S.nav.shieldsOn && S.nav.blocked ? S.nav.blocked : '';
+  sh.title = isInternal(url) ? 'Shields' : S.nav.shieldsOn
+    ? `Shields are up on ${hostOf(url)} — ${S.nav.blocked} blocked. Click to turn off for this site.`
+    : `Shields are down on ${hostOf(url)}. Click to turn on.`;
+  sh.hidden = isInternal(url);
+
+  $('#blocked-total').innerHTML = S.blockedTotal ? `${icon('shield', 12)}${S.blockedTotal.toLocaleString()} blocked` : '';
+  $('#dl-dot').hidden = !S.downloads.some(d => d.state === 'progressing');
+
+  renderTabs();
+  syncActions();
+  if (panel === 'settings') renderSettings();
+  if (panel === 'extensions') renderExtensions();
+  if (panel === 'volume') renderVolume();
+  $('#vol-dot').hidden = !S.tabs.some(t => t.volume !== 1);
+  if (panel === 'downloads') renderDownloads();
+  $('#palette-wrap').hidden = S.overlay !== 'palette';
+  $('#modal-wrap').hidden = S.overlay !== 'modal';
+  if (panel === 'passwords') renderPasswords();
+  placeActions();
+  $('#findbar').hidden = !S.findOpen;
+}
+
+// The toolbar's address field (separate from the sidebar pill used when the toolbar is off).
+function renderAddr() {
+  const url = S.nav.url;
+  const at = $('#a-text'), ai = $('#a-icon');
+  if (isInternal(url)) {
+    at.textContent = 'Search or enter address'; at.className = 'a-text placeholder';
+    ai.innerHTML = icon('search', 15); ai.className = 'a-icon';
+  } else {
+    let host = url, rest = '';
+    try { const u = new URL(url); host = u.hostname.replace(/^www\./, ''); rest = (u.pathname === '/' ? '' : u.pathname) + u.search; } catch {}
+    at.innerHTML = `${esc(host)}<span class="path">${esc(rest)}</span>`; at.className = 'a-text';
+    ai.innerHTML = icon(S.nav.secure ? 'lock' : 'info', 14); ai.className = 'a-icon' + (S.nav.secure ? ' secure' : '');
+    ai.title = S.nav.secure ? 'Connection is secure' : 'Connection is not secure';
+  }
+  const internal = isInternal(url);
+  const star = $('#a-star');
+  star.hidden = internal;
+  star.innerHTML = icon(S.nav.bookmarked ? 'starfill' : 'star', 15);
+  star.classList.toggle('on', S.nav.bookmarked);
+  star.title = S.nav.bookmarked ? 'Remove bookmark (Ctrl+D)' : 'Bookmark this page (Ctrl+D)';
+  const dk = $('#a-dark');
+  dk.hidden = internal || !S.settings.forceDark;
+  dk.innerHTML = icon(S.nav.dark ? 'moonfill' : 'moon', 14);
+  dk.classList.toggle('on', S.nav.dark);
+  dk.title = S.nav.darkSite ? `Force dark is on for ${hostOf(url)} — click to turn it off for this site` : `Force dark is off for ${hostOf(url)} — click to turn it on`;
+  const sh = $('#a-shield');
+  sh.hidden = internal;
+  sh.classList.toggle('off', !S.nav.shieldsOn);
+  sh.querySelector('span').innerHTML = icon(S.nav.shieldsOn ? 'shield' : 'shieldoff', 15);
+  const blockedNow = uboBlocked();
+  $('#a-shield-count').textContent = S.uboId ? blockedNow : (S.nav.shieldsOn && S.nav.blocked ? S.nav.blocked : '');
+  sh.title = S.uboId ? `uBlock Origin${blockedNow ? ` — ${blockedNow} blocked on this page` : ''}. Click for options, or to turn it off for this site.` : $('#btn-shield').title;
+  if (S.uboId) { sh.classList.remove('off'); sh.querySelector('span').innerHTML = icon('shield', 15); }
+}
+
+function applyWallpaper() {
+  const css = S.wallpaperCss || '';
+  document.body.classList.toggle('has-wp', !!css);
+  const wp = $('#wp');
+  if (wp.dataset.css !== css) { wp.style.background = css; wp.dataset.css = css; }
+  const blur = Number(S.settings.wallpaperBlur) || 0;
+  wp.style.filter = blur ? `blur(${blur}px)` : '';
+  wp.style.inset = blur ? `-${blur * 2}px` : '0';
+  document.documentElement.style.setProperty('--wp-dim', String(S.settings.wallpaperDim ?? 0.35));
+}
+
+// Extension buttons live in the toolbar when it's on, otherwise under the sidebar pill.
+function placeActions() {
+  const list = $('#actions');
+  const target = S && S.settings.titleBar ? $('#tb-actions') : $('#ext-bar');
+  if (list.parentElement !== target) target.append(list);
+  list.setAttribute('alignment', S && S.settings.titleBar ? 'bottom left' : 'bottom right');
+}
+
+function applyHole() {
+  const w = $('#wash');
+  if (S && (S.overlay === 'palette' || S.overlay === 'modal')) {
+    const { x, y, width: cw, height: ch } = content;
+    w.style.clipPath = `polygon(evenodd, 0 0, 100% 0, 100% 100%, 0 100%, 0 0, ${x}px ${y}px, ${x + cw}px ${y}px, ${x + cw}px ${y + ch}px, ${x}px ${y + ch}px, ${x}px ${y}px)`;
+  } else w.style.clipPath = '';
+}
+
+function renderTabs() {
+  const ess = $('#essentials'), list = $('#tablist');
+  const pinned = S.tabs.filter(t => t.pinned);
+  const normal = S.tabs.filter(t => !t.pinned);
+  ess.innerHTML = pinned.map(t => `
+    <div class="ess ${t.id === S.activeId ? 'active' : ''} ${t.asleep ? 'asleep' : ''}" data-id="${t.id}" draggable="true" title="${esc(tabTitle(t))}">
+      ${favHTML(t, 18)}
+      ${t.audible || t.muted ? `<span class="audio">${icon(t.muted ? 'muted' : 'sound', 11)}</span>` : ''}
+    </div>`).join('');
+  const splitClass = (t) => {
+    const sp = (S.splits || []).find(x => x.a === t.id || x.b === t.id);
+    if (!sp) return '';
+    const i = normal.indexOf(t), partner = sp.a === t.id ? sp.b : sp.a;
+    const prevIs = normal[i - 1] && normal[i - 1].id === partner, nextIs = normal[i + 1] && normal[i + 1].id === partner;
+    return 'in-split' + (nextIs ? ' split-first' : prevIs ? ' split-last' : '');
+  };
+  list.innerHTML = normal.map(t => `
+    <div class="tab ${t.id === S.activeId ? 'active' : ''} ${t.asleep ? 'asleep' : ''} ${splitClass(t)}" data-id="${t.id}" draggable="true" title="${esc(tabTitle(t))}${t.asleep ? ' (sleeping)' : ''}">
+      <span class="fav-x" data-act="close" title="Close tab">${favHTML(t)}<span class="xic">${icon('x', 12)}</span></span>
+      <span class="title">${esc(tabTitle(t))}</span>
+      ${t.audible || t.muted || t.volume !== 1 ? `<button class="audio" data-act="mute" title="${t.muted ? 'Unmute' : 'Mute'} · volume ${Math.round(t.volume * 100)}% (scroll to adjust)">${icon(t.muted ? 'muted' : 'sound', 14)}</button>` : ''}
+      <button class="close" data-act="close" title="Close (Ctrl+W)">${icon('x', 14)}</button>
+    </div>`).join('');
+}
+
+// ---------------------------------------------------------------------- tab interactions
+function tabEvents(container) {
+  container.addEventListener('mousedown', (e) => {
+    const el = e.target.closest('[data-id]'); if (!el) return;
+    const id = Number(el.dataset.id);
+    if (e.button === 1) { e.preventDefault(); send('close-tab', id); return; }
+    if (e.button !== 0) return;
+    const act = e.target.closest('[data-act]');
+    if (!act) send('activate', id);
+  });
+  container.addEventListener('click', (e) => {
+    const el = e.target.closest('[data-id]'); if (!el) return;
+    const id = Number(el.dataset.id);
+    const act = e.target.closest('[data-act]');
+    if (act && act.dataset.act === 'close') send('close-tab', id);
+    if (act && act.dataset.act === 'mute') send('toggle-mute', id);
+  });
+  container.addEventListener('contextmenu', (e) => {
+    const el = e.target.closest('[data-id]'); if (!el) return;
+    e.preventDefault(); send('tab-menu', Number(el.dataset.id));
+  });
+  container.addEventListener('dragstart', (e) => {
+    const el = e.target.closest('[data-id]'); if (!el) return;
+    dragId = Number(el.dataset.id);
+    e.dataTransfer.effectAllowed = 'move';
+    e.dataTransfer.setData('text/plain', String(dragId));
+    requestAnimationFrame(() => el.classList.add('dragging'));
+    $('#essentials').classList.add('drop-target');
+  });
+  container.addEventListener('dragend', () => {
+    dragId = null;
+    document.querySelectorAll('.dragging').forEach(x => x.classList.remove('dragging'));
+    document.querySelectorAll('.drop-line').forEach(x => x.remove());
+    $('#essentials').classList.remove('drop-target');
+  });
+}
+tabEvents($('#tablist'));
+tabEvents($('#essentials'));
+
+// Drop into the tab list → reorder / unpin
+$('#tablist').addEventListener('dragover', (e) => {
+  if (dragId == null) return;
+  e.preventDefault();
+  document.querySelectorAll('.drop-line').forEach(x => x.remove());
+  const rows = [...$('#tablist').querySelectorAll('.tab')];
+  const before = rows.find(r => e.clientY < r.getBoundingClientRect().top + r.offsetHeight / 2);
+  const line = document.createElement('div'); line.className = 'drop-line';
+  before ? before.before(line) : $('#tablist').append(line);
+});
+$('#tablist').addEventListener('drop', (e) => {
+  if (dragId == null) return;
+  e.preventDefault();
+  const rows = [...$('#tablist').querySelectorAll('.tab')].filter(r => Number(r.dataset.id) !== dragId);
+  const before = rows.find(r => e.clientY < r.getBoundingClientRect().top + r.offsetHeight / 2);
+  const pinnedCount = S.tabs.filter(t => t.pinned && t.id !== dragId).length;
+  let idx;
+  if (before) idx = S.tabs.filter(t => t.id !== dragId).findIndex(t => t.id === Number(before.dataset.id));
+  else idx = S.tabs.length;
+  send('move-tab', dragId, Math.max(idx, pinnedCount), false);
+});
+// Drop onto pinned area → pin
+$('#essentials').addEventListener('dragover', (e) => { if (dragId != null) e.preventDefault(); });
+$('#essentials').addEventListener('drop', (e) => {
+  if (dragId == null) return;
+  e.preventDefault();
+  const tiles = [...$('#essentials').querySelectorAll('.ess')].filter(r => Number(r.dataset.id) !== dragId);
+  const before = tiles.find(r => { const b = r.getBoundingClientRect(); return e.clientY < b.bottom && e.clientX < b.left + b.width / 2; });
+  const idx = before ? S.tabs.filter(t => t.id !== dragId).findIndex(t => t.id === Number(before.dataset.id)) : tiles.length;
+  send('move-tab', dragId, idx, true);
+});
+
+// ---------------------------------------------------------------------- top controls
+document.querySelectorAll('[data-nav=back]').forEach(b => b.onclick = () => send('back'));
+document.querySelectorAll('[data-nav=fwd]').forEach(b => b.onclick = () => send('forward'));
+document.querySelectorAll('[data-nav=reload]').forEach(b => b.onclick = () => send('reload'));
+const toggleRail = () => {
+  if (S && S.settings.sidebarHidden) { send('toggle-sidebar'); return; }
+  if (panel) togglePanel(null);
+  send('set', 'sidebarRail', !(S && S.settings.sidebarRail));
+};
+$('#btn-collapse').onclick = toggleRail;
+$('#tb-sidebar').onclick = toggleRail;
+$('#addr').addEventListener('click', (e) => { if (!e.target.closest('.a-btn, .a-shield')) openPalette(false, true); });
+$('#a-star').onclick = () => send('bm-toggle');
+$('#a-dark').onclick = () => send('force-dark-site');
+// With uBlock Origin as the engine, the shield opens its popup (per-site switch, counts, logger).
+function openShields(btn) {
+  if (S && S.uboId && window.browserAction) {
+    const r = btn.getBoundingClientRect();
+    window.browserAction.activate('_self', { eventType: 'click', extensionId: S.uboId, tabId: S.activeWcId,
+      alignment: 'bottom left', anchorRect: { x: r.left, y: r.top, width: r.width, height: r.height } });
+  } else send('site-shields');
+}
+function uboBlocked() {
+  if (!S || !S.uboId || !window.browserAction) return '';
+  const a = window.browserAction.getAction(S.uboId);
+  const t = a && a.tabs && a.tabs[S.activeWcId];
+  return (t && t.text) || '';
+}
+if (window.browserAction) window.browserAction.addEventListener('update', () => { if (S) renderAddr(); });
+$('#a-shield').onclick = (e) => openShields(e.currentTarget);
+document.addEventListener('dblclick', (e) => { if (e.target.closest('#titlebar') && !e.target.closest('button, #addr')) send('win', 'max'); });
+document.querySelectorAll('[data-win]').forEach(b => b.onclick = () => send('win', b.dataset.win));
+$('#btn-newtab').onclick = () => openPalette(true);
+$('#urlbar').onclick = (e) => { if (!e.target.closest('#btn-shield')) openPalette(false); };
+$('#btn-shield').onclick = (e) => openShields(e.currentTarget);
+let bmSources = null;
+$('#btn-settings').onclick = async () => {
+  togglePanel('settings');
+  if (bmSources === null) { bmSources = await window.drift.invoke('bm-sources') || []; if (panel === 'settings') renderSettings(); }
+};
+$('#btn-downloads').onclick = () => togglePanel('downloads');
+$('#btn-extensions').onclick = () => togglePanel('extensions');
+$('#btn-volume').onclick = () => togglePanel('volume');
+$('#vol-reset').onclick = () => S.tabs.filter(t => t.volume !== 1).forEach(t => send('tab-volume', t.id, 1));
+$('#ext-store').onclick = () => send('ext-store');
+$('#dl-folder').onclick = () => send('open-downloads-folder');
+document.querySelectorAll('[data-close]').forEach(b => b.onclick = () => togglePanel(null));
+document.addEventListener('dblclick', (e) => { if (e.target.closest('.topbar') && !e.target.closest('button')) send('win', 'max'); });
+
+function togglePanel(name) {
+  if (name && S && S.settings.sidebarRail) send('set', 'sidebarRail', false);  // panels need the full sidebar
+  panel = panel === name ? null : name;
+  $('#main-panel').hidden = panel !== null;
+  $('#settings-panel').hidden = panel !== 'settings';
+  $('#downloads-panel').hidden = panel !== 'downloads';
+  $('#extensions-panel').hidden = panel !== 'extensions';
+  $('#volume-panel').hidden = panel !== 'volume';
+  $('#passwords-panel').hidden = panel !== 'passwords';
+  if (panel === 'passwords') { send('pw-list'); openPw = null; }
+  volKey = '';
+  if (panel === 'extensions') send('ext-list');
+  render();
+}
+
+// Peek: reveal a floating sidebar when the mouse touches the left edge
+$('#edge').addEventListener('mouseenter', () => send('overlay', 'peek'));
+$('#sidebar').addEventListener('mouseleave', (e) => {
+  if (S && S.overlay === 'peek' && !e.relatedTarget) send('overlay', null);
+});
+document.documentElement.addEventListener('mouseleave', () => { if (S && S.overlay === 'peek') send('overlay', null); });
+
+// Sidebar resizing
+$('#resizer').addEventListener('mousedown', (e) => {
+  e.preventDefault();
+  let raf = 0;
+  const move = (ev) => { cancelAnimationFrame(raf); raf = requestAnimationFrame(() => send('sidebar-width', ev.clientX)); };
+  const up = () => { window.removeEventListener('mousemove', move); window.removeEventListener('mouseup', up); };
+  window.addEventListener('mousemove', move);
+  window.addEventListener('mouseup', up);
+});
+
+// ---------------------------------------------------------------------- command palette
+function openPalette(newTab, anchored) {
+  preparePalette(newTab, anchored);
+  send('overlay', 'palette');
+}
+// anchored = drop down from the toolbar address field instead of the centered command bar
+function preparePalette(newTab, anchored) {
+  paletteNewTab = newTab;
+  paletteAnchored = !!anchored && !!(S && S.settings.titleBar) && !(lastLayout && lastLayout.fullscreen);
+  const wrap = $('#palette-wrap'), pal = $('#palette');
+  wrap.classList.toggle('anchored', paletteAnchored);
+  if (paletteAnchored) {
+    const r = $('#addr').getBoundingClientRect();
+    Object.assign(pal.style, { left: (r.left - 4) + 'px', top: (r.top - 4) + 'px', width: (r.width + 8) + 'px' });
+  } else Object.assign(pal.style, { left: '', top: '', width: '' });
+  const inp = $('#p-input');
+  inp.placeholder = newTab ? 'Search or enter address — opens in a new tab' : 'Search or enter address';
+  inp.value = !newTab && S && !isInternal(S.nav.url) ? S.nav.url : '';
+  $('#palette-wrap').hidden = false;
+  setTimeout(() => { inp.focus(); inp.select(); }, 0);
+  updatePalette();
+}
+function closePalette() { send('overlay', null); }
+
+function looksLikeUrl(t) {
+  return /^(https?|file|drift|about):/i.test(t) || /^localhost(:\d+)?/i.test(t) ||
+    (!/\s/.test(t) && /^[^\s/]+\.[a-z]{2,}(:\d+)?([/?#].*)?$/i.test(t));
+}
+
+let seq = 0;
+async function updatePalette() {
+  const q = $('#p-input').value.trim();
+  const my = ++seq;
+  const engine = S ? S.engines[S.settings.searchEngine] : 'the web';
+  const base = [];
+  if (q) {
+    if (looksLikeUrl(q)) base.push({ kind: 'go', text: q, title: q, sub: 'Open address' });
+    base.push({ kind: 'search', text: q, title: q, sub: `Search ${engine}` });
+  }
+  renderPalette(base, null);
+  const r = await window.drift.suggest(q);
+  if (my !== seq) return;
+  renderPalette(base, r);
+}
+
+function renderPalette(base, r) {
+  const items = [...base];
+  const groups = [];
+  if (r) {
+    const tabs = (r.items || []).filter(i => i.kind === 'tab');
+    const hist = (r.items || []).filter(i => i.kind === 'history');
+    const bms = (r.items || []).filter(i => i.kind === 'bookmark');
+    const searches = (r.searches || []).map(s => ({ kind: 'search', text: s, title: s, sub: '' }));
+    if (searches.length) items.push(...searches);
+    if (tabs.length) { groups.push([items.length, 'Open tabs']); items.push(...tabs.map(t => ({ ...t, kind: 'tab' }))); }
+    if (bms.length) { groups.push([items.length, 'Bookmarks']); items.push(...bms); }
+    if (hist.length) { groups.push([items.length, base.length ? 'History' : 'Recent']); items.push(...hist); }
+  }
+  paletteItems = items;
+  paletteSel = Math.min(paletteSel, Math.max(0, items.length - 1));
+  if (!base.length && paletteSel === 0 && !items.length) paletteSel = 0;
+  const html = [];
+  items.forEach((it, i) => {
+    const g = groups.find(([at]) => at === i); if (g) html.push(`<div class="p-sep">${g[1]}</div>`);
+    let ic, title, sub, badge = '';
+    if (it.kind === 'go') { ic = icon('globe'); title = it.title; sub = it.sub; }
+    else if (it.kind === 'search') { ic = icon('search'); title = it.title; sub = it.sub; }
+    else if (it.kind === 'tab') { ic = icon('tab'); title = it.title; sub = hostOf(it.url); badge = 'Switch to tab'; }
+    else if (it.kind === 'bookmark') { ic = icon('star'); title = it.title; sub = it.url.replace(/^https?:\/\/(www\.)?/, ''); }
+    else { ic = icon('clock'); title = it.title; sub = it.url.replace(/^https?:\/\/(www\.)?/, ''); }
+    html.push(`<div class="pr ${i === paletteSel ? 'sel' : ''}" data-i="${i}"><span class="pi">${ic}</span>
+      <span class="pt"><b>${esc(title)}</b><span>${esc(sub)}</span></span>${badge ? `<span class="badge">${badge}</span>` : ''}</div>`);
+  });
+  $('#p-results').innerHTML = html.join('');
+}
+
+function runItem(it, forceNew) {
+  if (!it) return;
+  const newTab = paletteNewTab || forceNew;
+  if (it.kind === 'tab') send('switch-to', it.id);
+  else if (it.kind === 'go') send('navigate', it.text, newTab);
+  else if (it.kind === 'search') send('navigate', '?' + it.text, newTab);
+  else send('navigate', it.url, newTab);
+}
+
+$('#p-input').addEventListener('input', () => { paletteSel = 0; updatePalette(); });
+$('#p-input').addEventListener('keydown', (e) => {
+  if (e.key === 'ArrowDown') { e.preventDefault(); paletteSel = Math.min(paletteSel + 1, paletteItems.length - 1); highlight(); }
+  else if (e.key === 'ArrowUp') { e.preventDefault(); paletteSel = Math.max(paletteSel - 1, 0); highlight(); }
+  else if (e.key === 'Enter') {
+    e.preventDefault();
+    const q = $('#p-input').value.trim();
+    const it = paletteItems[paletteSel];
+    if (!q && !it) { if (paletteNewTab) send('navigate', '', true); closePalette(); return; }
+    if (!it) send('navigate', q, paletteNewTab || e.altKey);
+    else runItem(it, e.altKey);
+  } else if (e.key === 'Escape') { e.preventDefault(); closePalette(); }
+});
+function highlight() {
+  document.querySelectorAll('.pr').forEach(el => el.classList.toggle('sel', Number(el.dataset.i) === paletteSel));
+  const sel = document.querySelector('.pr.sel'); if (sel) sel.scrollIntoView({ block: 'nearest' });
+}
+$('#p-results').addEventListener('mousemove', (e) => {
+  const el = e.target.closest('.pr'); if (!el) return;
+  const i = Number(el.dataset.i); if (i !== paletteSel) { paletteSel = i; highlight(); }
+});
+$('#p-results').addEventListener('click', (e) => {
+  const el = e.target.closest('.pr'); if (!el) return;
+  runItem(paletteItems[Number(el.dataset.i)], e.altKey || e.ctrlKey);
+});
+$('#palette-wrap').addEventListener('mousedown', (e) => { if (e.target.id === 'palette-wrap') closePalette(); });
+
+// ---------------------------------------------------------------------- find bar
+let findTimer;
+$('#find-input').addEventListener('input', () => {
+  clearTimeout(findTimer);
+  findTimer = setTimeout(() => send('find', $('#find-input').value, true, false), 80);
+});
+$('#find-input').addEventListener('keydown', (e) => {
+  if (e.key === 'Enter') { e.preventDefault(); send('find', $('#find-input').value, !e.shiftKey, true); }
+  if (e.key === 'Escape') { e.preventDefault(); send('find-close'); }
+});
+$('#find-next').onclick = () => send('find', $('#find-input').value, true, true);
+$('#find-prev').onclick = () => send('find', $('#find-input').value, false, true);
+$('#find-close').onclick = () => send('find-close');
+function placeFind() {
+  const f = $('#findbar');
+  f.style.left = content.x + 'px';
+  f.style.width = Math.min(460, content.width) + 'px';
+  f.style.left = (content.x + content.width - Math.min(460, content.width)) + 'px';
+  f.style.top = (content.y - 42) + 'px';
+}
+
+// ---------------------------------------------------------------------- settings
+const ACCENTS = ['#ff6a3d', '#f43f5e', '#ec4899', '#a855f7', '#6366f1', '#3b82f6', '#06b6d4', '#10b981', '#84cc16', '#eab308'];
+
+let rangeHeld = false;
+document.addEventListener('pointerup', () => { rangeHeld = false; }, true);
+function renderSettings() {
+  if (rangeHeld) return;   // don't redraw under a slider that's being dragged
+  const s = S.settings;
+  const sw = (key, on) => `<button class="switch ${on ? 'on' : ''}" data-set="${key}" data-val="${!on}"></button>`;
+  $('#settings-body').innerHTML = `
+    <div class="group"><h4>Search</h4>
+      <div class="row"><span class="lbl">Search engine</span>
+        <select data-sel="searchEngine">${Object.entries(S.engines).map(([k, n]) => `<option value="${k}" ${k === s.searchEngine ? 'selected' : ''}>${n}</option>`).join('')}</select></div>
+      <div class="row"><span class="lbl">Search suggestions<small>From DuckDuckGo as you type</small></span>${sw('suggestions', s.suggestions)}</div>
+    </div>
+    <div class="group"><h4>Appearance</h4>
+      <div class="row"><span class="lbl">Theme</span><div class="seg">
+        ${['system', 'dark', 'light'].map(t => `<button class="${s.theme === t ? 'on' : ''}" data-set="theme" data-val="${t}">${t[0].toUpperCase() + t.slice(1)}</button>`).join('')}</div></div>
+      <div class="row"><span class="lbl">Top toolbar<small>Address bar, window buttons and a drag area at the top</small></span>${sw('titleBar', s.titleBar)}</div>
+      <div class="row"><span class="lbl">Bookmarks bar<small>${s.titleBar ? 'Under the address bar' : 'Needs the top toolbar'} · Ctrl+Shift+B</small></span>${sw('bookmarksBar', s.bookmarksBar)}</div>
+      <div class="row"><span class="lbl">Icon-only sidebar<small>Or drag the sidebar's edge all the way in</small></span>${sw('sidebarRail', s.sidebarRail)}</div>
+      <div class="row"><span class="lbl">Force dark pages<small>Darkens sites that don't have a dark theme. Turn it off for one site with the moon in the address bar.</small></span>${sw('forceDark', s.forceDark)}</div>
+      ${s.forceDark && s.forceDarkOff.length ? `<div class="row" style="display:block"><span class="lbl">Force dark off on<small>Click × to darken these sites again</small></span>
+        <div class="chips">${s.forceDarkOff.map(h => `<span class="chip">${esc(h)}<button data-undark="${esc(h)}">${icon('x', 11)}</button></span>`).join('')}</div></div>` : ''}
+      <div class="row" style="display:block"><span class="lbl">Wallpaper<small>Shows behind the sidebar and toolbar${s.wallpaperNewTab ? ' and on new tabs' : ''}</small></span>
+        <div class="wp-grid">
+          <button class="wp-sw none ${!s.wallpaper ? 'on' : ''}" data-wp="" title="No wallpaper (accent glow)">None</button>
+          ${S.wallpapers.map(w => `<button class="wp-sw ${s.wallpaper === 'builtin:' + w.id ? 'on' : ''}" data-wp="builtin:${w.id}" title="${esc(w.name)}" style="background:${w.css}"><span class="n">${esc(w.name)}</span></button>`).join('')}
+          ${s.wallpaper.startsWith('file:') ? `<button class="wp-sw on" data-wp="${esc(s.wallpaper)}" title="Your image" style="background:${S.wallpaperCss}"><span class="n">Your image</span></button>` : ''}
+          <button class="wp-sw add" id="wp-choose" title="Use an image from your PC">${icon('image', 18)}</button>
+          ${S.desktopWallpaper ? `<button class="wp-sw add" id="wp-desktop" title="Use your Windows desktop wallpaper">${icon('desktop', 18)}</button>` : ''}
+        </div></div>
+      ${s.wallpaper ? `
+      <div class="row" style="display:block"><span class="lbl">Dim</span>
+        <div class="range-row"><input type="range" min="0" max="85" step="5" value="${Math.round(s.wallpaperDim * 100)}" data-range="wallpaperDim" data-scale="100"><span class="val">${Math.round(s.wallpaperDim * 100)}%</span></div></div>
+      <div class="row" style="display:block"><span class="lbl">Blur</span>
+        <div class="range-row"><input type="range" min="0" max="40" step="2" value="${s.wallpaperBlur}" data-range="wallpaperBlur" data-scale="1"><span class="val">${s.wallpaperBlur}px</span></div></div>
+      <div class="row"><span class="lbl">Show on new tab page</span>${sw('wallpaperNewTab', s.wallpaperNewTab)}</div>` : ''}
+      <div class="row" style="flex-wrap:wrap"><span class="lbl">Accent color</span>
+        <div class="swatches">${ACCENTS.map(c => `<button class="sw ${c === s.accent ? 'on' : ''}" style="background:${c};color:${c}" data-set="accent" data-val="${c}"></button>`).join('')}</div></div>
+    </div>
+    <div class="group"><h4>Shields</h4>
+      <div class="row"><span class="lbl">Block ads & trackers<small>${s.shieldsEngine === 'ubo' ? 'Click the shield in the address bar for per-site controls' : S.blockedTotal.toLocaleString() + ' blocked this session'}</small></span>${sw('shields', s.shields)}</div>
+      <div class="row"><span class="lbl">Blocker<small>${s.shieldsEngine === 'ubo' ? 'uBlock Origin (built in): strongest blocking, works with extensions that watch network traffic' : 'Built-in: lighter on memory, but extensions that watch network traffic stop working'}</small></span>
+        <div class="seg"><button class="${s.shieldsEngine === 'ubo' ? 'on' : ''}" data-set="shieldsEngine" data-val="ubo">uBlock</button><button class="${s.shieldsEngine !== 'ubo' ? 'on' : ''}" data-set="shieldsEngine" data-val="builtin">Built-in</button></div></div>
+      ${S.uboId ? `<div class="row"><span class="lbl">uBlock Origin dashboard<small>Filter lists, custom rules, whitelist</small></span><button class="mini" data-uboopts>Open</button></div>` : ''}
+      ${s.shieldsAllow.length ? `<div class="row" style="display:block"><span class="lbl">Shields off on<small>Click × to turn shields back on</small></span>
+        <div class="chips">${s.shieldsAllow.map(h => `<span class="chip">${esc(h)}<button data-unallow="${esc(h)}">${icon('x', 11)}</button></span>`).join('')}</div></div>` : ''}
+    </div>
+    <div class="group"><h4>Tabs & memory</h4>
+      <div class="row"><span class="lbl">Reopen tabs on startup</span>${sw('restoreTabs', s.restoreTabs)}</div>
+      <div class="row"><span class="lbl">Sleep inactive tabs<small>Frees memory; tabs reload when you open them</small></span>${sw('sleepTabs', s.sleepTabs)}</div>
+      ${s.sleepTabs ? `<div class="row"><span class="lbl">Sleep after</span><select data-sel="sleepMinutes" data-num>
+        ${[5, 10, 20, 30, 60, 120].map(m => `<option value="${m}" ${m === s.sleepMinutes ? 'selected' : ''}>${m < 60 ? m + ' min' : m / 60 + ' hr'}</option>`).join('')}</select></div>` : ''}
+    </div>
+    <div class="group"><h4>Passwords</h4>
+      <div class="row"><span class="lbl">Saved passwords<small>${S.passwordCount} saved · ${S.passwordsEncrypted ? 'encrypted with your Windows account' : 'encryption unavailable on this system'}</small></span><button class="mini" id="pw-manage">Manage</button></div>
+      <div class="row"><span class="lbl">Offer to save passwords</span>${sw('offerPasswords', s.offerPasswords)}</div>
+      <div class="row"><span class="lbl">Import passwords<small>CSV from Chrome, Edge, Firefox, Bitwarden and others</small></span><button class="mini" id="pw-import">Choose file</button></div>
+      <div class="row"><span class="lbl">Export passwords<small>Saves an unencrypted .csv</small></span><button class="mini" id="pw-export">Export</button></div>
+    </div>
+    <div class="group"><h4>Bookmarks</h4>
+      <div class="row" style="display:block"><span class="lbl">Import from a browser on this PC</span>
+        <div class="src-btns">${(bmSources || []).map(n => `<button data-bmsrc="${esc(n)}">${esc(n)}</button>`).join('') || '<small style="color:var(--muted)">No other browsers found</small>'}</div></div>
+      <div class="row"><span class="lbl">Import from file<small>bookmarks.html from any browser</small></span><button class="mini" data-bmsrc="file">Choose file</button></div>
+      <div class="row"><span class="lbl">Export bookmarks<small>As a bookmarks.html file</small></span><button class="mini" id="bm-export">Export</button></div>
+    </div>
+    <div class="group"><h4>Privacy</h4>
+      <button class="btn danger" id="clear-data">Clear browsing data…</button>
+    </div>
+    <div class="group"><h4>Keyboard shortcuts</h4><div class="kbd-list">
+      <div><span>Command bar / new tab</span><span><kbd>Ctrl</kbd><kbd>T</kbd></span></div>
+      <div><span>Edit address</span><span><kbd>Ctrl</kbd><kbd>L</kbd></span></div>
+      <div><span>Close tab</span><span><kbd>Ctrl</kbd><kbd>W</kbd></span></div>
+      <div><span>Reopen closed tab</span><span><kbd>Ctrl</kbd><kbd>Shift</kbd><kbd>T</kbd></span></div>
+      <div><span>Next / previous tab</span><span><kbd>Ctrl</kbd><kbd>Tab</kbd></span></div>
+      <div><span>Jump to tab 1–9</span><span><kbd>Ctrl</kbd><kbd>1</kbd>…<kbd>9</kbd></span></div>
+      <div><span>Find on page</span><span><kbd>Ctrl</kbd><kbd>F</kbd></span></div>
+      <div><span>Hide / show sidebar</span><span><kbd>Ctrl</kbd><kbd>Alt</kbd><kbd>S</kbd></span></div>
+      <div><span>Bookmark page</span><span><kbd>Ctrl</kbd><kbd>D</kbd></span></div>
+      <div><span>Show bookmarks bar</span><span><kbd>Ctrl</kbd><kbd>Shift</kbd><kbd>B</kbd></span></div>
+      <div><span>Zoom</span><span><kbd>Ctrl</kbd><kbd>+</kbd> <kbd>−</kbd> <kbd>0</kbd></span></div>
+      <div><span>Developer tools</span><span><kbd>F12</kbd></span></div>
+    </div></div>
+    <div class="group"><h4>About</h4>
+      <div class="row"><span class="lbl">Drift ${esc(S.appVersion)}<small>${({ checking: 'Checking for updates…', downloading: `Downloading ${esc(S.update.version)}…`, ready: `Version ${esc(S.update.version)} is ready`, none: 'Up to date', error: "Couldn't check for updates", portable: 'Portable version — install Drift to get automatic updates' })[S.update.status] || 'Updates install automatically'} · Chromium ${esc(S.chrome || '')}</small></span>
+        ${S.update.status === 'ready' ? `<button class="mini" id="upd-install">Restart</button>` : S.update.status !== 'portable' ? `<button class="mini" id="upd-check">Check</button>` : ''}</div>
+    </div>`;
+}
+$('#settings-body').addEventListener('click', (e) => {
+  const b = e.target.closest('[data-set]');
+  if (b) {
+    let v = b.dataset.val;
+    if (v === 'true' || v === 'false') v = v === 'true';
+    send('set', b.dataset.set, v);
+  }
+  const u = e.target.closest('[data-unallow]'); if (u) send('remove-allow', u.dataset.unallow);
+  const ud = e.target.closest('[data-undark]'); if (ud) send('undark', ud.dataset.undark);
+  const src = e.target.closest('[data-bmsrc]'); if (src) send('bm-import', src.dataset.bmsrc);
+  if (e.target.id === 'clear-data') send('clear-data');
+  if (e.target.id === 'upd-check') send('update-check');
+  if (e.target.id === 'upd-install') send('update-install');
+  if (e.target.closest('[data-uboopts]')) send('ext-options', S.uboId);
+  if (e.target.id === 'pw-manage') togglePanel('passwords');
+  if (e.target.id === 'pw-import') send('pw-import');
+  if (e.target.id === 'pw-export') send('pw-export');
+  if (e.target.id === 'bm-export') send('bm-export');
+  const wpb = e.target.closest('[data-wp]'); if (wpb) send('set', 'wallpaper', wpb.dataset.wp);
+  if (e.target.closest('#wp-choose')) send('wp-choose');
+  if (e.target.closest('#wp-desktop')) send('wp-desktop');
+});
+// Wallpaper sliders preview live while dragging and save when released.
+$('#settings-body').addEventListener('pointerdown', (e) => { if (e.target.closest('[data-range]')) rangeHeld = true; });
+$('#settings-body').addEventListener('input', (e) => {
+  const r = e.target.closest('[data-range]'); if (!r) return;
+  const v = Number(r.value) / Number(r.dataset.scale);
+  r.nextElementSibling.textContent = r.dataset.range === 'wallpaperBlur' ? r.value + 'px' : r.value + '%';
+  if (r.dataset.range === 'wallpaperDim') document.documentElement.style.setProperty('--wp-dim', String(v));
+  if (r.dataset.range === 'wallpaperBlur') { const wp = $('#wp'); wp.style.filter = v ? `blur(${v}px)` : ''; wp.style.inset = v ? `-${v * 2}px` : '0'; }
+});
+$('#settings-body').addEventListener('change', (e) => {
+  const r = e.target.closest('[data-range]');
+  if (r) { send('set', r.dataset.range, Number(r.value) / Number(r.dataset.scale)); return; }
+  const s = e.target.closest('[data-sel]'); if (!s) return;
+  send('set', s.dataset.sel, 'num' in s.dataset ? Number(s.value) : s.value);
+});
+
+// ---------------------------------------------------------------------- downloads
+function fmtBytes(n) {
+  if (!n) return '0 B';
+  const u = ['B', 'KB', 'MB', 'GB']; let i = 0;
+  while (n >= 1024 && i < 3) { n /= 1024; i++; }
+  return `${n.toFixed(n >= 10 || i === 0 ? 0 : 1)} ${u[i]}`;
+}
+function renderDownloads() {
+  const ds = S.downloads;
+  $('#downloads-body').innerHTML = !ds.length ? `<div class="empty">${icon('download', 22)}<br>Files you download appear here.</div>` :
+    ds.map(d => {
+      const pct = d.total ? Math.round(d.received / d.total * 100) : 0;
+      const sub = d.state === 'progressing' ? `${fmtBytes(d.received)}${d.total ? ' of ' + fmtBytes(d.total) : ''}`
+        : d.state === 'completed' ? fmtBytes(d.received) : d.state === 'cancelled' ? 'Cancelled' : 'Failed';
+      return `<div class="dl ${d.state === 'completed' ? 'done' : ''}" data-dl="${d.id}">
+        <span class="ic">${icon('file', 18)}</span>
+        <div class="meta"><div class="name" data-open>${esc(d.name)}</div><div class="sub">${sub}</div>
+          ${d.state === 'progressing' ? `<div class="bar"><i style="width:${pct}%"></i></div>` : ''}</div>
+        ${d.state === 'progressing' ? `<button class="ib" data-cancel title="Cancel">${icon('x', 14)}</button>`
+          : d.state === 'completed' ? `<button class="ib" data-show title="Show in folder">${icon('folder', 15)}</button>` : ''}
+      </div>`;
+    }).join('') + `<button class="link" id="dl-clear" style="margin-top:6px">Clear list</button>`;
+}
+$('#downloads-body').addEventListener('click', (e) => {
+  if (e.target.id === 'dl-clear') return send('clear-downloads');
+  const row = e.target.closest('[data-dl]'); if (!row) return;
+  const id = Number(row.dataset.dl);
+  if (e.target.closest('[data-cancel]')) send('cancel-download', id);
+  else if (e.target.closest('[data-show]')) send('show-download', id);
+  else if (e.target.closest('[data-open]') && row.classList.contains('done')) send('open-download', id);
+});
+
+// ---------------------------------------------------------------------- extensions
+// The extension buttons come from <browser-action-list> (electron-chrome-extensions).
+// We point it at the active tab and hide the ones the user tucked away.
+function syncActions() {
+  const list = $('#actions');
+  if (S && list.getAttribute('tab') !== String(S.activeWcId)) list.setAttribute('tab', String(S.activeWcId));
+  const visible = EXT.filter(e => e.hasAction && !e.hidden && !e.builtin);
+  $('#ext-bar').hidden = visible.length === 0 || panel === 'extensions';
+  applyHiddenActions();
+}
+function applyHiddenActions() {
+  const root = $('#actions').shadowRoot; if (!root) return;
+  const hidden = new Set(EXT.filter(e => e.hidden || e.builtin).map(e => e.id));
+  root.querySelectorAll('.action').forEach(b => { b.style.display = hidden.has(b.id) ? 'none' : ''; });
+}
+customElements.whenDefined('browser-action-list').then(() => {
+  const root = $('#actions').shadowRoot;
+  if (root) new MutationObserver(applyHiddenActions).observe(root, { childList: true });
+});
+
+function renderExtensions() {
+  const body = $('#extensions-body');
+  const rows = EXT.map(e => `
+    <div class="ext" data-ext="${esc(e.id)}" title="${esc(e.description)}">
+      <img src="crx://extension-icon/${esc(e.id)}/32/2?partition=_self" alt="">
+      <div class="meta"><div class="name">${esc(e.name)}</div><div class="sub">${e.builtin ? 'Built in · Shields · ' : e.unpacked ? 'Unpacked · ' : ''}${esc(e.version)}</div></div>
+      ${e.hasAction && !e.builtin ? `<button class="ib ${e.hidden ? 'off' : ''}" data-act="vis" title="${e.hidden ? 'Show button in sidebar' : 'Hide button from sidebar'}">${icon(e.hidden ? 'eyeoff' : 'eye', 15)}</button>` : ''}
+      ${e.options ? `<button class="ib" data-act="opt" title="Options">${icon('gear', 15)}</button>` : ''}
+      ${e.builtin ? '' : `<button class="ib" data-act="rm" title="Remove">${icon('trash', 15)}</button>`}
+    </div>`).join('');
+  body.innerHTML = (rows || `<div class="empty">${icon('puzzle', 22)}<br>No extensions yet.<br>Click <b>Get extensions</b> to browse the Chrome Web Store, then press <b>Add to Chrome</b>.</div>`) + `
+    <button class="btn" id="ext-unpacked" style="margin-top:8px">Load unpacked extension…</button>
+    <div class="note">Ad blocking is built in (<b>Shields</b>), so ad-blocker extensions aren't needed and may not work here.</div>`;
+}
+$('#extensions-body').addEventListener('click', (e) => {
+  if (e.target.closest('#ext-unpacked')) return send('ext-unpacked');
+  const row = e.target.closest('[data-ext]'); const act = e.target.closest('[data-act]');
+  if (!row || !act) return;
+  const id = row.dataset.ext;
+  if (act.dataset.act === 'rm') send('ext-remove', id);
+  if (act.dataset.act === 'opt') send('ext-options', id);
+  if (act.dataset.act === 'vis') { const x = EXT.find(z => z.id === id); send('ext-visible', id, x.hidden); }
+});
+
+// ---------------------------------------------------------------------- volume mixer
+// Slider runs 0–300%. The first two thirds of the track cover 0–100% so normal
+// adjustments get most of the travel; the last third is boost up to 300%.
+const toSlider = (v) => v <= 1 ? v * 200 : 200 + (v - 1) * 50;     // 0..300
+const fromSlider = (x) => x <= 200 ? x / 200 : 1 + (x - 200) / 50;  // -> 0..3
+let volKey = '';
+let draggingVol = null;
+
+function renderVolume() {
+  const list = S.tabs.filter(t => t.hadAudio || t.audible || t.volume !== 1);
+  const key = list.map(t => `${t.id}:${t.muted}:${t.audible}:${t.title}:${t.id === S.activeId}`).join('|');
+  const body = $('#volume-body');
+  if (key !== volKey) {
+    volKey = key;
+    body.innerHTML = !list.length ? `<div class="empty">${icon('sound', 22)}<br>Tabs that play sound show up here.<br>Drag a slider to make one quieter or louder.</div>` :
+      list.map(t => `
+      <div class="vol ${t.muted ? 'muted' : ''} ${t.id === S.activeId ? 'active-tab' : ''}" data-vol="${t.id}">
+        <div class="top">
+          ${favHTML(t)}
+          <span class="name" data-act="go" title="Go to tab">${esc(tabTitle(t))}</span>
+          <span class="pct" data-act="reset" title="Click to reset to 100%"></span>
+          <button class="ib ${t.audible && !t.muted ? 'on' : ''}" data-act="mute" title="${t.muted ? 'Unmute' : 'Mute'}">${icon(t.muted ? 'muted' : 'sound', 15)}</button>
+        </div>
+        <div class="slider"><input type="range" min="0" max="300" step="2"></div>
+        <div class="marks"><span style="left:0;transform:none">0</span><span style="left:66.67%">100%</span><span style="right:0;transform:none">300%</span></div>
+      </div>`).join('') + `<div class="note">Scroll on a tab's speaker icon to adjust it quickly. Over 100% boosts quiet streams.</div>`;
+  }
+  for (const t of list) {
+    const row = body.querySelector(`[data-vol="${t.id}"]`); if (!row) continue;
+    const r = row.querySelector('input');
+    if (draggingVol !== t.id) r.value = toSlider(t.volume);
+    paintVol(row, draggingVol === t.id ? fromSlider(Number(r.value)) : t.volume);
+  }
+}
+function paintVol(row, v) {
+  const r = row.querySelector('input');
+  r.style.setProperty('--fill', (toSlider(v) / 3) + '%');
+  const pct = row.querySelector('.pct');
+  pct.textContent = Math.round(v * 100) + '%';
+  pct.classList.toggle('boost', v > 1.001);
+}
+let volRaf = 0;
+$('#volume-body').addEventListener('input', (e) => {
+  if (e.target.type !== 'range') return;
+  const row = e.target.closest('[data-vol]'); const id = Number(row.dataset.vol);
+  let v = fromSlider(Number(e.target.value));
+  if (Math.abs(v - 1) < 0.03) { v = 1; }            // gentle snap to 100%
+  draggingVol = id; paintVol(row, v);
+  cancelAnimationFrame(volRaf); volRaf = requestAnimationFrame(() => send('tab-volume', id, v));
+});
+$('#volume-body').addEventListener('change', () => { draggingVol = null; });
+$('#volume-body').addEventListener('pointerup', () => { draggingVol = null; });
+$('#volume-body').addEventListener('click', (e) => {
+  const row = e.target.closest('[data-vol]'); const act = e.target.closest('[data-act]');
+  if (!row || !act) return;
+  const id = Number(row.dataset.vol);
+  if (act.dataset.act === 'mute') send('toggle-mute', id);
+  if (act.dataset.act === 'reset') send('tab-volume', id, 1);
+  if (act.dataset.act === 'go') send('activate', id);
+});
+
+// Scroll over a tab's speaker icon: ±10% per notch.
+function wheelVolume(e) {
+  const btn = e.target.closest('.audio'); if (!btn) return;
+  const el = e.target.closest('[data-id]'); if (!el) return;
+  e.preventDefault();
+  const t = S.tabs.find(x => x.id === Number(el.dataset.id)); if (!t) return;
+  const step = e.deltaY < 0 ? 0.1 : -0.1;
+  const v = Math.max(0, Math.min(3, Math.round((t.volume + step) * 10) / 10));
+  send('tab-volume', t.id, v);
+  toast(`${icon('sound')}<span>${esc(tabTitle(t))} — ${Math.round(v * 100)}%</span>`);
+}
+$('#tablist').addEventListener('wheel', wheelVolume, { passive: false });
+$('#essentials').addEventListener('wheel', wheelVolume, { passive: false });
+
+// ---------------------------------------------------------------------- bookmarks bar
+function findBm(id, list = BM) {
+  for (const it of list) {
+    if (it.id === id) return it;
+    if (it.type === 'folder') { const f = findBm(id, it.children); if (f) return f; }
+  }
+  return null;
+}
+function bmIcon(it) {
+  if (it.type === 'folder') return icon('folder', 14);
+  return favHTML({ url: it.url, favicon: it.icon }, 14);
+}
+function renderBookmarks() {
+  const box = $('#bm-items');
+  box.innerHTML = BM.length ? BM.map(it => `
+    <button class="bm ${it.type === 'folder' ? 'folder' : ''}" data-bm="${esc(it.id)}" draggable="true" title="${esc(it.type === 'folder' ? it.title : (it.title ? it.title + '\n' : '') + it.url)}">
+      ${bmIcon(it)}${it.title ? `<span>${esc(it.title)}</span>` : ''}${it.type === 'folder' ? `<span style="display:flex;opacity:.6">${icon('chev', 12)}</span>` : ''}
+    </button>`).join('')
+    : `<span class="bm-hint">Bookmark pages with the ☆ in the address bar or Ctrl+D<button id="bm-import-hint">Import bookmarks</button></span>`;
+  const hint = $('#bm-import-hint');
+  if (hint) hint.onclick = async () => { await openSettingsAt(); };
+  layoutBookmarks();
+}
+async function openSettingsAt() {
+  if (panel !== 'settings') togglePanel('settings');
+  if (bmSources === null) { bmSources = await window.drift.invoke('bm-sources') || []; renderSettings(); }
+}
+// Hide items that don't fit and list them behind the » button.
+function layoutBookmarks() {
+  const box = $('#bm-items'), more = $('#bm-more');
+  const items = [...box.querySelectorAll('.bm')];
+  items.forEach(b => b.style.display = '');
+  more.hidden = true;
+  if (!items.length) return;
+  const limit = box.getBoundingClientRect().right;
+  let overflow = items.filter(b => b.getBoundingClientRect().right > limit + 0.5);
+  if (overflow.length) {
+    more.hidden = false;
+    const limit2 = box.getBoundingClientRect().right;
+    overflow = items.filter(b => b.getBoundingClientRect().right > limit2 + 0.5);
+    overflow.forEach(b => b.style.display = 'none');
+  }
+  more.innerHTML = icon('more', 14);
+  more.dataset.ids = JSON.stringify(overflow.map(b => b.dataset.bm));
+}
+window.addEventListener('resize', () => layoutBookmarks());
+$('#bm-more').onclick = (e) => {
+  const r = e.currentTarget.getBoundingClientRect();
+  send('bm-overflow', JSON.parse(e.currentTarget.dataset.ids || '[]'), r.left, r.bottom + 2);
+};
+$('#bm-items').addEventListener('click', (e) => {
+  const b = e.target.closest('[data-bm]'); if (!b) return;
+  const it = findBm(b.dataset.bm); if (!it) return;
+  if (it.type === 'folder') { const r = b.getBoundingClientRect(); send('bm-folder', it.id, r.left, r.bottom + 2); }
+  else send('bm-open', it.id, e.ctrlKey || e.metaKey || e.shiftKey);
+});
+$('#bm-items').addEventListener('auxclick', (e) => {
+  const b = e.target.closest('[data-bm]'); if (!b || e.button !== 1) return;
+  e.preventDefault(); send('bm-open', b.dataset.bm, true);
+});
+$('#bmbar').addEventListener('contextmenu', (e) => {
+  e.preventDefault();
+  const b = e.target.closest('[data-bm]');
+  if (b) send('bm-menu', b.dataset.bm); else send('bm-bar-menu');
+});
+// Drag to reorder bookmarks, or drop a tab from the sidebar to bookmark it.
+let bmDrag = null;
+$('#bm-items').addEventListener('dragstart', (e) => {
+  const b = e.target.closest('[data-bm]'); if (!b) return;
+  bmDrag = b.dataset.bm; e.dataTransfer.effectAllowed = 'move'; e.dataTransfer.setData('text/plain', bmDrag);
+  requestAnimationFrame(() => b.classList.add('dragging'));
+});
+$('#bm-items').addEventListener('dragend', () => { bmDrag = null; document.querySelectorAll('.bm.dragging').forEach(x => x.classList.remove('dragging')); clearBmDrop(); });
+function clearBmDrop() { document.querySelectorAll('.bm-drop').forEach(x => x.remove()); $('#bmbar').classList.remove('drop-target'); }
+function bmDropIndex(x) {
+  const items = [...$('#bm-items').querySelectorAll('.bm')].filter(b => b.style.display !== 'none' && b.dataset.bm !== bmDrag);
+  const i = items.findIndex(b => { const r = b.getBoundingClientRect(); return x < r.left + r.width / 2; });
+  return { items, before: i < 0 ? null : items[i] };
+}
+$('#bmbar').addEventListener('dragover', (e) => {
+  if (bmDrag == null && dragId == null) return;
+  e.preventDefault();
+  clearBmDrop();
+  if (dragId != null) $('#bmbar').classList.add('drop-target');
+  const { before } = bmDropIndex(e.clientX);
+  const line = document.createElement('i'); line.className = 'bm-drop';
+  before ? before.before(line) : $('#bm-items').append(line);
+});
+$('#bmbar').addEventListener('dragleave', (e) => { if (!e.relatedTarget || !$('#bmbar').contains(e.relatedTarget)) clearBmDrop(); });
+$('#bmbar').addEventListener('drop', (e) => {
+  e.preventDefault();
+  const { before } = bmDropIndex(e.clientX);
+  const idx = before ? BM.findIndex(b => b.id === before.dataset.bm) : BM.length;
+  if (bmDrag != null) send('bm-move', bmDrag, idx < 0 ? BM.length : idx);
+  else if (dragId != null) send('bm-add-tab', dragId, idx < 0 ? BM.length : idx);
+  clearBmDrop();
+});
+
+// ---------------------------------------------------------------------- dialogs
+let modalSubmit = null;
+function openModal(html, onSubmit, focusSel) {
+  const m = $('#modal');
+  m.innerHTML = html;
+  modalSubmit = onSubmit;
+  $('#modal-wrap').hidden = false;
+  send('overlay', 'modal');
+  setTimeout(() => { const f = m.querySelector(focusSel || 'input'); if (f) { f.focus(); f.select(); } }, 30);
+}
+function closeModal() { modalSubmit = null; send('overlay', null); }
+$('#modal').addEventListener('submit', (e) => {
+  e.preventDefault();
+  const data = Object.fromEntries(new FormData($('#modal')).entries());
+  if (modalSubmit && modalSubmit(data) !== false) closeModal();
+});
+$('#modal').addEventListener('click', (e) => {
+  const b = e.target.closest('[data-m]'); if (!b) return;
+  if (b.dataset.m === 'cancel') closeModal();
+  if (b.dataset.m === 'delete' && b.dataset.bm) { send('bm-delete', b.dataset.bm); closeModal(); }
+  if (b.dataset.m === 'delete' && b.dataset.pw) { closeModal(); send('pw-delete', b.dataset.pw); }
+});
+$('#modal-wrap').addEventListener('mousedown', (e) => { if (e.target.id === 'modal-wrap') closeModal(); });
+$('#modal').addEventListener('keydown', (e) => { if (e.key === 'Escape') { e.preventDefault(); closeModal(); } });
+
+function editBookmark(b) {
+  const isFolder = b.type === 'folder';
+  openModal(`
+    <h3>${b.id ? (isFolder ? 'Edit folder' : 'Edit bookmark') : (isFolder ? 'New folder' : 'New bookmark')}</h3>
+    <label>Name<input name="title" value="${esc(b.title || '')}" spellcheck="false"></label>
+    ${isFolder ? '' : `<label>Address<input name="url" value="${esc(b.url || '')}" spellcheck="false"></label>`}
+    <div class="actions">${b.id ? `<button type="button" class="danger" data-m="delete" data-bm="${esc(b.id)}">Delete</button>` : ''}
+      <span class="grow"></span><button type="button" data-m="cancel">Cancel</button><button type="submit" class="primary">Save</button></div>`,
+  (d) => { send('bm-save', b.id || null, { type: b.type, title: d.title, url: d.url }); });
+}
+
+// ---------------------------------------------------------------------- passwords panel
+let openPw = null;
+let revealed = {};   // id -> password text currently shown
+function renderPasswords(fromData) {
+  const q = $('#pw-filter').value.trim().toLowerCase();
+  const list = PW.filter(p => !q || p.host.includes(q) || (p.username || '').toLowerCase().includes(q));
+  const body = $('#passwords-body');
+  if (!fromData && body.dataset.key === JSON.stringify([q, openPw, Object.keys(revealed), PW.length])) return;
+  body.dataset.key = JSON.stringify([q, openPw, Object.keys(revealed), PW.length]);
+  body.innerHTML = !PW.length ? `<div class="empty">${icon('key', 22)}<br>No saved passwords yet.<br>Drift offers to save them when you sign in,<br>or <button class="link" id="pw-import-empty">import a CSV file</button>.</div>`
+    : !list.length ? `<div class="empty">No matches</div>`
+    : list.map(p => `
+    <div class="pw ${openPw === p.id ? 'open' : ''}" data-pw="${esc(p.id)}">
+      <div class="pw-row" data-act="toggle">
+        <span class="letter" style="background:${letterColor(p.host)}">${esc(p.host[0] || '?')}</span>
+        <div class="meta"><div class="name">${esc(p.host)}</div><div class="sub">${esc(p.username || '(no username)')}</div></div>
+        <span class="chev">${icon('chev', 14)}</span>
+      </div>
+      <div class="pw-detail">
+        <div class="pw-field"><span class="k">Username</span><span class="v">${esc(p.username || '—')}</span>
+          <button class="ib" data-act="copy-user" title="Copy username">${icon('copy', 14)}</button></div>
+        <div class="pw-field"><span class="k">Password</span><span class="v secret">${revealed[p.id] !== undefined ? esc(revealed[p.id]) : '••••••••••'}</span>
+          <button class="ib" data-act="reveal" title="${revealed[p.id] !== undefined ? 'Hide' : 'Show'} password">${icon(revealed[p.id] !== undefined ? 'eyeoff' : 'eye', 14)}</button>
+          <button class="ib" data-act="copy-pass" title="Copy password (cleared from clipboard after 30s)">${icon('copy', 14)}</button></div>
+        <div class="pw-actions"><button data-act="open">Open site</button><button data-act="edit">Edit</button><button class="danger" data-act="delete">Delete</button></div>
+      </div>
+    </div>`).join('');
+  const imp = $('#pw-import-empty'); if (imp) imp.onclick = () => send('pw-import');
+}
+$('#pw-filter').addEventListener('input', () => renderPasswords(true));
+$('#pw-add').onclick = () => editPassword(null);
+$('#passwords-body').addEventListener('click', async (e) => {
+  const row = e.target.closest('[data-pw]'); const act = e.target.closest('[data-act]');
+  if (!row || !act) return;
+  const id = row.dataset.pw; const p = PW.find(x => x.id === id); if (!p) return;
+  const a = act.dataset.act;
+  if (a === 'toggle') { openPw = openPw === id ? null : id; renderPasswords(true); }
+  if (a === 'copy-user') { send('pw-copy', id, 'username'); toast(`${icon('copy')}<span>Username copied</span>`); }
+  if (a === 'copy-pass') { send('pw-copy', id, 'password'); toast(`${icon('copy')}<span>Password copied — clears in 30s</span>`); }
+  if (a === 'reveal') {
+    if (revealed[id] !== undefined) delete revealed[id];
+    else {
+      revealed[id] = await window.drift.invoke('pw-reveal', id) || '';
+      setTimeout(() => { delete revealed[id]; if (panel === 'passwords') renderPasswords(true); }, 20000);
+    }
+    renderPasswords(true);
+  }
+  if (a === 'open') send('navigate', p.url, true);
+  if (a === 'edit') editPassword(p);
+  if (a === 'delete') send('pw-delete', id);
+});
+function editPassword(p) {
+  openModal(`
+    <h3>${p ? 'Edit password' : 'Add password'}</h3>
+    <label>Website<input name="url" value="${esc(p ? p.url : '')}" placeholder="https://example.com" spellcheck="false" ${p ? 'readonly' : ''}></label>
+    <label>Username<input name="username" value="${esc(p ? p.username : '')}" spellcheck="false"></label>
+    <label>Password<input name="password" type="password" placeholder="${p ? 'Leave blank to keep the current password' : ''}"></label>
+    <div class="actions">${p ? `<button type="button" class="danger" data-m="delete" data-pw="${esc(p.id)}">Delete</button>` : ''}<span class="grow"></span>
+      <button type="button" data-m="cancel">Cancel</button><button type="submit" class="primary">Save</button></div>`,
+  (d) => {
+    if (!p && (!d.url || !d.password)) return false;
+    send('pw-save', p ? p.id : null, { url: d.url, username: d.username, password: d.password });
+  }, p ? 'input[name=username]' : 'input[name=url]');
+}
+
+// ---------------------------------------------------------------------- split view
+function renderPanes(l) {
+  const box = $('#panes'), div = $('#split-divider');
+  const split = !!(l.split && l.panes && l.panes.length === 2 && !l.fullscreen);
+  document.body.classList.toggle('split', split);
+  if (!split) { box.innerHTML = ''; div.hidden = true; return; }
+  box.innerHTML = l.panes.map(p => `<div class="pane ${p.id === l.activeId ? 'active' : ''}" style="left:${p.rect.x}px;top:${p.rect.y}px;width:${p.rect.width}px;height:${p.rect.height}px"></div>`).join('');
+  const [a, b] = l.panes.map(p => p.rect);
+  div.hidden = false;
+  div.classList.toggle('col', l.split.dir === 'col');
+  if (l.split.dir === 'col') Object.assign(div.style, { left: a.x + 'px', top: (a.y + a.height) + 'px', width: a.width + 'px', height: (b.y - a.y - a.height) + 'px' });
+  else Object.assign(div.style, { left: (a.x + a.width) + 'px', top: a.y + 'px', width: (b.x - a.x - a.width) + 'px', height: a.height + 'px' });
+}
+$('#a-split').onclick = (e) => { const r = e.currentTarget.getBoundingClientRect(); send('split-menu', r.left, r.bottom + 4); };
+$('#split-divider').addEventListener('mousedown', (e) => {
+  e.preventDefault();
+  const l = lastLayout; if (!l || !l.split) return;
+  const area = l.content, col = l.split.dir === 'col';
+  const div = $('#split-divider'); div.classList.add('dragging');
+  document.body.classList.add('split-dragging'); document.body.classList.toggle('col-drag', col);
+  let raf = 0;
+  const move = (ev) => {
+    const r = col ? (ev.clientY - area.y) / area.height : (ev.clientX - area.x) / area.width;
+    cancelAnimationFrame(raf); raf = requestAnimationFrame(() => send('split-ratio', r));
+  };
+  const up = () => {
+    div.classList.remove('dragging'); document.body.classList.remove('split-dragging', 'col-drag');
+    window.removeEventListener('mousemove', move); window.removeEventListener('mouseup', up);
+  };
+  window.addEventListener('mousemove', move); window.addEventListener('mouseup', up);
+});
+$('#split-divider').addEventListener('dblclick', () => send('split-ratio', 0.5));
+
+// ---------------------------------------------------------------------- toast
+let toastTimer;
+function toast(html) {
+  const t = $('#toast'); t.innerHTML = html; t.hidden = false;
+  clearTimeout(toastTimer); toastTimer = setTimeout(() => (t.hidden = true), 3200);
+}
+
+// ---------------------------------------------------------------------- messages from main
+window.drift.on('state', (s) => { S = s; render(); });
+window.drift.on('extensions', (list) => { EXT = list; render(); });
+window.drift.on('bookmarks', (list) => { BM = list; renderBookmarks(); });
+window.drift.on('passwords', (list) => { PW = list; if (panel === 'passwords') renderPasswords(true); });
+window.drift.on('toast', (t) => {
+  toast(`${icon(t.icon || 'info')}<span>${esc(t.text)}</span>${t.action ? `<button class="tbtn" id="toast-act">${esc(t.action.label)}</button>` : ''}`);
+  const a = $('#toast-act');
+  if (a && t.action && t.action.bm) a.onclick = () => { const b = findBm(t.action.bm); if (b) editBookmark(b); };
+  if (a && t.action && t.action.update) a.onclick = () => send('update-install');
+});
+window.drift.on('bm-edit', (b) => editBookmark(b));
+window.drift.on('layout', (l) => {
+  content = l.content;
+  const pf = $('#page-frame');
+  Object.assign(pf.style, { left: content.x + 'px', top: content.y + 'px', width: content.width + 'px', height: content.height + 'px' });
+  pf.hidden = l.fullscreen;
+  document.body.classList.toggle('fullscreen', !!l.fullscreen);
+  lastLayout = l;
+  renderPanes(l);
+  document.documentElement.style.setProperty('--th', (l.titleH || 40) + 'px');
+  document.documentElement.style.setProperty('--bmh', (l.bmH || 0) + 'px');
+  document.documentElement.style.setProperty('--cx', content.x + 'px');
+  layoutBookmarks();
+  placeFind();
+  applyHole();
+});
+window.drift.on('palette', ({ newTab }) => preparePalette(newTab, !newTab));
+window.drift.on('panel', (name) => { if (panel !== name) togglePanel(name); });
+window.drift.on('find-open', () => {
+  $('#findbar').hidden = false;
+  const i = $('#find-input'); setTimeout(() => { i.focus(); i.select(); if (i.value) send('find', i.value, true, false); }, 0);
+});
+window.drift.on('find-result', ({ active, matches }) => {
+  const q = $('#find-input').value;
+  $('#find-count').textContent = q ? `${active}/${matches}` : '';
+  $('#findbar').classList.toggle('nomatch', !!q && matches === 0);
+});
+window.drift.on('download-started', (name) => toast(`${icon('download')}<span>Downloading ${esc(name)}</span>`));
+
+send('ready');
+send('ext-list');
+send('bm-list');

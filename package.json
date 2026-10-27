@@ -1,0 +1,89 @@
+{
+  "name": "drift-browser",
+  "version": "1.8.0",
+  "description": "A lightweight Chromium browser with vertical tabs and built-in ad blocking",
+  "main": "src/main.js",
+  "scripts": {
+    "start": "npm run build:preload && electron .",
+    "dist": "npm run build:preload && electron-builder --win",
+    "build:preload": "esbuild src/ui/preload.src.js --bundle --platform=node --external:electron --format=cjs --outfile=src/ui/preload.js",
+    "postinstall": "node scripts/patch-deps.js",
+    "release": "npm run build:preload && electron-builder --win --publish always"
+  },
+  "author": "Anthony",
+  "license": "MIT",
+  "devDependencies": {
+    "electron": "44.9.3",
+    "electron-builder": "^26.18.0",
+    "esbuild": "^0.28.2"
+  },
+  "dependencies": {
+    "@ghostery/adblocker-electron": "^2.20.1",
+    "electron-chrome-extensions": "^4.10.0",
+    "electron-chrome-web-store": "^0.13.0",
+    "electron-updater": "^6.8.11"
+  },
+  "productName": "Drift",
+  "build": {
+    "appId": "com.drift.browser",
+    "productName": "Drift",
+    "directories": {
+      "output": "dist",
+      "buildResources": "build"
+    },
+    "files": [
+      "src/**/*",
+      "!src/ui/preload.src.js",
+      "build/icon.png",
+      "package.json"
+    ],
+    "win": {
+      "target": [
+        {
+          "target": "nsis",
+          "arch": [
+            "x64"
+          ]
+        },
+        {
+          "target": "zip",
+          "arch": [
+            "x64"
+          ]
+        }
+      ],
+      "icon": "build/icon.ico"
+    },
+    "nsis": {
+      "oneClick": false,
+      "perMachine": false,
+      "allowToChangeInstallationDirectory": true,
+      "createDesktopShortcut": true,
+      "shortcutName": "Drift",
+      "artifactName": "Drift-Setup-${version}.exe"
+    },
+    "electronLanguages": [
+      "en-US"
+    ],
+    "compression": "normal",
+    "extraResources": [
+      {
+        "from": "extensions",
+        "to": "extensions"
+      }
+    ],
+    "publish": [
+      {
+        "provider": "github",
+        "owner": "larosa023",
+        "repo": "drift-browser",
+        "releaseType": "release"
+      }
+    ]
+  },
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/larosa023/drift-browser.git"
+  },
+  "homepage": "https://github.com/larosa023/drift-browser"
+}

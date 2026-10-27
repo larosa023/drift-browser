@@ -1,0 +1,2002 @@
+// Drift — a lightweight Chromium browser (Electron)
+// Main process: window, tabs, shields, sessions, shortcuts, downloads.
+
+const {
+  app, BaseWindow, WebContentsView, ipcMain, session, Menu, shell, dialog,
+  protocol, net, clipboard, nativeTheme, webContents, nativeImage,
+} = require('electron');
+const path = require('path');
+const fs = require('fs');
+// Chrome extension support (tabs/popups/action APIs + Chrome Web Store installs).
+// Must be required before the app is ready: it registers the crx:// scheme.
+const { ElectronChromeExtensions } = require('electron-chrome-extensions');
+const { installChromeWebStore, uninstallExtension } = require('electron-chrome-web-store');
+const { Bookmarks, chromiumProfiles, fromChromiumJSON, fromNetscapeHTML, toNetscapeHTML } = require('./bookmarks');
+const { Passwords } = require('./passwords');
+const WALLPAPERS = require('./wallpapers');
+
+// ---------------------------------------------------------------------------
+// Constants & small helpers
+// ---------------------------------------------------------------------------
+
+const GAP = 8;            // space around the page
+const FIND_H = 46;        // height of the find bar
+const TITLE_H = 40;       // height of the top toolbar (address bar, drag area, window buttons)
+const BOOKMARKS_H = 30;   // height of the bookmarks bar
+const RAIL_W = 52;        // width of the icon-only sidebar
+const RADIUS = 10;        // page corner radius
+const UI_DIR = path.join(__dirname, 'ui');
+const PAGES_DIR = path.join(__dirname, 'pages');
+const NEWTAB = 'drift://newtab/';
+const AUDIO_HOOK = fs.readFileSync(path.join(__dirname, 'audio-hook.js'), 'utf8');
+
+const SEARCH_ENGINES = {
+  brave:      { name: 'Brave Search', url: 'https://search.brave.com/search?q=%s' },
+  duckduckgo: { name: 'DuckDuckGo',   url: 'https://duckduckgo.com/?q=%s' },
+  google:     { name: 'Google',       url: 'https://www.google.com/search?q=%s' },
+  bing:       { name: 'Bing',         url: 'https://www.bing.com/search?q=%s' },
+  startpage:  { name: 'Startpage',    url: 'https://www.startpage.com/do/search?q=%s' },
+};
+
+const DEFAULT_SETTINGS = {
+  searchEngine: 'brave',
+  suggestions: true,
+  shields: true,
+  shieldsAllow: [],          // hostnames where shields are off (built-in engine)
+  shieldsEngine: 'ubo',      // 'ubo' = bundled uBlock Origin, 'builtin' = lighter built-in blocker
+  theme: 'system',           // system | dark | light
+  accent: '#ff6a3d',
+  sidebarWidth: 264,
+  sidebarHidden: false,
+  sidebarRail: false,        // icon-only sidebar
+  titleBar: true,
+  bookmarksBar: true,
+  forceDark: false,          // darken every site (Chromium's auto dark mode, like Opera)
+  forceDarkOff: [],          // hostnames excluded from force dark
+  offerPasswords: true,
+  wallpaper: '',             // '' (none) | 'builtin:<id>' | 'file:<name in userData/wallpapers>'
+  wallpaperDim: 0.35,        // 0..0.85 tint over the wallpaper so text stays readable
+  wallpaperBlur: 0,          // px
+  wallpaperNewTab: true,     // also show it on the new tab page
+  restoreTabs: true,
+  sleepTabs: true,
+  sleepMinutes: 20,
+  permissions: {},           // { "origin|perm": true/false }
+  hiddenActions: [],         // extension ids whose buttons are hidden from the sidebar
+  unpacked: [],              // folders of extensions loaded with "Load unpacked"
+  bounds: null,
+  maximized: false,
+};
+
+const userData = () => app.getPath('userData');
+const file = (n) => path.join(userData(), n);
+
+function readJSON(name, fallback) {
+  try { return JSON.parse(fs.readFileSync(file(name), 'utf8')); } catch { return fallback; }
+}
+function writeJSON(name, data) {
+  try {
+    fs.mkdirSync(userData(), { recursive: true });
+    const tmp = file(name + '.tmp');
+    fs.writeFileSync(tmp, JSON.stringify(data));
+    fs.renameSync(tmp, file(name));
+  } catch (e) { console.error('save failed', name, e.message); }
+}
+function debounce(fn, ms) {
+  let t; return (...a) => { clearTimeout(t); t = setTimeout(() => fn(...a), ms); };
+}
+function hostOf(u) { try { return new URL(u).hostname.replace(/^www\./, ''); } catch { return ''; } }
+function isInternal(u) { return !u || u.startsWith('drift:') || u === 'about:blank'; }
+
+function toUrl(text) {
+  const t = (text || '').trim();
+  if (!t) return NEWTAB;
+  if (t.startsWith('?')) return searchUrl(t.slice(1).trim());
+  if (/^(https?|file|drift|about|view-source|chrome-extension):/i.test(t)) return t;
+  if (/^localhost(:\d+)?(\/.*)?$/i.test(t) || /^\d{1,3}(\.\d{1,3}){3}(:\d+)?(\/.*)?$/.test(t)) return 'http://' + t;
+  if (!/\s/.test(t) && /^[^\s/]+\.[a-z]{2,}(:\d+)?([/?#].*)?$/i.test(t)) return 'https://' + t;
+  return searchUrl(t);
+}
+function searchUrl(q) {
+  const eng = SEARCH_ENGINES[settings.searchEngine] || SEARCH_ENGINES.brave;
+  return eng.url.replace('%s', encodeURIComponent(q));
+}
+
+// A Chrome-like user agent so sites don't treat us as an "embedded" app.
+// Google's sign-in pages refuse browsers they recognise as embedded Chromium. Presenting as
+// Firefox on those pages only (as Ferdium, Rambox and other Electron browsers do) gets past it.
+const GOOGLE_SIGNIN = /^accounts\.google\.[a-z.]+$/i;
+function firefoxUA() {
+  const plat = process.platform === 'win32' ? 'Windows NT 10.0; Win64; x64'
+    : process.platform === 'darwin' ? 'Macintosh; Intel Mac OS X 10.15' : 'X11; Linux x86_64';
+  return `Mozilla/5.0 (${plat}; rv:144.0) Gecko/20100101 Firefox/144.0`;
+}
+function uaFor(url) {
+  try { if (GOOGLE_SIGNIN.test(new URL(url).hostname)) return firefoxUA(); } catch {}
+  return chromeUA();
+}
+// Load a URL with the right user agent for where it's going.
+function loadIn(wc, url) {
+  const want = uaFor(url);
+  if (wc.getUserAgent() !== want) wc.setUserAgent(want);
+  return wc.loadURL(url).catch(() => {});
+}
+// Switch user agent when a page navigates or redirects into / out of Google sign-in.
+function guardUserAgent(wc) {
+  const check = (e) => {
+    if (e.isMainFrame === false) return;
+    const url = e.url; if (!/^https?:/.test(url || '')) return;
+    const want = uaFor(url);
+    if (wc.getUserAgent() === want) return;
+    e.preventDefault();
+    wc.setUserAgent(want);
+    wc.loadURL(url).catch(() => {});
+  };
+  wc.on('will-navigate', check);
+  wc.on('will-redirect', check);
+  // "Sign in with Google" popups: their first load happens before these hooks can act.
+  wc.on('did-create-window', (child, details) => {
+    const want = uaFor(details.url);
+    if (child.webContents.getUserAgent() !== want) { child.webContents.setUserAgent(want); child.webContents.loadURL(details.url).catch(() => {}); }
+  });
+}
+
+function chromeUA() {
+  const major = process.versions.chrome.split('.')[0];
+  const plat = process.platform === 'win32' ? 'Windows NT 10.0; Win64; x64'
+    : process.platform === 'darwin' ? 'Macintosh; Intel Mac OS X 10_15_7'
+    : 'X11; Linux x86_64';
+  return `Mozilla/5.0 (${plat}) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/${major}.0.0.0 Safari/537.36`;
+}
+
+// ---------------------------------------------------------------------------
+// State
+// ---------------------------------------------------------------------------
+
+let settings;
+let history;            // Map url -> {url,title,visits,last}
+let win, ui;
+let tabs = [];
+let activeId = null;
+let nextTabId = 1;
+let closedTabs = [];    // for Ctrl+Shift+T
+let overlay = null;     // null | 'palette' | 'peek'
+let findOpen = false;
+let htmlFullscreen = false;
+let blocker = null;
+let uboId = null;          // extension id of the bundled uBlock Origin while it's loaded
+let extensions = null;     // ElectronChromeExtensions instance
+let blockedTotal = 0;
+let splits = [];          // split view pairs: { a: tabId, b: tabId, ratio, dir: 'row' | 'col' }
+let bookmarks = null;      // Bookmarks store
+let passwords = null;      // Passwords store
+const downloads = [];
+const wcToTab = new Map();
+
+const saveSettings = debounce(() => writeJSON('settings.json', settings), 400);
+const saveHistory = debounce(() => {
+  const arr = [...history.values()].sort((a, b) => b.last - a.last).slice(0, 4000);
+  writeJSON('history.json', arr);
+}, 2000);
+const saveSession = debounce(() => writeJSON('session.json', sessionSnapshot()), 800);
+
+function sessionSnapshot() {
+  const kept = tabs.filter(t => !isInternal(t.url) || t.pinned);
+  const idx = (id) => kept.findIndex(t => t.id === id);
+  return {
+    tabs: kept.map(t => ({ url: t.url, title: t.title, favicon: (t.favicon || '').length < 12000 ? t.favicon : '', pinned: t.pinned })),
+    active: Math.max(0, idx(activeId)),
+    splits: splits.map(sp => [idx(sp.a), idx(sp.b), sp.ratio, sp.dir]).filter(x => x[0] >= 0 && x[1] >= 0),
+  };
+}
+
+function activeTab() { return tabs.find(t => t.id === activeId) || null; }
+
+// ---------------------------------------------------------------------------
+// Pushing state to the sidebar UI (coalesced)
+// ---------------------------------------------------------------------------
+
+let pushQueued = false;
+function push() {
+  if (pushQueued) return;
+  pushQueued = true;
+  setImmediate(() => {
+    pushQueued = false;
+    if (!ui || ui.webContents.isDestroyed()) return;
+    const t = activeTab();
+    const wc = t && t.view ? t.view.webContents : null;
+    ui.webContents.send('state', {
+      tabs: tabs.map(x => ({
+        id: x.id, url: x.url, title: x.title, favicon: x.favicon, pinned: x.pinned,
+        loading: x.loading, audible: x.audible, muted: x.muted, asleep: !x.view,
+        volume: x.volume, hadAudio: x.hadAudio,
+        crashed: x.crashed,
+      })),
+      activeId,
+      activeWcId: wc ? wc.id : -1,
+      splits: splits.map(sp => ({ a: sp.a, b: sp.b, dir: sp.dir })),
+      nav: {
+        url: t ? t.url : '',
+        canGoBack: wc ? wc.navigationHistory.canGoBack() : false,
+        canGoForward: wc ? wc.navigationHistory.canGoForward() : false,
+        loading: t ? t.loading : false,
+        secure: t ? t.url.startsWith('https:') : false,
+        blocked: t ? t.blocked : 0,
+        shieldsOn: t ? shieldsOnFor(t.url) : settings.shields,
+        bookmarked: !!(t && bookmarks && bookmarks.findByUrl(t.url)),
+        dark: !!(t && t.dark),
+        darkSite: t ? !settings.forceDarkOff.includes(hostOf(t.url)) : true,
+        zoom: wc ? Math.round(wc.getZoomFactor() * 100) : 100,
+      },
+      settings: { ...settings, permissions: undefined, bounds: undefined },
+      passwordCount: passwords ? passwords.entries.length : 0,
+      appVersion: app.getVersion(), update: updateState,
+      wallpaperCss: wallpaperCss(),
+      wallpapers: WALLPAPERS.map(w => ({ id: w.id, name: w.name, css: w.css })),
+      desktopWallpaper: !!desktopWallpaperPath(),
+      passwordsEncrypted: passwords ? passwords.canEncrypt() : false,
+      engines: Object.fromEntries(Object.entries(SEARCH_ENGINES).map(([k, v]) => [k, v.name])),
+      blockedTotal,
+      uboId,
+      downloads: downloads.map(d => ({ ...d, item: undefined })),
+      overlay, findOpen,
+      maximized: win ? win.isMaximized() : false,
+      platform: process.platform,
+      chrome: process.versions.chrome,
+      dark: isDark(),
+    });
+  });
+}
+
+function isDark() {
+  return settings.theme === 'dark' || (settings.theme === 'system' && nativeTheme.shouldUseDarkColors);
+}
+
+// ---------------------------------------------------------------------------
+// Layout
+// ---------------------------------------------------------------------------
+
+function contentRect() {
+  const [w, h] = win.getContentSize();
+  if (htmlFullscreen) return { x: 0, y: 0, width: w, height: h };
+  const top = titleHeight() + bookmarksHeight() + (findOpen ? FIND_H : 0);
+  const left = sidebarLeft();
+  return { x: left, y: top, width: Math.max(0, w - left - GAP), height: Math.max(0, h - top - GAP) };
+}
+
+function titleHeight() {
+  return settings.titleBar && !win.isFullScreen() ? TITLE_H : GAP;
+}
+function bookmarksHeight() {
+  return settings.titleBar && settings.bookmarksBar && !win.isFullScreen() ? BOOKMARKS_H : 0;
+}
+function sidebarLeft() {
+  if (settings.sidebarHidden) return GAP;
+  return settings.sidebarRail ? RAIL_W : settings.sidebarWidth;
+}
+
+// The split containing a tab, if any.
+function splitOf(id) { return splits.find(sp => sp.a === id || sp.b === id) || null; }
+
+// Where each visible page goes: one pane normally, two in split view.
+function panes() {
+  const r = contentRect();
+  const t = activeTab(); if (!t) return [];
+  const sp = htmlFullscreen ? null : splitOf(t.id);
+  if (!sp) return [{ tab: t, rect: r }];
+  const A = tabs.find(x => x.id === sp.a), B = tabs.find(x => x.id === sp.b);
+  if (sp.dir === 'col') {
+    const h1 = Math.round((r.height - GAP) * sp.ratio);
+    return [{ tab: A, rect: { x: r.x, y: r.y, width: r.width, height: h1 } },
+            { tab: B, rect: { x: r.x, y: r.y + h1 + GAP, width: r.width, height: r.height - h1 - GAP } }];
+  }
+  const w1 = Math.round((r.width - GAP) * sp.ratio);
+  return [{ tab: A, rect: { x: r.x, y: r.y, width: w1, height: r.height } },
+          { tab: B, rect: { x: r.x + w1 + GAP, y: r.y, width: r.width - w1 - GAP, height: r.height } }];
+}
+
+function restack() {
+  const views = panes().map(p => p.tab && p.tab.view).filter(Boolean);
+  const uiOnTop = overlay !== null && !htmlFullscreen;
+  const want = uiOnTop ? [...views, ui] : [ui, ...views];
+  const have = win.contentView.children;
+  if (have.length === want.length && have.every((v, i) => v === want[i])) return;
+  for (const c of have) if (!want.includes(c)) win.contentView.removeChildView(c);
+  for (const v of want) { try { win.contentView.removeChildView(v); } catch {} }
+  for (const v of want) win.contentView.addChildView(v);
+}
+
+function layout() {
+  if (!win || win.isDestroyed()) return;
+  const [w, h] = win.getContentSize();
+  const r = contentRect();
+  const ps = panes();
+  for (const p of ps) {
+    if (!p.tab) continue;
+    if (!p.tab.view) ensureView(p.tab);   // wake a sleeping split partner
+    p.tab.lastActive = Date.now();
+    p.tab.view.setBounds(p.rect);
+    p.tab.view.setBorderRadius(htmlFullscreen ? 0 : RADIUS);
+  }
+  const sp = ps.length === 2 ? splitOf(activeId) : null;
+  if (overlay === 'peek') ui.setBounds({ x: 0, y: 0, width: (settings.sidebarRail ? RAIL_W : settings.sidebarWidth) + 24, height: h });
+  else ui.setBounds({ x: 0, y: 0, width: w, height: h });
+  restack();
+  ui.webContents.send('layout', { content: r, fullscreen: htmlFullscreen || win.isFullScreen(), titleH: titleHeight(), bmH: bookmarksHeight(), left: sidebarLeft(),
+    panes: ps.map(p => ({ id: p.tab ? p.tab.id : 0, rect: p.rect })), split: sp ? { dir: sp.dir, ratio: sp.ratio } : null, activeId });
+}
+
+function setOverlay(mode) {
+  overlay = mode;
+  layout();
+  if (mode === 'palette' || mode === 'modal') ui.webContents.focus();
+  else focusPage();
+  push();
+}
+
+function focusPage() {
+  const t = activeTab();
+  if (t && t.view && !findOpen) t.view.webContents.focus();
+}
+
+// ---------------------------------------------------------------------------
+// Tabs
+// ---------------------------------------------------------------------------
+
+function createTab(url = NEWTAB, opts = {}) {
+  const tab = {
+    id: nextTabId++, url, title: opts.title || '', favicon: opts.favicon || (faviconStore[hostOf(url)] || ''),
+    pinned: !!opts.pinned, view: null, loading: false, audible: false, muted: false,
+    volume: 1, hadAudio: false,
+    blocked: 0, lastActive: Date.now(), crashed: false,
+  };
+  let index = opts.index;
+  if (index === undefined) {
+    if (tab.pinned) index = tabs.filter(t => t.pinned).length;
+    else if (opts.openerId) {
+      // Open next to the tab that opened it (like Chrome).
+      const i = tabs.findIndex(t => t.id === opts.openerId);
+      index = i >= 0 ? i + 1 : tabs.length;
+    } else index = tabs.length;
+  }
+  tabs.splice(index, 0, tab);
+  if (!opts.lazy) ensureView(tab);
+  if (opts.activate !== false) activate(tab.id);
+  else { push(); saveSession(); }
+  return tab;
+}
+
+// Force dark is a per-renderer Chromium setting, so it's chosen when a tab's view is created.
+function wantsDark(url) {
+  if (!settings.forceDark || !/^(https?|file):/i.test(url || '')) return false;
+  return !settings.forceDarkOff.includes(hostOf(url));
+}
+
+function ensureView(tab, restore) {
+  if (tab.view) return tab.view;
+  tab.dark = wantsDark(tab.url);
+  const view = new WebContentsView({
+    webPreferences: {
+      sandbox: true, contextIsolation: true, nodeIntegration: false,
+      spellcheck: true, scrollBounce: true,
+      // Run preload scripts in iframes too (not Node): extension pages that live in frames,
+      // like uBlock Origin's dashboard panes, need the extension APIs there.
+      nodeIntegrationInSubFrames: true,
+      additionalArguments: tab.dark ? ['--blink-settings=forceDarkModeEnabled=true'] : [],
+    },
+  });
+  view.setBackgroundColor('#ffffff'); // pages without a background expect white, like Chrome
+  view.setBorderRadius(RADIUS);
+  tab.view = view;
+  tab.crashed = false;
+  const wc = view.webContents;
+  wcToTab.set(wc.id, tab);
+  wireTab(tab, wc);
+  if (extensions) extensions.addTab(wc, win);
+  wc.setUserAgent(uaFor(tab.url));
+  if (restore && restore.entries.length) wc.navigationHistory.restore(restore).catch(() => loadIn(wc, tab.url));
+  else loadIn(wc, tab.url);
+  return view;
+}
+
+// Recreate a tab's page (e.g. to switch force dark on/off) keeping its back/forward history.
+function rebuildView(tab) {
+  if (!tab.view) return;
+  const wc = tab.view.webContents;
+  let restore = null;
+  try {
+    restore = { entries: wc.navigationHistory.getAllEntries(), index: wc.navigationHistory.getActiveIndex() };
+  } catch {}
+  const zoomFactor = wc.getZoomFactor();
+  const muted = tab.muted;
+  destroyView(tab);
+  ensureView(tab, restore);
+  const nwc = tab.view.webContents;
+  nwc.once('did-finish-load', () => { nwc.setZoomFactor(zoomFactor); if (tab.volume !== 1) applyVolume(tab); });
+  if (muted) nwc.setAudioMuted(true);
+  if (tab.id === activeId) {
+    if (extensions) { try { extensions.selectTab(nwc); } catch {} }
+    layout(); focusPage();
+  }
+  push();
+}
+
+function wireTab(tab, wc) {
+  const upd = () => { push(); saveSession(); };
+  wc.on('did-start-loading', () => { tab.loading = true; push(); });
+  wc.on('did-stop-loading', () => { tab.loading = false; push(); });
+  wc.on('page-title-updated', (_e, title) => {
+    tab.title = title; upd();
+    const h = history.get(tab.url); if (h) { h.title = title; saveHistory(); }
+  });
+  wc.on('page-favicon-updated', (_e, icons) => resolveTabIcon(tab, wc, icons));
+  // Sites that never announce an icon (or announce it late) are handled after load.
+  wc.on('did-finish-load', () => setTimeout(() => resolveTabIcon(tab, wc, []), 400));
+  wc.on('did-start-navigation', (d) => {
+    if (d.isMainFrame && !d.isSameDocument) { tab.blocked = 0; notePendingNav(d.url, wc.id); }
+  });
+  wc.on('did-redirect-navigation', (d) => { if (d.isMainFrame) notePendingNav(d.url, wc.id); });
+  wc.on('did-navigate', (_e, url) => {
+    if (hostOf(url) !== tab.iconHost) tab.iconHost = '';
+    if (hostOf(url) !== hostOf(tab.url)) tab.favicon = faviconStore[hostOf(url)] || '';
+    tab.url = url; addHistory(url, wc.getTitle()); upd();
+    if (wantsDark(url) !== !!tab.dark && !isInternal(url)) setImmediate(() => rebuildView(tab));
+    if (pendingLogin && pendingLogin.wcId === wc.id) offerSavePassword();
+  });
+  wc.on('did-navigate-in-page', (_e, url, isMain) => {
+    if (isMain) { tab.url = url; addHistory(url, wc.getTitle()); upd(); }
+    if (isMain && pendingLogin && pendingLogin.wcId === wc.id) offerSavePassword();
+  });
+  wc.on('did-fail-load', (_e, code, desc, url, isMain) => {
+    if (!isMain || code === -3) return; // -3 = aborted (normal)
+    showErrorPage(wc, url, code, desc);
+  });
+  wc.on('audio-state-changed', (e) => { tab.audible = e.audible; if (e.audible) tab.hadAudio = true; push(); });
+  // Keep a custom volume applied as the page navigates or adds frames/players.
+  wc.on('did-frame-finish-load', () => { if (tab.volume !== 1) applyVolume(tab); });
+  wc.on('media-started-playing', () => { if (tab.volume !== 1) applyVolume(tab); });
+  wc.on('render-process-gone', () => { tab.crashed = true; push(); });
+  wc.on('found-in-page', (_e, r) => {
+    ui.webContents.send('find-result', { active: r.activeMatchOrdinal, matches: r.matches });
+  });
+  wc.on('enter-html-full-screen', () => { htmlFullscreen = true; win.setFullScreen(true); layout(); });
+  wc.on('leave-html-full-screen', () => { htmlFullscreen = false; win.setFullScreen(false); layout(); });
+  wc.on('zoom-changed', (_e, dir) => zoom(dir === 'in' ? 1 : -1));
+  wc.on('before-input-event', (e, input) => { if (handleShortcut(input)) e.preventDefault(); });
+  // In split view, clicking into a page makes it the one the toolbar controls.
+  wc.on('focus', () => {
+    if (tab.id === activeId) return;
+    const sp = splitOf(tab.id);
+    if (sp && sp === splitOf(activeId)) {
+      activeId = tab.id;
+      if (extensions) { try { extensions.selectTab(wc); } catch {} }
+      if (findOpen) closeFind(); else layout();
+      push();
+    }
+  });
+  wc.on('context-menu', (_e, p) => pageContextMenu(tab, wc, p));
+  wc.setWindowOpenHandler(({ url, disposition }) => {
+    // Real popups (sign-in windows etc.) stay popups so window.opener keeps working.
+    if (disposition === 'new-window') {
+      return { action: 'allow', overrideBrowserWindowOptions: {
+        width: 520, height: 700, autoHideMenuBar: true, backgroundColor: '#ffffff',
+        webPreferences: { sandbox: true, contextIsolation: true, nodeIntegration: false },
+      } };
+    }
+    createTab(url, { activate: disposition !== 'background-tab', openerId: tab.id });
+    return { action: 'deny' };
+  });
+}
+
+function showErrorPage(wc, url, code, desc) {
+  const msg = {
+    '-105': "This site can't be found", '-106': "You're offline",
+    '-102': 'The site refused to connect', '-118': 'The site took too long to respond',
+    '-137': "This site can't be found", '-200': 'Your connection is not private',
+  }[String(code)] || "This page couldn't load";
+  const html = `<!doctype html><meta charset=utf-8><title>${escapeHtml(hostOf(url))}</title>
+  <style>html{color-scheme:light dark}body{font:15px/1.5 "Segoe UI",system-ui,sans-serif;display:grid;place-items:center;min-height:100vh;margin:0;background:Canvas;color:CanvasText}
+  main{max-width:520px;padding:32px}h1{font-size:22px;margin:0 0 8px}p{opacity:.7;margin:0 0 4px;word-break:break-all}code{opacity:.5;font-size:12px}
+  a{display:inline-block;margin-top:20px;padding:9px 18px;border-radius:999px;background:${settings.accent};color:#fff;text-decoration:none;font-weight:600}</style>
+  <main><h1>${msg}</h1><p>${escapeHtml(url)}</p><code>${escapeHtml(desc)} (${code})</code><br><a href="${escapeHtml(url)}">Try again</a></main>`;
+  wc.executeJavaScript(`document.open();document.write(${JSON.stringify(html)});document.close();`).catch(() => {});
+}
+function escapeHtml(s) { return String(s).replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c])); }
+
+function refreshNewTabs() {
+  for (const t of tabs) if (t.view && t.url.startsWith(NEWTAB)) t.view.webContents.reload();
+}
+
+function activate(id) {
+  const tab = tabs.find(t => t.id === id);
+  if (!tab) return;
+  const prev = activeTab();
+  if (prev && prev !== tab && findOpen) closeFind();
+  activeId = id;
+  tab.lastActive = Date.now();
+  if (!tab.view) ensureView(tab);
+  if (extensions) { try { extensions.selectTab(tab.view.webContents); } catch {} }
+  if (tab.crashed) { tab.crashed = false; tab.view.webContents.reload(); }
+  else if (tab.url.startsWith(NEWTAB) && prev !== tab && !tab.view.webContents.isLoading()) tab.view.webContents.reload(); // fresh top sites
+  layout();
+  if (overlay !== 'palette') focusPage();
+  push(); saveSession();
+}
+
+function closeTab(id) {
+  const i = tabs.findIndex(t => t.id === id);
+  if (i < 0) return;
+  const tab = tabs[i];
+  if (!isInternal(tab.url)) {
+    closedTabs.push({ url: tab.url, title: tab.title, favicon: tab.favicon, index: i, pinned: tab.pinned });
+    if (closedTabs.length > 25) closedTabs.shift();
+  }
+  const sp = splitOf(id);
+  const partner = sp ? (sp.a === id ? sp.b : sp.a) : null;
+  if (sp) splits = splits.filter(x => x !== sp);
+  tabs.splice(i, 1);
+  destroyView(tab);
+  if (activeId === id && partner && tabs.some(t => t.id === partner)) { activate(partner); }
+  else if (activeId === id) {
+    const unpinned = tabs.filter(t => !t.pinned);
+    const next = tabs[i] && !tabs[i].pinned ? tabs[i] : (tabs[i - 1] || unpinned[unpinned.length - 1] || tabs[0]);
+    if (next) activate(next.id);
+    else { activeId = null; createTab(NEWTAB); }
+  }
+  layout(); push(); saveSession();
+}
+
+function destroyView(tab) {
+  if (!tab || !tab.view) return;
+  const view = tab.view;
+  tab.view = null;                       // first, so re-entrant calls are no-ops
+  const wc = view.webContents;           // undefined once the page has already gone
+  if (wc) {
+    for (const [id, t] of wcToTab) if (t === tab) wcToTab.delete(id);
+    if (extensions && !wc.isDestroyed()) { try { extensions.removeTab(wc); } catch {} }
+  }
+  try { win.contentView.removeChildView(view); } catch {}
+  if (wc && !wc.isDestroyed()) wc.close();
+  tab.loading = false; tab.audible = false;
+}
+
+function reopenClosed() {
+  const c = closedTabs.pop();
+  if (c) createTab(c.url, { title: c.title, favicon: c.favicon, index: Math.min(c.index, tabs.length), pinned: c.pinned });
+}
+
+function cycle(dir) {
+  if (!tabs.length) return;
+  const i = tabs.findIndex(t => t.id === activeId);
+  activate(tabs[(i + dir + tabs.length) % tabs.length].id);
+}
+
+function moveTab(id, toIndex, pinned) {
+  const i = tabs.findIndex(t => t.id === id);
+  if (i < 0) return;
+  const [tab] = tabs.splice(i, 1);
+  if (typeof pinned === 'boolean') tab.pinned = pinned;
+  const pinnedCount = tabs.filter(t => t.pinned).length;
+  // Keep pinned tabs grouped at the top.
+  let idx = Math.max(0, Math.min(toIndex, tabs.length));
+  if (tab.pinned) idx = Math.min(idx, pinnedCount);
+  else idx = Math.max(idx, pinnedCount);
+  tabs.splice(idx, 0, tab);
+  push(); saveSession();
+}
+
+function togglePin(id) {
+  const tab = tabs.find(t => t.id === id);
+  if (!tab) return;
+  moveTab(id, tab.pinned ? tabs.filter(t => t.pinned).length : tabs.filter(t => t.pinned).length, !tab.pinned);
+}
+
+// Put background tabs to sleep to save memory (like Brave/Zen tab sleeping).
+setInterval(() => {
+  if (!settings || !settings.sleepTabs) return;
+  const cutoff = Date.now() - settings.sleepMinutes * 60000;
+  for (const t of tabs) {
+    const sp = splitOf(t.id);
+    if (sp && sp === splitOf(activeId)) continue;
+    if (t.id !== activeId && t.view && !t.audible && t.lastActive < cutoff) {
+      destroyView(t);
+    }
+  }
+  push();
+}, 60000);
+
+// ---------------------------------------------------------------------------
+// Split view
+// ---------------------------------------------------------------------------
+
+function splitWith(otherId) {
+  const base = activeTab(); if (!base) return;
+  for (const id of [base.id, otherId]) { const old = splitOf(id); if (old) splits = splits.filter(x => x !== old); }
+  let other;
+  if (otherId === 'new') other = createTab(NEWTAB, { activate: false, openerId: base.id });
+  else other = tabs.find(t => t.id === otherId);
+  if (!other || other.id === base.id) return;
+  // Keep the pair next to each other in the sidebar.
+  if (!base.pinned && !other.pinned) {
+    tabs.splice(tabs.indexOf(other), 1);
+    tabs.splice(tabs.indexOf(base) + 1, 0, other);
+  }
+  splits.push({ a: base.id, b: other.id, ratio: 0.5, dir: 'row' });
+  if (otherId === 'new') {
+    activate(other.id);
+    ui.webContents.send('palette', { newTab: false });
+    setOverlay('palette');
+  } else { layout(); push(); saveSession(); }
+}
+
+function unsplit(id = activeId) {
+  const sp = splitOf(id); if (!sp) return;
+  splits = splits.filter(x => x !== sp);
+  layout(); focusPage(); push(); saveSession();
+}
+
+function splitMenu(x, y) {
+  const t = activeTab(); if (!t) return;
+  const sp = splitOf(t.id);
+  let items;
+  if (sp) {
+    items = [
+      { label: 'Swap sides', click: () => { [sp.a, sp.b] = [sp.b, sp.a]; layout(); push(); saveSession(); } },
+      { type: 'separator' },
+      { label: 'Side by side', type: 'radio', checked: sp.dir === 'row', click: () => { sp.dir = 'row'; layout(); saveSession(); } },
+      { label: 'Top and bottom', type: 'radio', checked: sp.dir === 'col', click: () => { sp.dir = 'col'; layout(); saveSession(); } },
+      { label: 'Equal sizes', click: () => { sp.ratio = 0.5; layout(); saveSession(); } },
+      { type: 'separator' },
+      { label: 'Close split view', click: () => unsplit() },
+    ];
+  } else {
+    const others = tabs.filter(o => o.id !== t.id).sort((a, b) => b.lastActive - a.lastActive).slice(0, 12);
+    items = [
+      { label: 'Split view with…', enabled: false },
+      { label: 'New tab', accelerator: undefined, click: () => splitWith('new') },
+      ...(others.length ? [{ type: 'separator' }] : []),
+      ...others.map(o => ({ label: (o.title || hostOf(o.url) || 'New Tab').slice(0, 60), click: () => splitWith(o.id) })),
+    ];
+  }
+  Menu.buildFromTemplate(items).popup({ window: win, x: Math.round(x), y: Math.round(y) });
+}
+
+// ---------------------------------------------------------------------------
+// Favicons: fetched by the browser itself (pages often announce none, or serve icons
+// that refuse to load inside another app's UI), cached per site as small data URLs.
+// ---------------------------------------------------------------------------
+
+let faviconStore = {};      // host -> data URL
+const faviconMem = new Map(); // icon URL -> data URL | null
+const saveFavicons = debounce(() => {
+  const entries = Object.entries(faviconStore);
+  if (entries.length > 800) faviconStore = Object.fromEntries(entries.slice(-800));
+  writeJSON('favicons.json', faviconStore);
+}, 3000);
+
+// Shrink to 32px so icons stay small in memory and on disk (keeps SVG / ICO as-is).
+function compactIcon(buf, type) {
+  try {
+    if (type === 'image/svg+xml') return buf.length < 60000 ? `data:${type};base64,${buf.toString('base64')}` : null;
+    const img = nativeImage.createFromBuffer(buf);
+    if (!img.isEmpty()) {
+      const { width, height } = img.getSize();
+      const out = width > 32 || height > 32 ? img.resize({ width: 32, height: 32, quality: 'best' }) : img;
+      return out.toDataURL();
+    }
+  } catch {}
+  return buf.length < 60000 ? `data:${type};base64,${buf.toString('base64')}` : null;
+}
+
+// Fetched in a separate session: no extensions or ad blocking in the way, no cookies sent.
+let iconSession = null;
+async function fetchFavicon(iconUrl) {
+  if (!iconUrl) return null;
+  if (iconUrl.startsWith('data:image/')) return iconUrl.length < 60000 ? iconUrl : null;
+  if (!/^https?:/.test(iconUrl)) return null;
+  if (faviconMem.has(iconUrl)) return faviconMem.get(iconUrl);
+  let out = null;
+  try {
+    iconSession = iconSession || session.fromPartition('drift-favicons');
+    iconSession.setUserAgent(chromeUA());
+    const ctl = new AbortController(); const timer = setTimeout(() => ctl.abort(), 8000);
+    const r = await iconSession.fetch(iconUrl, { signal: ctl.signal, headers: { Accept: 'image/avif,image/webp,image/svg+xml,image/png,image/*,*/*;q=0.8' } });
+    clearTimeout(timer);
+    if (r.ok) {
+      let type = (r.headers.get('content-type') || '').split(';')[0].trim().toLowerCase();
+      const buf = Buffer.from(await r.arrayBuffer());
+      const head = buf.subarray(0, 64).toString('latin1');
+      if (!type.startsWith('image/')) {
+        // Servers often mislabel icons; sniff the bytes.
+        type = head.startsWith('\x89PNG') ? 'image/png' : head.startsWith('\x00\x00\x01\x00') ? 'image/x-icon'
+          : head.startsWith('GIF8') ? 'image/gif' : head.startsWith('\xff\xd8') ? 'image/jpeg'
+          : /^\s*(<\?xml[^>]*>\s*)?<svg/i.test(head) ? 'image/svg+xml' : (head.slice(8, 12) === 'WEBP' ? 'image/webp' : '');
+      }
+      const looksLikeHtml = type !== 'image/svg+xml' && /^\s*<(!doctype|html)/i.test(head);
+      if (type && buf.length > 0 && buf.length < 2000000 && !looksLikeHtml) out = compactIcon(buf, type);
+    }
+  } catch {}
+  faviconMem.set(iconUrl, out);
+  return out;
+}
+
+// Icon links declared in the page, best first (sized near 32px, then SVG, then others).
+const ICON_SCAN = `(() => {
+  const links = [...document.querySelectorAll('link[rel]')].filter(l => /(^|\\s)(icon|shortcut icon|apple-touch-icon|apple-touch-icon-precomposed|mask-icon)(\\s|$)/i.test(l.rel) && l.href);
+  const score = (l) => {
+    const rel = l.rel.toLowerCase(); let sc = rel.includes('apple-touch') ? 50 : rel.includes('mask-icon') ? 80 : 0;
+    const m = /(\\d+)x(\\d+)/.exec(l.sizes ? String(l.sizes.value || l.getAttribute('sizes') || '') : '');
+    if (m) sc += Math.abs(Number(m[1]) - 32) / 4; else if (/svg/.test(l.type || l.href)) sc += 2; else sc += 5;
+    return sc;
+  };
+  return links.sort((a, b) => score(a) - score(b)).map(l => l.href).slice(0, 6);
+})()`;
+
+const iconJobs = new WeakMap();
+async function resolveTabIcon(tab, wc, hinted) {
+  const pageUrl = tab.url, host = hostOf(pageUrl);
+  if (!host || !/^https?:/.test(pageUrl) || tab.iconHost === host && !hinted.length) return;
+  if (iconJobs.get(tab) === host + '|' + hinted.join()) return;
+  iconJobs.set(tab, host + '|' + hinted.join());
+  let fromPage = [];
+  try { if (!wc.isDestroyed()) fromPage = await wc.executeJavaScriptInIsolatedWorld(1999, [{ code: ICON_SCAN }]) || []; } catch {}
+  let origin = ''; try { origin = new URL(pageUrl).origin; } catch {}
+  const cands = [...new Set([...fromPage, ...hinted, origin + '/favicon.ico', `https://icons.duckduckgo.com/ip3/${host}.ico`])];
+  for (const c of cands) {
+    if (hostOf(tab.url) !== host) break;      // tab moved to another site meanwhile
+    const data = await fetchFavicon(c);
+    if (data && hostOf(tab.url) === host) { tab.iconHost = host; setTabIcon(tab, data); break; }
+  }
+  iconJobs.delete(tab);
+}
+
+function setTabIcon(tab, data) {
+  tab.favicon = data;
+  const host = hostOf(tab.url);
+  if (host && data.length < 60000 && faviconStore[host] !== data) { faviconStore[host] = data; saveFavicons(); }
+  push(); saveSession();
+  if (bookmarks) { const b = bookmarks.findByUrl(tab.url); if (b && b.icon !== data && data.length < 40000) { bookmarks.noteIcon(tab.url, data); sendBookmarks(); } }
+}
+
+// ---------------------------------------------------------------------------
+// Which tab does a request belong to? Electron tells extensions tabId -1 for every
+// network request, so extensions like uBlock Origin ask us (see scripts/patch-deps.js).
+// ---------------------------------------------------------------------------
+
+const pendingNavs = new Map();   // url -> { wcId, at }
+function notePendingNav(url, wcId) {
+  pendingNavs.set(url, { wcId, at: Date.now() });
+  if (pendingNavs.size > 200) for (const [k, v] of pendingNavs) if (Date.now() - v.at > 30000) pendingNavs.delete(k);
+}
+const originOf = (u) => { try { return new URL(u).origin; } catch { return ''; } };
+
+function tabIdForRequest(d) {
+  const live = tabs.filter(t => t.view && !t.view.webContents.isDestroyed());
+  // A page load: match the navigation the tab just started.
+  if (d.type === 'main_frame') {
+    const p = pendingNavs.get(d.url);
+    if (p && Date.now() - p.at < 30000) return p.wcId;
+    const t = live.find(x => x.view.webContents.getURL() === d.url);
+    return t ? t.view.webContents.id : -1;
+  }
+  // Inside an embedded frame: frame ids are Chromium frame-tree node ids.
+  if (d.frameId > 0) {
+    for (const t of live) {
+      try { if (t.view.webContents.mainFrame.framesInSubtree.some(f => f.frameTreeNodeId === d.frameId)) return t.view.webContents.id; } catch {}
+    }
+  }
+  // From a tab's top frame: match the requesting site against what each tab shows.
+  const origin = d.type === 'port' ? originOf(d.url) : (d.initiator && d.initiator !== 'null' ? d.initiator : '');
+  if (!origin) return -1;
+  const matches = live.filter(t => originOf(t.view.webContents.getURL()) === origin);
+  if (!matches.length) return -1;
+  if (d.type === 'port') { const exact = matches.find(t => t.view.webContents.getURL() === d.url); if (exact) return exact.view.webContents.id; }
+  const best = matches.find(t => t.id === activeId) || matches.sort((a, b) => b.lastActive - a.lastActive)[0];
+  return best.view.webContents.id;
+}
+
+// ---------------------------------------------------------------------------
+// Navigation helpers
+// ---------------------------------------------------------------------------
+
+function navigate(text, inNewTab) {
+  const url = toUrl(text);
+  const t = activeTab();
+  if (inNewTab || !t) { createTab(url); return; }
+  if (!t.view) ensureView(t);
+  t.url = url;
+  loadIn(t.view.webContents, url);
+  focusPage(); push();
+}
+
+function zoom(dir) {
+  const t = activeTab(); if (!t || !t.view) return;
+  const wc = t.view.webContents;
+  const steps = [0.25, 0.33, 0.5, 0.67, 0.75, 0.8, 0.9, 1, 1.1, 1.25, 1.5, 1.75, 2, 2.5, 3, 4, 5];
+  const cur = wc.getZoomFactor();
+  let next = 1;
+  if (dir > 0) next = steps.find(s => s > cur + 0.001) || 5;
+  else if (dir < 0) next = [...steps].reverse().find(s => s < cur - 0.001) || 0.25;
+  wc.setZoomFactor(next);
+  push();
+}
+
+function openFind() {
+  if (!activeTab()) return;
+  findOpen = true; layout(); ui.webContents.focus(); push();
+  ui.webContents.send('find-open');
+}
+function closeFind() {
+  const t = activeTab();
+  if (t && t.view) t.view.webContents.stopFindInPage('clearSelection');
+  findOpen = false; layout(); focusPage(); push();
+}
+
+function toggleSidebar() {
+  settings.sidebarHidden = !settings.sidebarHidden;
+  overlay = null;
+  saveSettings(); layout(); push();
+}
+
+// ---------------------------------------------------------------------------
+// Keyboard shortcuts (work whether the page or the sidebar has focus)
+// ---------------------------------------------------------------------------
+
+function handleShortcut(input) {
+  if (input.type !== 'keyDown') return false;
+  const mod = process.platform === 'darwin' ? input.meta : input.control;
+  const k = input.key.length === 1 ? input.key.toLowerCase() : input.key;
+  const t = activeTab();
+  const wc = t && t.view ? t.view.webContents : null;
+
+  if (mod && !input.shift && !input.alt) {
+    switch (k) {
+      case 't': case 'n': ui.webContents.send('palette', { newTab: true }); setOverlay('palette'); return true;
+      case 'l': ui.webContents.send('palette', { newTab: false }); setOverlay('palette'); return true;
+      case 'w': if (t) closeTab(t.id); return true;
+      case 'r': if (wc) wc.reload(); return true;
+      case 'f': openFind(); return true;
+      case 'p': if (wc) wc.print(); return true;
+      case 'd': toggleBookmarkActive(); return true;
+      case 'Tab': cycle(1); return true;
+      case 'PageDown': cycle(1); return true;
+      case 'PageUp': cycle(-1); return true;
+      case '=': case '+': zoom(1); return true;
+      case '-': zoom(-1); return true;
+      case '0': zoom(0); return true;
+      case 'F5': if (wc) wc.reloadIgnoringCache(); return true;
+    }
+    if (/^[1-9]$/.test(k)) {
+      const n = Number(k);
+      const target = n === 9 ? tabs[tabs.length - 1] : tabs[n - 1];
+      if (target) activate(target.id);
+      return true;
+    }
+  }
+  if (mod && input.shift && !input.alt) {
+    switch (k) {
+      case 't': reopenClosed(); return true;
+      case 'Tab': cycle(-1); return true;
+      case 'r': if (wc) wc.reloadIgnoringCache(); return true;
+      case 'i': if (wc) wc.toggleDevTools(); return true;
+      case 'Delete': ui.webContents.send('panel', 'settings'); return true;
+      case 'b': setSetting('bookmarksBar', !settings.bookmarksBar); return true;
+      case '+': case '=': zoom(1); return true;
+    }
+  }
+  if (mod && input.alt && !input.shift && k === 's') { toggleSidebar(); return true; }
+  if (input.alt && !mod && !input.shift) {
+    if (k === 'ArrowLeft') { if (wc && wc.navigationHistory.canGoBack()) wc.navigationHistory.goBack(); return true; }
+    if (k === 'ArrowRight') { if (wc && wc.navigationHistory.canGoForward()) wc.navigationHistory.goForward(); return true; }
+    if (k === 'd') { ui.webContents.send('palette', { newTab: false }); setOverlay('palette'); return true; }
+    if (k === 'Home') { navigate(NEWTAB); return true; }
+  }
+  if (!mod && !input.alt) {
+    if (k === 'F5') { if (wc) input.shift ? wc.reloadIgnoringCache() : wc.reload(); return true; }
+    if (k === 'F6') { ui.webContents.send('palette', { newTab: false }); setOverlay('palette'); return true; }
+    if (k === 'F11') { win.setFullScreen(!win.isFullScreen()); return true; }
+    if (k === 'F12') { if (wc) wc.toggleDevTools(); return true; }
+    if (k === 'Escape' && findOpen) { closeFind(); return true; }
+    if (k === 'Escape' && (overlay === 'palette' || overlay === 'modal')) { setOverlay(null); return true; }
+  }
+  return false;
+}
+
+// ---------------------------------------------------------------------------
+// Context menus
+// ---------------------------------------------------------------------------
+
+function pageContextMenu(tab, wc, p) {
+  const m = [];
+  const sep = () => { if (m.length && m[m.length - 1].type !== 'separator') m.push({ type: 'separator' }); };
+  if (p.misspelledWord && p.dictionarySuggestions.length) {
+    for (const s of p.dictionarySuggestions.slice(0, 5)) m.push({ label: s, click: () => wc.replaceMisspelling(s) });
+    m.push({ label: 'Add to dictionary', click: () => wc.session.addWordToSpellCheckerDictionary(p.misspelledWord) });
+    sep();
+  }
+  if (p.linkURL) {
+    m.push({ label: 'Open link in new tab', click: () => createTab(p.linkURL, { activate: false, openerId: tab.id }) });
+    m.push({ label: 'Open link here', click: () => wc.loadURL(p.linkURL) });
+    m.push({ label: 'Copy link address', click: () => clipboard.writeText(p.linkURL) });
+    sep();
+  }
+  if (p.mediaType === 'image' && p.srcURL) {
+    m.push({ label: 'Open image in new tab', click: () => createTab(p.srcURL, { activate: false, openerId: tab.id }) });
+    m.push({ label: 'Save image as…', click: () => wc.downloadURL(p.srcURL) });
+    m.push({ label: 'Copy image', click: () => wc.copyImageAt(p.x, p.y) });
+    m.push({ label: 'Copy image address', click: () => clipboard.writeText(p.srcURL) });
+    sep();
+  }
+  if (p.isEditable) {
+    m.push({ role: 'undo', enabled: p.editFlags.canUndo }, { role: 'redo', enabled: p.editFlags.canRedo }, { type: 'separator' });
+    m.push({ role: 'cut', enabled: p.editFlags.canCut }, { role: 'copy', enabled: p.editFlags.canCopy },
+      { role: 'paste', enabled: p.editFlags.canPaste }, { role: 'pasteAndMatchStyle', label: 'Paste as plain text', enabled: p.editFlags.canPaste },
+      { role: 'selectAll' });
+    sep();
+  } else if (p.selectionText && p.selectionText.trim()) {
+    const sel = p.selectionText.trim();
+    m.push({ role: 'copy' });
+    const short = sel.length > 28 ? sel.slice(0, 28) + '…' : sel;
+    m.push({ label: `Search ${SEARCH_ENGINES[settings.searchEngine].name} for “${short}”`, click: () => createTab(searchUrl(sel), { openerId: tab.id }) });
+    sep();
+  }
+  if (!p.linkURL && !p.isEditable && !p.selectionText && p.mediaType === 'none') {
+    m.push({ label: 'Back', enabled: wc.navigationHistory.canGoBack(), click: () => wc.navigationHistory.goBack() });
+    m.push({ label: 'Forward', enabled: wc.navigationHistory.canGoForward(), click: () => wc.navigationHistory.goForward() });
+    m.push({ label: 'Reload', click: () => wc.reload() });
+    sep();
+    m.push({ label: 'Print…', click: () => wc.print() });
+    m.push({ label: 'Find on page', click: openFind });
+    sep();
+  }
+  if (extensions) {
+    const extItems = extensions.getContextMenuItems(wc, p);
+    if (extItems.length) { sep(); m.push(...extItems); sep(); }
+  }
+  m.push({ label: 'Inspect', click: () => wc.inspectElement(p.x, p.y) });
+  Menu.buildFromTemplate(m).popup({ window: win });
+}
+
+function tabContextMenu(id) {
+  const tab = tabs.find(t => t.id === id); if (!tab) return;
+  const wc = tab.view ? tab.view.webContents : null;
+  Menu.buildFromTemplate([
+    { label: 'Reload', enabled: !!wc, click: () => wc && wc.reload() },
+    { label: 'Duplicate', click: () => createTab(tab.url, { openerId: tab.id }) },
+    { label: tab.pinned ? 'Unpin tab' : 'Pin tab', click: () => togglePin(id) },
+    { label: tab.muted ? 'Unmute tab' : 'Mute tab', enabled: !!wc, click: () => toggleMute(id) },
+    { label: `Volume (${Math.round(tab.volume * 100)}%)`, enabled: !!wc, submenu: [300, 200, 150, 100, 75, 50, 25, 10].map(p => ({
+      label: p + '%', type: 'radio', checked: Math.round(tab.volume * 100) === p, click: () => setTabVolume(id, p / 100),
+    })) },
+    { label: 'Copy link', click: () => clipboard.writeText(tab.url) },
+    splitOf(id) ? { label: 'Close split view', click: () => unsplit(id) }
+      : { label: 'Open in split view with current tab', enabled: id !== activeId, click: () => splitWith(id) },
+    { type: 'separator' },
+    { label: 'Close tab', click: () => closeTab(id) },
+    { label: 'Close other tabs', click: () => tabs.filter(t => t.id !== id && !t.pinned).forEach(t => closeTab(t.id)) },
+    { label: 'Close tabs below', click: () => { const i = tabs.indexOf(tab); tabs.slice(i + 1).filter(t => !t.pinned).forEach(t => closeTab(t.id)); } },
+  ]).popup({ window: win });
+}
+
+// ---------------------------------------------------------------------------
+// Per-tab volume (Chromium has no per-tab volume API, so we scale audio inside
+// the page: see audio-hook.js). 0 = silent, 1 = normal, up to 3 = 300% boost.
+// ---------------------------------------------------------------------------
+
+function applyVolume(tab) {
+  if (!tab.view) return;
+  const wc = tab.view.webContents;
+  if (wc.isDestroyed()) return;
+  const code = `${AUDIO_HOOK};window.__driftAudio.set(${tab.volume});`;
+  let frames = [];
+  try { frames = wc.mainFrame.framesInSubtree; } catch {}
+  for (const f of frames) {
+    try { if (!f.isDestroyed()) f.executeJavaScript(code).catch(() => {}); } catch {}
+  }
+}
+
+function setTabVolume(id, v) {
+  const tab = tabs.find(t => t.id === id); if (!tab) return;
+  tab.volume = Math.round(Math.max(0, Math.min(3, Number(v) || 0)) * 100) / 100;
+  tab.hadAudio = true;
+  if (tab.muted && tab.volume > 0 && tab.view) { tab.muted = false; tab.view.webContents.setAudioMuted(false); }
+  applyVolume(tab);
+  push();
+}
+
+function toggleMute(id) {
+  const tab = tabs.find(t => t.id === id); if (!tab || !tab.view) return;
+  tab.muted = !tab.muted;
+  tab.view.webContents.setAudioMuted(tab.muted);
+  push();
+}
+
+// ---------------------------------------------------------------------------
+// History & suggestions
+// ---------------------------------------------------------------------------
+
+function addHistory(url, title) {
+  if (isInternal(url) || !/^https?:/.test(url)) return;
+  const h = history.get(url) || { url, title: '', visits: 0, last: 0 };
+  h.visits++; h.last = Date.now(); if (title) h.title = title;
+  history.set(url, h);
+  saveHistory();
+}
+
+function frecency(h) {
+  const ageDays = (Date.now() - h.last) / 864e5;
+  return h.visits * (ageDays < 1 ? 100 : ageDays < 7 ? 70 : ageDays < 30 ? 50 : 30);
+}
+
+async function suggest(q) {
+  q = (q || '').trim().toLowerCase();
+  const out = [];
+  if (!q) {
+    return { items: [...history.values()].sort((a, b) => frecency(b) - frecency(a)).slice(0, 6)
+      .map(h => ({ kind: 'history', url: h.url, title: h.title || hostOf(h.url) })) };
+  }
+  for (const t of tabs) {
+    if (t.id !== activeId && ((t.title || '').toLowerCase().includes(q) || t.url.toLowerCase().includes(q)))
+      out.push({ kind: 'tab', id: t.id, url: t.url, title: t.title || t.url, favicon: t.favicon });
+  }
+  if (bookmarks) {
+    const seenB = new Set();
+    for (const b of bookmarks.all()) {
+      if (seenB.size >= 4) break;
+      if ((b.title || '').toLowerCase().includes(q) || b.url.toLowerCase().includes(q)) { seenB.add(b.url); out.push({ kind: 'bookmark', url: b.url, title: b.title || hostOf(b.url) }); }
+    }
+  }
+  const hits = [];
+  for (const h of history.values()) {
+    const u = h.url.toLowerCase(), ti = (h.title || '').toLowerCase();
+    if (u.includes(q) || ti.includes(q)) {
+      const bonus = hostOf(h.url).startsWith(q) ? 1000 : 0;
+      hits.push([frecency(h) + bonus, h]);
+    }
+  }
+  hits.sort((a, b) => b[0] - a[0]);
+  for (const [, h] of hits.slice(0, 6)) if (!out.some(o => o.url === h.url)) out.push({ kind: 'history', url: h.url, title: h.title || hostOf(h.url) });
+  let remote = [];
+  if (settings.suggestions && q.length > 1) {
+    try {
+      const ctl = new AbortController(); setTimeout(() => ctl.abort(), 1200);
+      const r = await net.fetch('https://duckduckgo.com/ac/?type=list&q=' + encodeURIComponent(q), { signal: ctl.signal });
+      const j = await r.json();
+      remote = (j[1] || []).filter(s => s.toLowerCase() !== q).slice(0, 4);
+    } catch {}
+  }
+  return { items: out.slice(0, 10), searches: remote };
+}
+
+function topSites() {
+  const m = [...history.values()]
+    .reduce((acc, h) => {
+      const host = hostOf(h.url); if (!host) return acc;
+      const e = acc.get(host) || { host, url: new URL(h.url).origin, title: '', score: 0 };
+      e.score += frecency(h); if (!e.title && h.title) e.title = h.title;
+      acc.set(host, e); return acc;
+    }, new Map())
+  ;
+  return [...m.values()].sort((a, b) => b.score - a.score).slice(0, 8);
+}
+
+// ---------------------------------------------------------------------------
+// Shields (ad & tracker blocking via Ghostery's engine — same lists as uBlock)
+// ---------------------------------------------------------------------------
+
+function shieldsOnFor(url) {
+  if (!settings.shields) return false;
+  if (settings.shieldsEngine === 'ubo') return true;
+  const h = hostOf(url);
+  return !h || !settings.shieldsAllow.includes(h);
+}
+
+// Where the bundled uBlock Origin lives (outside the app archive so Chromium can load it).
+function uboPath() {
+  return app.isPackaged ? path.join(process.resourcesPath, 'extensions', 'ublock') : path.join(__dirname, '..', 'extensions', 'ublock');
+}
+
+async function loadUbo() {
+  if (uboId) return;
+  try {
+    const ext = await extApi().loadExtension(uboPath(), { allowFileAccess: true });
+    uboId = ext.id;
+    console.log('[shields] uBlock Origin', ext.version, 'loaded');
+  } catch (e) { console.error('[shields] could not load uBlock Origin:', e.message); }
+  sendExtensions(); push();
+}
+function unloadUbo() {
+  if (!uboId) return;
+  try { extApi().removeExtension(uboId); } catch {}
+  uboId = null;
+  sendExtensions(); push();
+}
+
+// Chromium lets either the app or extensions see network requests, not both, so only one
+// blocking engine runs at a time. uBlock Origin is the default; the built-in one is lighter.
+async function initShields() {
+  if (settings.shieldsEngine === 'ubo') {
+    if (settings.shields) await loadUbo();
+    return;
+  }
+  try {
+    const { ElectronBlocker } = require('@ghostery/adblocker-electron');
+    const cache = file('adblock-engine.bin');
+    blocker = await ElectronBlocker.fromPrebuiltAdsAndTracking(net.fetch.bind(net), {
+      path: cache,
+      read: (p) => fs.promises.readFile(p),
+      write: (p, buf) => fs.promises.writeFile(p, buf),
+    });
+    // Per-site allowlist: skip blocking when the tab's site has shields down.
+    const tabUrlFor = (wcId) => { const t = wcToTab.get(wcId); return t ? t.url : ''; };
+    const origReq = blocker.onBeforeRequest;
+    blocker.onBeforeRequest = (details, cb) => {
+      if (details.webContentsId && !shieldsOnFor(tabUrlFor(details.webContentsId))) return cb({});
+      if (details.resourceType === 'mainFrame') return cb({});
+      return origReq(details, cb);
+    };
+    const origHdr = blocker.onHeadersReceived;
+    blocker.onHeadersReceived = (details, cb) => {
+      if (details.webContentsId && !shieldsOnFor(tabUrlFor(details.webContentsId))) return cb({});
+      return origHdr(details, cb);
+    };
+    const origCos = blocker.onInjectCosmeticFilters;
+    blocker.onInjectCosmeticFilters = (event, url, msg) => {
+      try { if (!shieldsOnFor(event.sender.getURL())) return undefined; } catch {}
+      return origCos(event, url, msg);
+    };
+    blocker.on('request-blocked', (req) => {
+      blockedTotal++;
+      const t = wcToTab.get(req.tabId);
+      if (t) { t.blocked++; if (t.id === activeId) push(); }
+    });
+    if (settings.shields) blocker.enableBlockingInSession(session.defaultSession);
+    console.log('[shields] ready');
+  } catch (e) {
+    console.error('[shields] could not load filter lists:', e.message);
+  }
+}
+
+function setShieldsGlobal(on) {
+  settings.shields = on; saveSettings();
+  if (settings.shieldsEngine === 'ubo') { on ? loadUbo() : unloadUbo(); push(); return; }
+  if (!blocker) { if (on) initShields(); return; }
+  try {
+    if (on) blocker.enableBlockingInSession(session.defaultSession);
+    else blocker.disableBlockingInSession(session.defaultSession);
+  } catch {}
+  push();
+}
+
+async function setShieldsEngine(engine) {
+  if (engine === settings.shieldsEngine) return;
+  settings.shieldsEngine = engine; saveSettings();
+  if (engine === 'ubo') {
+    if (blocker) { try { blocker.disableBlockingInSession(session.defaultSession); } catch {} }
+    if (settings.shields) await loadUbo();
+  } else {
+    unloadUbo();
+    if (blocker) { if (settings.shields) blocker.enableBlockingInSession(session.defaultSession); }
+    else await initShields();
+  }
+  for (const t of tabs) if (t.view && !isInternal(t.url)) t.view.webContents.reload();
+  push();
+}
+
+function toggleSiteShields() {
+  const t = activeTab(); if (!t) return;
+  const h = hostOf(t.url); if (!h) return;
+  if (!settings.shields) { setShieldsGlobal(true); settings.shieldsAllow = settings.shieldsAllow.filter(x => x !== h); }
+  else if (settings.shieldsAllow.includes(h)) settings.shieldsAllow = settings.shieldsAllow.filter(x => x !== h);
+  else settings.shieldsAllow.push(h);
+  saveSettings();
+  if (t.view) t.view.webContents.reload();
+  push();
+}
+
+// ---------------------------------------------------------------------------
+// Chrome extensions
+// ---------------------------------------------------------------------------
+
+const extApi = () => session.defaultSession.extensions || session.defaultSession;
+
+// Resolve "__MSG_name__" strings from an extension's _locales folder.
+function localize(str, ext) {
+  const m = /^__MSG_(.+)__$/.exec(str || '');
+  if (!m) return str || '';
+  const key = m[1].toLowerCase();
+  const locales = [app.getLocale().replace('-', '_'), app.getLocale().split('-')[0], ext.manifest.default_locale, 'en'];
+  for (const loc of locales) {
+    if (!loc) continue;
+    try {
+      const msgs = JSON.parse(fs.readFileSync(path.join(ext.path, '_locales', loc, 'messages.json'), 'utf8'));
+      const hit = Object.entries(msgs).find(([k]) => k.toLowerCase() === key);
+      if (hit) return hit[1].message;
+    } catch {}
+  }
+  return str;
+}
+
+function describePermissions(manifest) {
+  const perms = new Set(manifest.permissions || []);
+  const hosts = [...(manifest.host_permissions || []), ...((manifest.content_scripts || []).flatMap(c => c.matches || []))];
+  const lines = [];
+  if (hosts.some(h => h === '<all_urls>' || /^\*:\/\/\*\//.test(h) || /^https?:\/\/\*\//.test(h))) lines.push('Read and change all your data on all websites');
+  else if (hosts.length) {
+    const sites = [...new Set(hosts.map(h => h.replace(/^\*?:?\/\/|^https?:\/\//, '').replace(/\/.*$/, '').replace(/^\*\./, '')))].slice(0, 5);
+    lines.push('Read and change your data on ' + sites.join(', '));
+  }
+  if (perms.has('tabs') || perms.has('history')) lines.push('Read your browsing history');
+  if (perms.has('downloads')) lines.push('Manage your downloads');
+  if (perms.has('cookies')) lines.push('Read and change cookies');
+  if (perms.has('clipboardRead')) lines.push('Read data you copy and paste');
+  if (perms.has('notifications')) lines.push('Show notifications');
+  if (perms.has('declarativeNetRequest') || perms.has('webRequest')) lines.push('Block content on any page');
+  return lines.length ? 'It can:\n• ' + lines.join('\n• ') : 'It needs no special permissions.';
+}
+
+function listExtensions() {
+  let all = [];
+  try { all = extApi().getAllExtensions(); } catch {}
+  return all.map(e => {
+    const m = e.manifest || {};
+    const opt = (m.options_ui && m.options_ui.page) || m.options_page || '';
+    return {
+      id: e.id, name: localize(m.name || e.name, e), version: e.version,
+      description: localize(m.description, e),
+      options: opt ? `chrome-extension://${e.id}/${opt.replace(/^\//, '')}` : '',
+      unpacked: settings.unpacked.includes(e.path),
+      builtin: e.id === uboId,
+      hasAction: !!(m.action || m.browser_action),
+      hidden: settings.hiddenActions.includes(e.id),
+    };
+  }).sort((a, b) => a.name.localeCompare(b.name));
+}
+const sendExtensions = debounce(() => {
+  if (ui && !ui.webContents.isDestroyed()) ui.webContents.send('extensions', listExtensions());
+}, 100);
+
+async function startWorker(ext) {
+  if (ext && ext.manifest.manifest_version === 3 && ext.manifest.background && ext.manifest.background.service_worker) {
+    await session.defaultSession.serviceWorkers.startWorkerForScope(`chrome-extension://${ext.id}`).catch(() => {});
+  }
+}
+
+async function setupExtensions(ses) {
+  extensions = new ElectronChromeExtensions({
+    session: ses,
+    // chrome.tabs.create → a Drift tab
+    async createTab(details) {
+      const tab = createTab(details.url || NEWTAB, { activate: details.active !== false });
+      return [tab.view.webContents, win];
+    },
+    selectTab(wc) { const t = wcToTab.get(wc.id); if (t) activate(t.id); },
+    // chrome.tabs.remove, and also called when a page closes itself (window.close()).
+    removeTab(wc) {
+      try {
+        const t = wcToTab.get(wc.id);
+        if (t && tabs.includes(t)) setImmediate(() => { if (tabs.includes(t)) closeTab(t.id); });
+      } catch (e) { console.error('[tabs] removeTab', e); }
+    },
+    // chrome.windows.create → open the URL(s) as tabs (Drift is single-window)
+    async createWindow(details) {
+      [].concat(details.url || NEWTAB).forEach(u => createTab(u));
+      return win;
+    },
+    async requestPermissions(ext, perms) {
+      const r = await dialog.showMessageBox(win, {
+        type: 'question', buttons: ['Allow', 'Deny'], defaultId: 0, cancelId: 1,
+        message: `${localize(ext.name, ext)} wants additional access`,
+        detail: [...(perms.permissions || []), ...(perms.origins || [])].join('\n'),
+      });
+      return r.response === 0;
+    },
+  });
+  ElectronChromeExtensions.handleCRXProtocol(ses);
+  extApi().on('extension-loaded', sendExtensions);
+  extApi().on('extension-unloaded', sendExtensions);
+
+  try {
+    await installChromeWebStore({
+      session: ses,
+      // Ask before installing, like Chrome's "Add extension?" prompt.
+      beforeInstall: async (d) => {
+        const r = await dialog.showMessageBox(win, {
+          type: 'question', buttons: ['Add extension', 'Cancel'], defaultId: 0, cancelId: 1,
+          title: 'Add extension', message: `Add “${d.localizedName}” to Drift?`,
+          detail: describePermissions(d.manifest), icon: d.icon && !d.icon.isEmpty() ? d.icon : undefined,
+        });
+        return { action: r.response === 0 ? 'allow' : 'deny' };
+      },
+    });
+  } catch (e) { console.error('[extensions] web store setup failed:', e.message); }
+
+  for (const dir of settings.unpacked) {
+    try { await startWorker(await extApi().loadExtension(dir, { allowFileAccess: true })); }
+    catch (e) { console.error('[extensions] could not load', dir, e.message); }
+  }
+}
+
+async function removeExtension(id) {
+  if (id === uboId) return;   // built in: turned off from Settings → Shields instead
+  const ext = extApi().getExtension(id); if (!ext) return;
+  const name = localize(ext.manifest.name || ext.name, ext);
+  const r = await dialog.showMessageBox(win, { type: 'question', buttons: ['Remove', 'Cancel'], defaultId: 0, cancelId: 1, message: `Remove “${name}”?` });
+  if (r.response !== 0) return;
+  if (settings.unpacked.includes(ext.path)) {
+    extApi().removeExtension(id);
+    settings.unpacked = settings.unpacked.filter(p => p !== ext.path); saveSettings();
+  } else {
+    try { await uninstallExtension(id, { session: session.defaultSession }); }
+    catch (e) { console.error('[extensions] uninstall failed', e.message); extApi().removeExtension(id); }
+  }
+  settings.hiddenActions = settings.hiddenActions.filter(x => x !== id); saveSettings();
+  sendExtensions();
+}
+
+async function loadUnpacked() {
+  const r = await dialog.showOpenDialog(win, { title: 'Choose an extension folder (with manifest.json)', properties: ['openDirectory'] });
+  if (r.canceled || !r.filePaths[0]) return;
+  const dir = r.filePaths[0];
+  try {
+    const ext = await extApi().loadExtension(dir, { allowFileAccess: true });
+    await startWorker(ext);
+    if (!settings.unpacked.includes(dir)) { settings.unpacked.push(dir); saveSettings(); }
+    sendExtensions();
+  } catch (e) {
+    dialog.showMessageBox(win, { type: 'error', message: "Couldn't load that extension", detail: e.message });
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Permissions — ask the user instead of Electron's default "allow everything"
+// ---------------------------------------------------------------------------
+
+const AUTO_ALLOW = new Set(['fullscreen', 'clipboard-sanitized-write', 'pointerLock']);
+const ASK = {
+  media: 'use your camera or microphone', geolocation: 'know your location',
+  notifications: 'show notifications', 'clipboard-read': 'read your clipboard',
+  'display-capture': 'share your screen', midi: 'use MIDI devices', midiSysex: 'control MIDI devices',
+  'idle-detection': 'know when you are idle', keyboardLock: 'capture your keyboard',
+  'storage-access': 'use cookies across sites', 'top-level-storage-access': 'use cookies across sites',
+};
+
+function setupPermissions(ses) {
+  ses.setPermissionRequestHandler(async (wc, perm, cb, details) => {
+    if (ui && wc === ui.webContents) return cb(false);
+    if (AUTO_ALLOW.has(perm)) return cb(true);
+    if (!ASK[perm]) return cb(false);
+    let origin = '';
+    try { origin = new URL(details.requestingUrl || wc.getURL()).origin; } catch {}
+    const key = `${origin}|${perm}`;
+    if (key in settings.permissions) return cb(settings.permissions[key]);
+    const r = await dialog.showMessageBox(win, {
+      type: 'question', buttons: ['Allow', 'Block'], defaultId: 1, cancelId: 1,
+      title: 'Permission request', message: `${hostOf(origin) || 'This site'} wants to ${ASK[perm]}`,
+      checkboxLabel: 'Remember my choice for this site', checkboxChecked: true,
+    });
+    const allow = r.response === 0;
+    if (r.checkboxChecked) { settings.permissions[key] = allow; saveSettings(); }
+    cb(allow);
+  });
+  ses.setPermissionCheckHandler((wc, perm, origin) => {
+    if (AUTO_ALLOW.has(perm)) return true;
+    return settings.permissions[`${origin}|${perm}`] === true;
+  });
+}
+
+// ---------------------------------------------------------------------------
+// Downloads
+// ---------------------------------------------------------------------------
+
+function setupDownloads(ses) {
+  ses.on('will-download', (_e, item) => {
+    const dir = app.getPath('downloads');
+    const ext = path.extname(item.getFilename());
+    const base = path.basename(item.getFilename(), ext);
+    let target = path.join(dir, item.getFilename()); let n = 1;
+    while (fs.existsSync(target)) target = path.join(dir, `${base} (${n++})${ext}`);
+    item.setSavePath(target);
+    const d = { id: Date.now() + Math.random(), name: path.basename(target), path: target,
+      received: 0, total: item.getTotalBytes(), state: 'progressing', item };
+    downloads.unshift(d);
+    if (downloads.length > 30) downloads.pop();
+    ui.webContents.send('download-started', d.name);
+    let lastPush = 0;
+    item.on('updated', (_ev, state) => {
+      d.received = item.getReceivedBytes(); d.total = item.getTotalBytes(); d.state = state === 'interrupted' ? 'interrupted' : 'progressing';
+      const now = Date.now(); if (now - lastPush > 250) { lastPush = now; push(); }   // progress updates at most 4×/s
+    });
+    item.once('done', (_ev, state) => { d.state = state; d.received = item.getReceivedBytes(); delete d.item; push(); });
+    push();
+  });
+}
+
+// ---------------------------------------------------------------------------
+// drift:// internal pages
+// ---------------------------------------------------------------------------
+
+function setupProtocol() {
+  protocol.handle('drift', async (req) => {
+    const u = new URL(req.url);
+    if (u.hostname === 'newtab') {
+      let html = fs.readFileSync(path.join(PAGES_DIR, 'newtab.html'), 'utf8');
+      const data = {
+        sites: topSites(), accent: settings.accent, dark: isDark(),
+        engine: SEARCH_ENGINES[settings.searchEngine].name,
+        searchUrl: SEARCH_ENGINES[settings.searchEngine].url,
+        blocked: blockedTotal,
+        wallpaper: settings.wallpaperNewTab ? wallpaperCss() : '',
+        wallpaperDim: settings.wallpaperDim, wallpaperBlur: settings.wallpaperBlur,
+      };
+      html = html.replace('/*__DATA__*/null', JSON.stringify(data).replace(/</g, '\\u003c'));
+      return new Response(html, { headers: { 'content-type': 'text/html; charset=utf-8' } });
+    }
+    // The sidebar UI is served from drift://ui/ rather than file:// so that
+    // extension content scripts (which can match file:// URLs) never run inside it.
+    if (u.hostname === 'wallpaper') {
+      const name = path.basename(decodeURIComponent(u.pathname));
+      const fp = path.join(wallpaperDir(), name);
+      if (!name || !fs.existsSync(fp)) return new Response('Not found', { status: 404 });
+      const types = { '.jpg': 'image/jpeg', '.jpeg': 'image/jpeg', '.png': 'image/png', '.webp': 'image/webp', '.gif': 'image/gif', '.avif': 'image/avif', '.bmp': 'image/bmp' };
+      return new Response(fs.readFileSync(fp), { headers: { 'content-type': types[path.extname(fp).toLowerCase()] || 'application/octet-stream', 'cache-control': 'max-age=31536000' } });
+    }
+    if (u.hostname === 'ui') {
+      const name = path.basename(decodeURIComponent(u.pathname)) || 'index.html';
+      const fp = path.join(UI_DIR, name);
+      const types = { '.html': 'text/html', '.css': 'text/css', '.js': 'text/javascript' };
+      const type = types[path.extname(fp)];
+      if (!type || name === 'preload.js' || name === 'preload.src.js' || !fs.existsSync(fp)) return new Response('Not found', { status: 404 });
+      return new Response(fs.readFileSync(fp), { headers: { 'content-type': type + '; charset=utf-8' } });
+    }
+    return new Response('Not found', { status: 404 });
+  });
+}
+
+// ---------------------------------------------------------------------------
+// Settings helper (also used by shortcuts)
+// ---------------------------------------------------------------------------
+
+function setSetting(key, value) {
+  settings[key] = value; saveSettings();
+  if (['titleBar', 'bookmarksBar', 'sidebarRail'].includes(key)) layout();
+  if (key === 'theme') nativeTheme.themeSource = value;
+  if (['theme', 'accent', 'searchEngine', 'wallpaper', 'wallpaperDim', 'wallpaperBlur', 'wallpaperNewTab'].includes(key)) refreshNewTabs();
+  if (key === 'forceDark') {
+    for (const t of tabs) if (t.view && !isInternal(t.url) && wantsDark(t.url) !== !!t.dark) rebuildView(t);
+  }
+  push();
+}
+
+function toggleForceDarkSite() {
+  const t = activeTab(); if (!t) return;
+  const h = hostOf(t.url); if (!h) return;
+  if (!settings.forceDark) { settings.forceDarkOff = settings.forceDarkOff.filter(x => x !== h); setSetting('forceDark', true); return; }
+  if (settings.forceDarkOff.includes(h)) settings.forceDarkOff = settings.forceDarkOff.filter(x => x !== h);
+  else settings.forceDarkOff.push(h);
+  saveSettings();
+  for (const x of tabs) if (x.view && hostOf(x.url) === h && wantsDark(x.url) !== !!x.dark) rebuildView(x);
+  push();
+}
+
+// ---------------------------------------------------------------------------
+// Wallpapers
+// ---------------------------------------------------------------------------
+
+const wallpaperDir = () => file('wallpapers');
+
+function wallpaperCss() {
+  const w = settings.wallpaper || '';
+  if (w.startsWith('builtin:')) { const b = WALLPAPERS.find(x => x.id === w.slice(8)); return b ? b.css : ''; }
+  if (w.startsWith('file:')) return `url("drift://wallpaper/${encodeURIComponent(w.slice(5))}") center / cover no-repeat, #111`;
+  return '';
+}
+
+// Windows keeps a copy of the current desktop background here.
+function desktopWallpaperPath() {
+  if (process.platform !== 'win32') return '';
+  const p = path.join(process.env.APPDATA || '', 'Microsoft', 'Windows', 'Themes', 'TranscodedWallpaper');
+  try { return fs.statSync(p).size > 0 ? p : ''; } catch { return ''; }
+}
+
+function useWallpaperFile(src, ext) {
+  fs.mkdirSync(wallpaperDir(), { recursive: true });
+  const name = `custom-${Date.now()}${ext}`;
+  fs.copyFileSync(src, path.join(wallpaperDir(), name));
+  // Remove previously chosen custom images.
+  for (const f of fs.readdirSync(wallpaperDir())) if (f !== name) { try { fs.unlinkSync(path.join(wallpaperDir(), f)); } catch {} }
+  setSetting('wallpaper', 'file:' + name);
+}
+
+async function chooseWallpaper() {
+  const r = await dialog.showOpenDialog(win, { title: 'Choose a wallpaper', properties: ['openFile'],
+    filters: [{ name: 'Images', extensions: ['jpg', 'jpeg', 'png', 'webp', 'gif', 'avif', 'bmp'] }] });
+  if (r.canceled || !r.filePaths[0]) return;
+  try { useWallpaperFile(r.filePaths[0], path.extname(r.filePaths[0]).toLowerCase()); }
+  catch (e) { dialog.showMessageBox(win, { type: 'error', message: "Couldn't use that image", detail: e.message }); }
+}
+
+// ---------------------------------------------------------------------------
+// Bookmarks
+// ---------------------------------------------------------------------------
+
+const sendBookmarks = debounce(() => {
+  const withIcons = (items) => items.map(it => it.type === 'folder' ? { ...it, children: withIcons(it.children) }
+    : { ...it, icon: (it.icon && it.icon.startsWith('data:')) ? it.icon : (faviconStore[hostOf(it.url)] || '') });
+  if (ui && !ui.webContents.isDestroyed() && bookmarks) ui.webContents.send('bookmarks', withIcons(bookmarks.bar));
+  push();
+}, 30);
+
+function toggleBookmarkActive() {
+  const t = activeTab(); if (!t || isInternal(t.url)) return;
+  const existing = bookmarks.findByUrl(t.url);
+  // Already bookmarked: open the edit dialog (it has Delete), like Chrome's star.
+  if (existing) ui.webContents.send('bm-edit', { id: existing.id, type: 'link', title: existing.title, url: existing.url });
+  else {
+    const b = bookmarks.add({ title: t.title || hostOf(t.url), url: t.url, icon: t.favicon });
+    ui.webContents.send('toast', { text: 'Added to bookmarks bar', icon: 'starfill', action: { label: 'Edit', bm: b.id } });
+  }
+  sendBookmarks();
+}
+
+function openBookmark(item, newTab, background) {
+  if (!item) return;
+  if (item.type === 'folder') { for (const c of item.children) if (c.type === 'link') createTab(c.url, { activate: false }); return; }
+  if (newTab) createTab(item.url, { activate: !background });
+  else navigate(item.url);
+}
+
+function bookmarkMenuItems(items) {
+  return items.map(it => it.type === 'folder'
+    ? { label: it.title || 'Folder', submenu: it.children.length ? [
+        ...bookmarkMenuItems(it.children), { type: 'separator' },
+        { label: `Open all (${it.children.filter(c => c.type === 'link').length})`, click: () => openBookmark(it, true, true) }] : [{ label: '(empty)', enabled: false }] }
+    : { label: (it.title || it.url).slice(0, 60), click: (_m, _w, ev) => openBookmark(it, ev && (ev.ctrlKey || ev.metaKey), false) });
+}
+
+function bookmarkContextMenu(id) {
+  const hit = bookmarks.find(id); if (!hit) return;
+  const it = hit.item;
+  const t = activeTab();
+  Menu.buildFromTemplate([
+    ...(it.type === 'link' ? [
+      { label: 'Open', click: () => openBookmark(it, false) },
+      { label: 'Open in new tab', click: () => openBookmark(it, true, false) },
+      { label: 'Copy link', click: () => clipboard.writeText(it.url) },
+    ] : [{ label: 'Open all in new tabs', click: () => openBookmark(it, true, true) }]),
+    { type: 'separator' },
+    { label: 'Edit…', click: () => ui.webContents.send('bm-edit', { id: it.id, type: it.type, title: it.title, url: it.url || '' }) },
+    { label: 'Delete', click: () => { bookmarks.remove(it.id); sendBookmarks(); } },
+    { type: 'separator' },
+    { label: 'Add current page', enabled: !!t && !isInternal(t.url), click: () => toggleBookmarkActive() },
+    { label: 'Add folder…', click: () => ui.webContents.send('bm-edit', { id: null, type: 'folder', title: '', url: '' }) },
+    { label: 'Hide bookmarks bar', click: () => setSetting('bookmarksBar', false) },
+  ]).popup({ window: win });
+}
+
+async function importBookmarksFrom(source) {
+  try {
+    let items, name;
+    if (source === 'file') {
+      const r = await dialog.showOpenDialog(win, { title: 'Import bookmarks', properties: ['openFile'],
+        filters: [{ name: 'Bookmarks file', extensions: ['html', 'htm', 'json'] }] });
+      if (r.canceled || !r.filePaths[0]) return;
+      const text = fs.readFileSync(r.filePaths[0], 'utf8');
+      items = /^\s*\{/.test(text) ? fromChromiumJSON(r.filePaths[0]) : fromNetscapeHTML(text);
+      name = path.basename(r.filePaths[0]);
+    } else {
+      const prof = chromiumProfiles().find(p => p.name === source);
+      if (!prof) throw new Error(`Couldn't find ${source}'s bookmarks on this PC.`);
+      items = fromChromiumJSON(prof.file); name = source;
+    }
+    const n = bookmarks.merge(items, name);
+    sendBookmarks();
+    ui.webContents.send('toast', { text: `Imported ${n} bookmark${n === 1 ? '' : 's'} from ${name}`, icon: 'starfill' });
+  } catch (e) {
+    dialog.showMessageBox(win, { type: 'error', message: "Couldn't import bookmarks", detail: e.message });
+  }
+}
+
+async function exportBookmarks() {
+  const r = await dialog.showSaveDialog(win, { title: 'Export bookmarks', defaultPath: path.join(app.getPath('documents'), 'drift-bookmarks.html'),
+    filters: [{ name: 'Bookmarks file', extensions: ['html'] }] });
+  if (r.canceled || !r.filePath) return;
+  fs.writeFileSync(r.filePath, toNetscapeHTML(bookmarks.bar));
+  ui.webContents.send('toast', { text: 'Bookmarks exported', icon: 'starfill' });
+}
+
+// ---------------------------------------------------------------------------
+// Passwords
+// ---------------------------------------------------------------------------
+
+let pendingLogin = null;     // { wcId, url, username, password, timer }
+
+function listPasswords() {
+  return passwords.entries.map(e => ({ id: e.id, url: e.url, host: hostOf(e.url), username: e.username, updated: e.updated }))
+    .sort((a, b) => a.host.localeCompare(b.host) || a.username.localeCompare(b.username));
+}
+const sendPasswords = () => { if (ui && !ui.webContents.isDestroyed()) ui.webContents.send('passwords', listPasswords()); push(); };
+
+async function offerSavePassword() {
+  const p = pendingLogin; pendingLogin = null;
+  if (!p) return;
+  clearTimeout(p.timer);
+  if (!settings.offerPasswords || passwords.isNever(p.url)) return;
+  const same = passwords.forUrl(p.url).find(e => e.username === p.username);
+  if (same && same.password === p.password) return;
+  const host = hostOf(p.url);
+  const r = await dialog.showMessageBox(win, {
+    type: 'question', title: 'Save password',
+    message: same ? `Update your saved password for ${host}?` : `Save password for ${host}?`,
+    detail: p.username ? `Username: ${p.username}` : 'No username was detected.',
+    buttons: [same ? 'Update' : 'Save', 'Not now', 'Never for this site'], defaultId: 0, cancelId: 1,
+  });
+  if (r.response === 0) { passwords.upsert({ url: p.url, username: p.username, password: p.password }); sendPasswords(); }
+  if (r.response === 2) passwords.addNever(p.url);
+}
+
+async function importPasswords() {
+  const r = await dialog.showOpenDialog(win, { title: 'Import passwords (CSV)', properties: ['openFile'],
+    filters: [{ name: 'Password export (CSV)', extensions: ['csv'] }] });
+  if (r.canceled || !r.filePaths[0]) return;
+  try {
+    const res = passwords.importCSV(fs.readFileSync(r.filePaths[0], 'utf8'));
+    sendPasswords();
+    dialog.showMessageBox(win, { type: 'info', message: 'Passwords imported',
+      detail: `${res.added} added, ${res.updated} updated${res.skipped ? `, ${res.skipped} skipped (duplicates or not a website login)` : ''}.\n\nThe CSV file still contains your passwords in plain text. Delete it once you've checked everything imported.` });
+  } catch (e) {
+    dialog.showMessageBox(win, { type: 'error', message: "Couldn't import passwords", detail: e.message });
+  }
+}
+
+async function exportPasswords() {
+  const ok = await dialog.showMessageBox(win, { type: 'warning', buttons: ['Export', 'Cancel'], defaultId: 1, cancelId: 1,
+    message: 'Export passwords?', detail: 'The exported file is NOT encrypted. Anyone who can open it can read all your passwords.' });
+  if (ok.response !== 0) return;
+  const r = await dialog.showSaveDialog(win, { title: 'Export passwords', defaultPath: path.join(app.getPath('documents'), 'drift-passwords.csv'),
+    filters: [{ name: 'CSV', extensions: ['csv'] }] });
+  if (r.canceled || !r.filePath) return;
+  fs.writeFileSync(r.filePath, passwords.exportCSV(), { mode: 0o600 });
+}
+
+// Messages from web pages (page-preload.js). Only real tabs may ask, and the site
+// is taken from the requesting frame itself, never from what the page says.
+function setupPageIPC() {
+  // Synchronous tab lookup for extension background pages only.
+  ipcMain.on('drift-tab-for', (e, d) => {
+    let out = -1;
+    try { if (e.sender.getType() === 'backgroundPage' && d) out = tabIdForRequest(d); } catch {}
+    e.returnValue = out;
+  });
+  const frameUrl = (e) => {
+    if (!wcToTab.has(e.sender.id)) return '';
+    try { return e.senderFrame ? e.senderFrame.url : ''; } catch { return ''; }
+  };
+  ipcMain.handle('pw-accounts', (e) => {
+    const url = frameUrl(e); if (!/^https?:/.test(url)) return [];
+    return passwords.forUrl(url).map(x => ({ id: x.id, username: x.username }));
+  });
+  ipcMain.handle('pw-fill', (e, id) => {
+    const url = frameUrl(e); if (!/^https?:/.test(url)) return null;
+    const entry = passwords.forUrl(url).find(x => x.id === id);
+    if (!entry) return null;
+    passwords.markUsed(entry.id);
+    return { username: entry.username, password: entry.password };
+  });
+  ipcMain.on('pw-submitted', (e, data) => {
+    const url = frameUrl(e); if (!/^https?:/.test(url) || !data || !data.password) return;
+    if (pendingLogin) clearTimeout(pendingLogin.timer);
+    pendingLogin = { wcId: e.sender.id, url, username: String(data.username || '').slice(0, 500), password: String(data.password).slice(0, 2000) };
+    // Ask after the page moves on (successful login); single-page sites get a short grace period.
+    pendingLogin.timer = setTimeout(offerSavePassword, 5000);
+  });
+}
+
+// ---------------------------------------------------------------------------
+// Auto-update from GitHub Releases (installed builds only)
+// ---------------------------------------------------------------------------
+
+let updateState = { status: 'idle', version: '' };   // idle | checking | downloading | ready | none | error
+function setupUpdates() {
+  if (!app.isPackaged) return;
+  let autoUpdater;
+  try { ({ autoUpdater } = require('electron-updater')); } catch (e) { console.error('[update]', e.message); return; }
+  // The portable zip can't update itself; only the installed version does.
+  if (process.platform === 'win32' && !fs.existsSync(path.join(path.dirname(process.execPath), 'Uninstall Drift.exe'))) {
+    updateState = { status: 'portable', version: '' }; return;
+  }
+  autoUpdater.autoDownload = true;
+  autoUpdater.autoInstallOnAppQuit = true;
+  const set = (status, version = updateState.version) => { updateState = { status, version }; push(); };
+  autoUpdater.on('checking-for-update', () => set('checking'));
+  autoUpdater.on('update-available', (i) => set('downloading', i.version));
+  autoUpdater.on('update-not-available', () => set('none'));
+  autoUpdater.on('error', (e) => { console.error('[update]', e && e.message); set('error'); });
+  autoUpdater.on('update-downloaded', (i) => {
+    set('ready', i.version);
+    if (ui) ui.webContents.send('toast', { text: `Drift ${i.version} is ready — it installs when you restart`, icon: 'download', action: { label: 'Restart', update: true } });
+  });
+  const check = () => autoUpdater.checkForUpdates().catch(() => {});
+  setTimeout(check, 8000);
+  setInterval(check, 4 * 3600 * 1000);
+  ipcMain.on('update-check', (e) => { if (ui && e.sender === ui.webContents) check(); });
+  ipcMain.on('update-install', (e) => {
+    if (!ui || e.sender !== ui.webContents || updateState.status !== 'ready') return;
+    writeJSON('session.json', sessionSnapshot()); writeJSON('settings.json', settings);
+    autoUpdater.quitAndInstall(false, true);
+  });
+}
+
+// ---------------------------------------------------------------------------
+// IPC from the sidebar UI
+// ---------------------------------------------------------------------------
+
+function setupIPC() {
+  const on = (ch, fn) => ipcMain.on(ch, (e, ...a) => { if (ui && e.sender === ui.webContents) fn(...a); });
+  const handle = (ch, fn) => ipcMain.handle(ch, (e, ...a) => (ui && e.sender === ui.webContents) ? fn(...a) : null);
+
+  on('ready', () => { push(); layout(); sendBookmarks(); });
+  on('activate', (id) => activate(id));
+  on('close-tab', (id) => closeTab(id));
+  on('new-tab', () => { ui.webContents.send('palette', { newTab: true }); setOverlay('palette'); });
+  on('tab-menu', (id) => tabContextMenu(id));
+  on('move-tab', (id, idx, pinned) => moveTab(id, idx, pinned));
+  on('toggle-pin', (id) => togglePin(id));
+  on('toggle-mute', (id) => toggleMute(id));
+  on('tab-volume', (id, v) => setTabVolume(id, v));
+  on('navigate', (text, newTab) => { setOverlay(null); navigate(text, newTab); });
+  on('switch-to', (id) => { setOverlay(null); activate(id); });
+  on('back', () => { const t = activeTab(); t?.view?.webContents.navigationHistory.canGoBack() && t.view.webContents.navigationHistory.goBack(); });
+  on('forward', () => { const t = activeTab(); t?.view?.webContents.navigationHistory.canGoForward() && t.view.webContents.navigationHistory.goForward(); });
+  on('reload', () => { const t = activeTab(); if (t?.view) t.loading ? t.view.webContents.stop() : t.view.webContents.reload(); });
+  on('home', () => navigate(NEWTAB));
+  on('overlay', (mode) => setOverlay(mode));
+  on('find', (text, forward, next) => {
+    const t = activeTab(); if (!t?.view) return;
+    if (!text) { t.view.webContents.stopFindInPage('clearSelection'); ui.webContents.send('find-result', { active: 0, matches: 0 }); return; }
+    t.view.webContents.findInPage(text, { forward, findNext: !next });
+  });
+  on('find-close', () => closeFind());
+  on('toggle-sidebar', () => toggleSidebar());
+  on('sidebar-width', (w) => {
+    // Dragging the edge in far enough collapses to the icon-only rail; dragging out expands again.
+    if (w < 140) { if (!settings.sidebarRail) setSetting('sidebarRail', true); return; }
+    settings.sidebarWidth = Math.round(Math.max(200, Math.min(420, w)));
+    if (settings.sidebarRail) setSetting('sidebarRail', false); else { layout(); saveSettings(); push(); }
+  });
+  on('site-shields', () => toggleSiteShields());
+  on('zoom', (d) => zoom(d));
+  on('set', (key, value) => {
+    if (!(key in DEFAULT_SETTINGS) || ['permissions', 'bounds', 'shieldsAllow', 'hiddenActions', 'unpacked', 'forceDarkOff'].includes(key)) return;
+    if (key === 'shields') return setShieldsGlobal(!!value);
+    if (key === 'shieldsEngine') return setShieldsEngine(value === 'builtin' ? 'builtin' : 'ubo');
+    setSetting(key, value);
+  });
+  on('remove-allow', (host) => { settings.shieldsAllow = settings.shieldsAllow.filter(h => h !== host); saveSettings(); push(); });
+  on('clear-data', async () => {
+    const r = await dialog.showMessageBox(win, { type: 'warning', buttons: ['Clear', 'Cancel'], defaultId: 1, cancelId: 1,
+      message: 'Clear browsing data?', detail: 'This removes history, cookies, site data, cache and saved site permissions. You will be signed out of websites.' });
+    if (r.response !== 0) return;
+    history.clear(); writeJSON('history.json', []);
+    settings.permissions = {}; saveSettings();
+    await session.defaultSession.clearStorageData();
+    await session.defaultSession.clearCache();
+    push();
+  });
+  on('win', (action) => {
+    if (action === 'min') win.minimize();
+    else if (action === 'max') win.isMaximized() ? win.unmaximize() : win.maximize();
+    else if (action === 'close') win.close();
+  });
+  on('open-download', (id) => { const d = downloads.find(x => x.id === id); if (d) shell.openPath(d.path); });
+  on('show-download', (id) => { const d = downloads.find(x => x.id === id); if (d) shell.showItemInFolder(d.path); });
+  on('cancel-download', (id) => { const d = downloads.find(x => x.id === id); if (d && d.item) d.item.cancel(); });
+  on('clear-downloads', () => { for (let i = downloads.length - 1; i >= 0; i--) if (downloads[i].state !== 'progressing') downloads.splice(i, 1); push(); });
+  on('open-downloads-folder', () => shell.openPath(app.getPath('downloads')));
+  on('devtools-ui', () => ui.webContents.openDevTools({ mode: 'detach' }));
+  handle('suggest', (q) => suggest(q));
+  on('ext-list', () => sendExtensions());
+  on('ext-remove', (id) => removeExtension(id));
+  on('ext-options', (id) => { const e = listExtensions().find(x => x.id === id); if (e && e.options) createTab(e.options); });
+  on('ext-visible', (id, visible) => {
+    settings.hiddenActions = settings.hiddenActions.filter(x => x !== id);
+    if (!visible) settings.hiddenActions.push(id);
+    saveSettings(); sendExtensions();
+  });
+  on('ext-store', () => createTab('https://chromewebstore.google.com/category/extensions'));
+  on('ext-unpacked', () => loadUnpacked());
+  on('force-dark-site', () => toggleForceDarkSite());
+  on('split-menu', (x, y) => splitMenu(x, y));
+  on('split-ratio', (r) => { const sp = splitOf(activeId); if (!sp) return; sp.ratio = Math.max(0.15, Math.min(0.85, Number(r) || 0.5)); layout(); saveSession(); });
+  on('unsplit', () => unsplit());
+  on('wp-choose', () => chooseWallpaper());
+  on('wp-desktop', () => { const p = desktopWallpaperPath(); if (p) { try { useWallpaperFile(p, '.jpg'); } catch (e) { console.error(e.message); } } });
+  on('undark', (host) => {
+    settings.forceDarkOff = settings.forceDarkOff.filter(h => h !== host); saveSettings();
+    for (const x of tabs) if (x.view && hostOf(x.url) === host && wantsDark(x.url) !== !!x.dark) rebuildView(x);
+    push();
+  });
+  // bookmarks
+  on('bm-list', () => sendBookmarks());
+  on('bm-toggle', () => toggleBookmarkActive());
+  on('bm-open', (id, newTab) => { const h = bookmarks.find(id); if (h) openBookmark(h.item, newTab, false); });
+  on('bm-menu', (id) => bookmarkContextMenu(id));
+  on('bm-bar-menu', () => {
+    const t = activeTab();
+    Menu.buildFromTemplate([
+      { label: 'Add current page', enabled: !!t && !isInternal(t.url), click: () => toggleBookmarkActive() },
+      { label: 'Add folder…', click: () => ui.webContents.send('bm-edit', { id: null, type: 'folder', title: '', url: '' }) },
+      { type: 'separator' },
+      { label: 'Hide bookmarks bar', click: () => setSetting('bookmarksBar', false) },
+    ]).popup({ window: win });
+  });
+  on('bm-folder', (id, x, y) => {
+    const h = bookmarks.find(id); if (!h) return;
+    Menu.buildFromTemplate(bookmarkMenuItems([h.item])[0].submenu).popup({ window: win, x: Math.round(x), y: Math.round(y) });
+  });
+  on('bm-overflow', (ids, x, y) => {
+    const items = ids.map(id => bookmarks.find(id)).filter(Boolean).map(h => h.item);
+    if (items.length) Menu.buildFromTemplate(bookmarkMenuItems(items)).popup({ window: win, x: Math.round(x), y: Math.round(y) });
+  });
+  on('bm-move', (id, idx) => { bookmarks.move(id, idx); sendBookmarks(); });
+  on('bm-add-tab', (tabId, idx) => {
+    const t = tabs.find(x => x.id === tabId); if (!t || isInternal(t.url)) return;
+    bookmarks.add({ title: t.title || hostOf(t.url), url: t.url, icon: t.favicon }, idx); sendBookmarks();
+  });
+  on('bm-save', (id, fields) => {
+    if (id) bookmarks.update(id, { title: String(fields.title || ''), url: fields.url ? toUrl(fields.url) : undefined });
+    else if (fields.type === 'folder') bookmarks.add({ type: 'folder', title: String(fields.title || 'New folder') });
+    else if (fields.url) bookmarks.add({ title: String(fields.title || ''), url: toUrl(fields.url) });
+    sendBookmarks();
+  });
+  on('bm-delete', (id) => { bookmarks.remove(id); sendBookmarks(); });
+  on('bm-import', (source) => importBookmarksFrom(source));
+  on('bm-export', () => exportBookmarks());
+  handle('bm-sources', () => chromiumProfiles().map(p => p.name));
+  // passwords
+  on('pw-list', () => sendPasswords());
+  handle('pw-reveal', (id) => { const e = passwords.get(id); return e ? e.password : ''; });
+  on('pw-copy', (id, what) => {
+    const e = passwords.get(id); if (!e) return;
+    clipboard.writeText(what === 'username' ? e.username : e.password);
+    // Clear a copied password from the clipboard after 30 seconds, like most password managers.
+    if (what !== 'username') setTimeout(() => { if (clipboard.readText() === e.password) clipboard.clear(); }, 30000);
+  });
+  on('pw-delete', async (id) => {
+    const e = passwords.get(id); if (!e) return;
+    const r = await dialog.showMessageBox(win, { type: 'question', buttons: ['Delete', 'Cancel'], defaultId: 0, cancelId: 1,
+      message: `Delete the saved password for ${hostOf(e.url)}?`, detail: e.username ? `Username: ${e.username}` : '' });
+    if (r.response === 0) { passwords.remove(id); sendPasswords(); }
+  });
+  on('pw-save', (id, fields) => {
+    if (id) passwords.update(id, fields);
+    else if (fields.url && fields.password) passwords.upsert({ url: toUrl(fields.url), username: fields.username || '', password: fields.password });
+    sendPasswords();
+  });
+  on('pw-import', () => importPasswords());
+  on('pw-export', () => exportPasswords());
+}
+
+// ---------------------------------------------------------------------------
+// Window
+// ---------------------------------------------------------------------------
+
+function createWindow() {
+  const b = settings.bounds || { width: 1280, height: 820 };
+  win = new BaseWindow({
+    ...b, minWidth: 640, minHeight: 420, frame: false, show: false,
+    title: 'Drift', backgroundColor: isDark() ? '#141417' : '#ebebef',
+    icon: path.join(__dirname, '..', 'build', 'icon.png'),
+  });
+  if (settings.maximized) win.maximize();
+
+  ui = new WebContentsView({
+    webPreferences: { preload: path.join(UI_DIR, 'preload.js'), contextIsolation: true, sandbox: true, nodeIntegration: false },
+  });
+  ui.setBackgroundColor('#00000000');
+  win.contentView.addChildView(ui);
+  ui.webContents.loadURL('drift://ui/index.html');
+  ui.webContents.on('before-input-event', (e, input) => {
+    // Let normal typing go to the sidebar inputs; only intercept real shortcuts.
+    if (handleShortcut(input)) e.preventDefault();
+  });
+  ui.webContents.once('did-finish-load', () => { layout(); win.show(); });
+  ui.webContents.setWindowOpenHandler(() => ({ action: 'deny' }));
+  ui.webContents.on('will-navigate', (e) => e.preventDefault());
+
+  const saveBounds = debounce(() => {
+    if (win.isDestroyed()) return;
+    settings.maximized = win.isMaximized();
+    if (!win.isMaximized() && !win.isFullScreen() && !win.isMinimized()) settings.bounds = win.getBounds();
+    saveSettings();
+  }, 500);
+  win.on('resize', () => { layout(); saveBounds(); });
+  win.on('move', saveBounds);
+  win.on('maximize', () => { layout(); push(); saveBounds(); });
+  win.on('unmaximize', () => { layout(); push(); saveBounds(); });
+  win.on('enter-full-screen', layout);
+  win.on('leave-full-screen', () => {
+    if (htmlFullscreen) { htmlFullscreen = false; const t = activeTab(); t?.view?.webContents.executeJavaScript('document.fullscreenElement && document.exitFullscreen()').catch(() => {}); }
+    layout();
+  });
+  win.on('app-command', (_e, cmd) => {
+    const wc = activeTab()?.view?.webContents; if (!wc) return;
+    if (cmd === 'browser-backward' && wc.navigationHistory.canGoBack()) wc.navigationHistory.goBack();
+    if (cmd === 'browser-forward' && wc.navigationHistory.canGoForward()) wc.navigationHistory.goForward();
+  });
+  win.on('focus', () => { if (!overlay) focusPage(); });
+  win.on('close', () => { writeJSON('session.json', sessionSnapshot()); writeJSON('settings.json', settings); });
+  win.on('closed', () => { win = null; app.quit(); });
+
+  // Restore last session or open a fresh tab.
+  const urls = process.argv.slice(1).filter(a => /^https?:\/\//.test(a));
+  const s = settings.restoreTabs ? readJSON('session.json', null) : null;
+  if (s && s.tabs && s.tabs.length) {
+    s.tabs.forEach((t, i) => createTab(t.url, { title: t.title, favicon: t.favicon, pinned: t.pinned, lazy: i !== s.active, activate: false }));
+    for (const [i, j, ratio, dir] of s.splits || []) {
+      if (tabs[i] && tabs[j] && !splitOf(tabs[i].id) && !splitOf(tabs[j].id)) splits.push({ a: tabs[i].id, b: tabs[j].id, ratio: ratio || 0.5, dir: dir === 'col' ? 'col' : 'row' });
+    }
+    activate(tabs[Math.min(s.active, tabs.length - 1)].id);
+  }
+  for (const u of urls) createTab(u);
+  if (!tabs.length) createTab(NEWTAB);
+}
+
+// ---------------------------------------------------------------------------
+// App lifecycle
+// ---------------------------------------------------------------------------
+
+// Note: this call replaces any earlier registration, so crx (extension icons) is listed here too.
+protocol.registerSchemesAsPrivileged([
+  { scheme: 'drift', privileges: { standard: true, secure: true, supportFetchAPI: true } },
+  { scheme: 'crx', privileges: { bypassCSP: true } },
+]);
+app.userAgentFallback = chromeUA();
+app.setName('Drift');
+app.commandLine.appendSwitch('disable-features', 'HardwareMediaKeyHandling');
+// Faster downloads: fetch large files over several connections at once (Chromium's parallel
+// downloading). Servers that don't support it fall back to a normal single download.
+app.commandLine.appendSwitch('enable-features', 'ParallelDownloading:parallel_request_count/6/min_slice_size/1048576/parallel_request_delay/0');
+
+if (!app.requestSingleInstanceLock()) {
+  app.quit();
+} else {
+  app.on('second-instance', (_e, argv) => {
+    if (!win) return;
+    if (win.isMinimized()) win.restore();
+    win.focus();
+    argv.filter(a => /^https?:\/\//.test(a)).forEach(u => createTab(u));
+  });
+
+  app.whenReady().then(async () => {
+    settings = { ...DEFAULT_SETTINGS, ...readJSON('settings.json', {}) };
+    nativeTheme.themeSource = settings.theme;
+    history = new Map(readJSON('history.json', []).map(h => [h.url, h]));
+    bookmarks = new Bookmarks(() => readJSON('bookmarks.json', null), (d) => writeJSON('bookmarks.json', d));
+    passwords = new Passwords(file('passwords.json'));
+    faviconStore = readJSON('favicons.json', {});
+    Menu.setApplicationMenu(null);
+    const ses = session.defaultSession;
+    ses.setUserAgent(chromeUA());
+    ses.setSpellCheckerLanguages(['en-US']);
+    setupProtocol();
+    setupPermissions(ses);
+    ses.registerPreloadScript({ id: 'drift-page', type: 'frame', filePath: path.join(__dirname, 'page-preload.js') });
+    setupDownloads(ses);
+    setupIPC();
+    setupPageIPC();
+    nativeTheme.on('updated', () => { push(); refreshNewTabs(); });
+    await setupExtensions(ses);
+    createWindow();
+    initShields();
+    setupUpdates();
+  });
+
+  app.on('window-all-closed', () => app.quit());
+  app.on('web-contents-created', (_e, wc) => {
+    // Block navigation into the sidebar UI and harden every webContents.
+    wc.on('will-attach-webview', (e) => e.preventDefault());
+    // Tabs and sign-in popups both need the Google sign-in user agent switch.
+    if (wc.getType() === 'window' || wc.getType() === 'browserView') guardUserAgent(wc);
+  });
+}

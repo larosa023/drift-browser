@@ -1,0 +1,18 @@
+uBlock Origin 1.75.0 (Chromium build, https://github.com/gorhill/uBlock/releases/tag/1.75.0),
+licensed GPLv3 (see LICENSE.txt), bundled with Drift with three small changes:
+
+1. js/vapi-background-ext.js, normalizeDetails(): Electron reports tabId -1 for every
+   webRequest event, so uBO would treat all traffic as "behind-the-scene" and filter
+   nothing per-site. When tabId is -1, ask Drift (self.__driftTabFor) which tab the
+   request belongs to.
+
+2. js/vapi-background.js, onPortConnect(): Electron doesn't fill port.sender.tab for
+   content scripts, so cosmetic filtering and scriptlets had no tab. Ask Drift the same way.
+
+3. js/vapi-background.js, vAPI.adminStorage: Electron's chrome.storage.managed.get()
+   returns the contents of storage.local. uBO caches that result into storage.local,
+   so storage doubled on every launch (gigabytes within days) and startup slowed to a
+   crawl. Drift has no admin policies, so managed storage is treated as absent and the
+   stale cachedManagedStorage entry is removed.
+
+Nothing else is modified.

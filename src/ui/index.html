@@ -1,0 +1,144 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; img-src * data: crx: drift:; style-src 'self' 'unsafe-inline'; script-src 'self'">
+  <title>Drift</title>
+  <link rel="stylesheet" href="ui.css">
+</head>
+<body class="dark">
+  <div id="wash"><div id="wp"></div><div id="wp-tint"></div></div>
+  <header id="titlebar">
+    <div class="tb-left"><button class="ib" id="tb-sidebar" data-i="sidebar" title="Collapse sidebar"></button></div>
+    <div class="tb-main">
+      <div class="tb-nav">
+        <button class="ib" data-nav="back" title="Back (Alt+←)" data-i="back"></button>
+        <button class="ib" data-nav="fwd" title="Forward (Alt+→)" data-i="fwd"></button>
+        <button class="ib" data-nav="reload" title="Reload (Ctrl+R)" data-i="reload"></button>
+      </div>
+      <div id="addr" title="Search or enter address (Ctrl+L)">
+        <span class="a-icon" id="a-icon"></span>
+        <span class="a-text" id="a-text"></span>
+        <button class="a-btn" id="a-dark" hidden></button>
+        <button class="a-btn" id="a-star" title="Bookmark this page (Ctrl+D)"></button>
+        <button class="shield a-shield" id="a-shield" title="Shields"><span></span><b id="a-shield-count"></b></button>
+      </div>
+      <div class="tb-right">
+        <button class="ib tb-split" id="a-split" data-i="split" title="Split view"></button>
+        <div id="tb-actions"></div>
+      </div>
+    </div>
+    <span class="winbtns">
+      <button class="wb" data-win="min" title="Minimize" data-i="min"></button>
+      <button class="wb" data-win="max" title="Maximize" data-i="max"></button>
+      <button class="wb close" data-win="close" title="Close" data-i="x"></button>
+    </span>
+  </header>
+  <nav id="bmbar"><div class="bm-items" id="bm-items"></div><button class="bm-more" id="bm-more" hidden title="More bookmarks"></button></nav>
+  <div id="page-frame"></div>
+  <div id="panes"></div>
+  <div id="split-divider" hidden><i></i></div>
+
+  <aside id="sidebar">
+    <div class="topbar">
+      <div class="nav">
+        <button class="ib" data-nav="back" title="Back (Alt+←)" data-i="back"></button>
+        <button class="ib" data-nav="fwd" title="Forward (Alt+→)" data-i="fwd"></button>
+        <button class="ib" data-nav="reload" title="Reload (Ctrl+R)" data-i="reload"></button>
+      </div>
+      <div class="winctl">
+        <button class="ib" id="btn-collapse" title="Collapse sidebar" data-i="sidebar"></button>
+        <span class="winbtns side-winbtns">
+          <button class="wb" data-win="min" title="Minimize" data-i="min"></button>
+          <button class="wb" data-win="max" title="Maximize" data-i="max"></button>
+          <button class="wb close" data-win="close" title="Close" data-i="x"></button>
+        </span>
+      </div>
+    </div>
+
+    <div id="urlbar" title="Search or enter address (Ctrl+L)">
+      <span class="u-icon" id="u-icon"></span>
+      <span class="u-text" id="u-text">Search or enter address</span>
+      <button class="shield" id="btn-shield" title="Shields"><span data-i="shield"></span><b id="shield-count"></b></button>
+    </div>
+
+    <div id="ext-bar" hidden>
+      <browser-action-list id="actions" alignment="bottom right"></browser-action-list>
+    </div>
+
+    <div id="main-panel">
+      <div id="essentials"></div>
+      <div class="tabs-head">
+        <button id="btn-newtab" title="New tab (Ctrl+T)"><span data-i="plus"></span><span class="nt-label">New Tab</span></button>
+      </div>
+      <div id="tablist"></div>
+    </div>
+
+    <div id="settings-panel" class="panel" hidden>
+      <div class="panel-head"><button class="ib" data-i="back" data-close></button><span>Settings</span></div>
+      <div class="panel-body" id="settings-body"></div>
+    </div>
+
+    <div id="downloads-panel" class="panel" hidden>
+      <div class="panel-head"><button class="ib" data-i="back" data-close></button><span>Downloads</span>
+        <button class="link" id="dl-folder">Open folder</button></div>
+      <div class="panel-body" id="downloads-body"></div>
+    </div>
+
+    <div id="volume-panel" class="panel" hidden>
+      <div class="panel-head"><button class="ib" data-i="back" data-close></button><span>Volume mixer</span>
+        <button class="link" id="vol-reset">Reset all</button></div>
+      <div class="panel-body" id="volume-body"></div>
+    </div>
+
+    <div id="passwords-panel" class="panel" hidden>
+      <div class="panel-head"><button class="ib" data-i="back" data-close></button><span>Passwords</span>
+        <button class="link" id="pw-add">Add</button></div>
+      <div class="pw-search"><span data-i="search"></span><input id="pw-filter" placeholder="Search passwords" spellcheck="false"></div>
+      <div class="panel-body" id="passwords-body"></div>
+    </div>
+
+    <div id="extensions-panel" class="panel" hidden>
+      <div class="panel-head"><button class="ib" data-i="back" data-close></button><span>Extensions</span>
+        <button class="link" id="ext-store">Get extensions</button></div>
+      <div class="panel-body" id="extensions-body"></div>
+    </div>
+
+    <footer>
+      <button class="ib" id="btn-settings" title="Settings" data-i="gear"></button>
+      <button class="ib" id="btn-downloads" title="Downloads" data-i="download"><i class="dot" id="dl-dot" hidden></i></button>
+      <button class="ib" id="btn-extensions" title="Extensions" data-i="puzzle"></button>
+      <button class="ib" id="btn-volume" title="Volume mixer" data-i="mixer"><i class="dot" id="vol-dot" hidden></i></button>
+      <span class="spacer"></span>
+      <span class="stat" id="blocked-total" title="Ads and trackers blocked this session"></span>
+    </footer>
+    <div id="resizer"></div>
+  </aside>
+
+  <div id="edge"></div>
+  <div id="dragstrip"></div>
+
+  <div id="findbar" hidden>
+    <span data-i="search" class="fi"></span>
+    <input id="find-input" placeholder="Find on page" spellcheck="false">
+    <span id="find-count"></span>
+    <button class="ib" id="find-prev" data-i="up" title="Previous (Shift+Enter)"></button>
+    <button class="ib" id="find-next" data-i="down" title="Next (Enter)"></button>
+    <button class="ib" id="find-close" data-i="x" title="Close (Esc)"></button>
+  </div>
+
+  <div id="palette-wrap" hidden>
+    <div id="palette">
+      <div class="p-input"><span data-i="search"></span><input id="p-input" spellcheck="false" autocomplete="off"></div>
+      <div id="p-results"></div>
+      <div class="p-hint"><span><kbd>↑</kbd><kbd>↓</kbd> to move</span><span><kbd>Enter</kbd> to open</span><span><kbd>Alt</kbd>+<kbd>Enter</kbd> new tab</span><span><kbd>Esc</kbd> to close</span></div>
+    </div>
+  </div>
+
+  <div id="modal-wrap" hidden><form id="modal" autocomplete="off"></form></div>
+
+  <div id="toast" hidden></div>
+  <script src="icons.js"></script>
+  <script src="ui.js"></script>
+</body>
+</html>

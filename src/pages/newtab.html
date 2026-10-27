@@ -1,0 +1,126 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>New Tab</title>
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; img-src https: data: drift:; style-src 'unsafe-inline'; script-src 'unsafe-inline'">
+<style>
+  :root { --accent: #ff6a3d; }
+  body.dark { --bg: #1b1b20; --fg: #ececf1; --muted: #8d8d99; --tile: rgba(255,255,255,.05); --tile-h: rgba(255,255,255,.09); --field: #26262d; --ring: rgba(255,255,255,.08); }
+  body.light { --bg: #fafafb; --fg: #1c1c22; --muted: #6b6b76; --tile: rgba(0,0,0,.04); --tile-h: rgba(0,0,0,.07); --field: #ffffff; --ring: rgba(0,0,0,.08); }
+  * { box-sizing: border-box; }
+  html, body { height: 100%; margin: 0; }
+  body {
+    font: 14px/1.4 "Segoe UI Variable Text", "Segoe UI", system-ui, sans-serif; color: var(--fg); background: var(--bg);
+    display: flex; flex-direction: column; align-items: center; justify-content: center; overflow: hidden;
+  }
+  body::before {
+    content: ""; position: fixed; inset: -20%; z-index: -1;
+    background:
+      radial-gradient(40% 35% at 30% 30%, color-mix(in srgb, var(--accent) 22%, transparent), transparent 70%),
+      radial-gradient(35% 30% at 75% 70%, color-mix(in srgb, var(--accent) 12%, transparent), transparent 70%);
+    filter: blur(20px);
+  }
+  .wrap { width: min(620px, 88vw); margin-top: -8vh; }
+  .clock { font-size: 64px; font-weight: 300; letter-spacing: -2px; text-align: center; font-variant-numeric: tabular-nums; }
+  .greet { text-align: center; color: var(--muted); margin: 2px 0 28px; font-size: 15px; }
+  form {
+    display: flex; align-items: center; gap: 12px; height: 54px; padding: 0 20px; border-radius: 16px;
+    background: var(--field); box-shadow: 0 0 0 1px var(--ring), 0 10px 30px rgba(0,0,0,.12);
+    transition: box-shadow .15s;
+  }
+  form:focus-within { box-shadow: 0 0 0 2px var(--accent), 0 10px 30px rgba(0,0,0,.15); }
+  form svg { color: var(--muted); flex: none; }
+  input { flex: 1; border: 0; outline: 0; background: none; color: inherit; font: inherit; font-size: 16px; }
+  input::placeholder { color: var(--muted); }
+  .sites { display: grid; grid-template-columns: repeat(auto-fill, minmax(96px, 1fr)); gap: 10px; margin-top: 28px; }
+  .site {
+    display: flex; flex-direction: column; align-items: center; gap: 8px; padding: 14px 6px 10px; border-radius: 14px;
+    text-decoration: none; color: inherit; background: var(--tile); transition: background .12s, transform .12s;
+  }
+  .site:hover { background: var(--tile-h); transform: translateY(-1px); }
+  .site .ic { width: 36px; height: 36px; border-radius: 10px; display: grid; place-items: center; background: var(--field); box-shadow: 0 0 0 1px var(--ring); overflow: hidden; }
+  .site img { width: 20px; height: 20px; }
+  .site .l { font-weight: 700; color: #fff; width: 100%; height: 100%; display: grid; place-items: center; text-transform: uppercase; }
+  .site span { font-size: 12px; color: var(--muted); max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .stat { position: fixed; bottom: 18px; left: 0; right: 0; text-align: center; color: var(--muted); font-size: 12.5px; }
+  .stat b { color: var(--accent); font-weight: 600; }
+  /* wallpaper */
+  #wp, #wp-tint { position: fixed; inset: 0; z-index: -2; display: none; background-size: cover; background-position: center; }
+  #wp-tint { z-index: -1; }
+  body.has-wp::before { display: none; }
+  body.has-wp #wp, body.has-wp #wp-tint { display: block; }
+  body.has-wp.dark #wp-tint { background: rgba(10,10,14,var(--dim)); }
+  body.has-wp.light #wp-tint { background: rgba(250,250,252,var(--dim)); }
+  body.has-wp { background: #111; }
+  body.has-wp .clock, body.has-wp .greet { text-shadow: 0 2px 12px rgba(0,0,0,.35); }
+  body.has-wp.dark .greet, body.has-wp.dark .stat { color: rgba(255,255,255,.8); }
+  body.has-wp .site { background: color-mix(in srgb, var(--bg) 55%, transparent); backdrop-filter: blur(12px); }
+  body.has-wp .site:hover { background: color-mix(in srgb, var(--bg) 75%, transparent); }
+  body.has-wp .site span { color: var(--fg); }
+</style>
+</head>
+<body class="dark">
+  <div id="wp"></div><div id="wp-tint"></div>
+  <div class="wrap">
+    <div class="clock" id="clock"></div>
+    <div class="greet" id="greet"></div>
+    <form id="f" autocomplete="off">
+      <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><circle cx="11" cy="11" r="6.5"/><path d="M20 20l-4.2-4.2"/></svg>
+      <input id="q" autofocus spellcheck="false">
+    </form>
+    <div class="sites" id="sites"></div>
+  </div>
+  <div class="stat" id="stat"></div>
+<script>
+  const D = /*__DATA__*/null || { sites: [], accent: '#ff6a3d', dark: true, engine: 'Brave Search', searchUrl: 'https://search.brave.com/search?q=%s', blocked: 0 };
+  document.body.className = D.dark ? 'dark' : 'light';
+  if (D.wallpaper) {
+    document.body.classList.add('has-wp');
+    const wp = document.getElementById('wp');
+    wp.style.background = D.wallpaper;
+    if (D.wallpaperBlur) { wp.style.filter = `blur(${D.wallpaperBlur}px)`; wp.style.inset = `-${D.wallpaperBlur * 2}px`; }
+    document.body.style.setProperty('--dim', String(D.wallpaperDim ?? 0.35));
+  }
+  document.documentElement.style.setProperty('--accent', D.accent);
+  const q = document.getElementById('q');
+  q.placeholder = `Search ${D.engine} or type a URL`;
+
+  function tick() {
+    const d = new Date();
+    document.getElementById('clock').textContent = d.toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' });
+    const h = d.getHours();
+    document.getElementById('greet').textContent =
+      (h < 5 ? 'Up late' : h < 12 ? 'Good morning' : h < 17 ? 'Good afternoon' : 'Good evening') + ' · ' +
+      d.toLocaleDateString([], { weekday: 'long', month: 'long', day: 'numeric' });
+  }
+  tick(); setInterval(tick, 1000 * 15);
+
+  document.getElementById('f').addEventListener('submit', (e) => {
+    e.preventDefault();
+    const t = q.value.trim(); if (!t) return;
+    let url;
+    if (/^(https?|file):/i.test(t)) url = t;
+    else if (/^localhost(:\d+)?/i.test(t)) url = 'http://' + t;
+    else if (!/\s/.test(t) && /^[^\s/]+\.[a-z]{2,}(:\d+)?([/?#].*)?$/i.test(t)) url = 'https://' + t;
+    else url = D.searchUrl.replace('%s', encodeURIComponent(t));
+    location.href = url;
+  });
+
+  const colors = ['#e5484d','#f76b15','#ffb224','#30a46c','#12a594','#0090ff','#6e56cf','#d6409f'];
+  const color = (s) => { let h = 0; for (const c of s) h = (h * 31 + c.charCodeAt(0)) >>> 0; return colors[h % colors.length]; };
+  const sites = document.getElementById('sites');
+  for (const s of D.sites) {
+    const a = document.createElement('a');
+    a.className = 'site'; a.href = s.url; a.title = s.title || s.host;
+    const ic = document.createElement('div'); ic.className = 'ic';
+    const img = new Image(); img.src = `https://icons.duckduckgo.com/ip3/${s.host}.ico`;
+    img.onerror = () => { ic.innerHTML = ''; const l = document.createElement('div'); l.className = 'l'; l.style.background = color(s.host); l.textContent = s.host[0]; ic.append(l); };
+    ic.append(img);
+    const label = document.createElement('span'); label.textContent = s.host.replace(/\.(com|org|net)$/, '');
+    a.append(ic, label); sites.append(a);
+  }
+  if (D.blocked) document.getElementById('stat').innerHTML = `<b>${D.blocked.toLocaleString()}</b> ads and trackers blocked this session`;
+</script>
+</body>
+</html>
