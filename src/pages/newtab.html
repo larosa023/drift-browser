@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <title>New Tab</title>
-<meta http-equiv="Content-Security-Policy" content="default-src 'none'; img-src https: data: drift:; style-src 'unsafe-inline'; script-src 'unsafe-inline'">
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; img-src https: data: drift:; connect-src drift:; style-src 'unsafe-inline'; script-src 'unsafe-inline'">
 <style>
   :root { --accent: #ff6a3d; }
   body.dark { --bg: #1b1b20; --fg: #ececf1; --muted: #8d8d99; --tile: rgba(255,255,255,.05); --tile-h: rgba(255,255,255,.09); --field: #26262d; --ring: rgba(255,255,255,.08); }
@@ -38,7 +38,16 @@
     display: flex; flex-direction: column; align-items: center; gap: 8px; padding: 14px 6px 10px; border-radius: 14px;
     text-decoration: none; color: inherit; background: var(--tile); transition: background .12s, transform .12s;
   }
+  .site { position: relative; }
   .site:hover { background: var(--tile-h); transform: translateY(-1px); }
+  /* Remove button: faint until the tile is hovered, then clear and easy to hit */
+  .site .x {
+    position: absolute; top: 5px; right: 5px; width: 20px; height: 20px; border: 0; border-radius: 50%;
+    display: grid; place-items: center; padding: 0; cursor: pointer;
+    background: transparent; color: var(--muted); opacity: 0; transition: opacity .12s, background .12s;
+  }
+  .site:hover .x { opacity: .75; }
+  .site .x:hover { opacity: 1; background: var(--field); color: var(--fg); box-shadow: 0 0 0 1px var(--ring); }
   .site .ic { width: 36px; height: 36px; border-radius: 10px; display: grid; place-items: center; background: var(--field); box-shadow: 0 0 0 1px var(--ring); overflow: hidden; }
   .site img { width: 20px; height: 20px; }
   .site .l { font-weight: 700; color: #fff; width: 100%; height: 100%; display: grid; place-items: center; text-transform: uppercase; }
@@ -110,16 +119,30 @@
   const colors = ['#e5484d','#f76b15','#ffb224','#30a46c','#12a594','#0090ff','#6e56cf','#d6409f'];
   const color = (s) => { let h = 0; for (const c of s) h = (h * 31 + c.charCodeAt(0)) >>> 0; return colors[h % colors.length]; };
   const sites = document.getElementById('sites');
-  for (const s of D.sites) {
+  function renderSites(list) {
+  sites.innerHTML = '';
+  for (const s of list) {
     const a = document.createElement('a');
     a.className = 'site'; a.href = s.url; a.title = s.title || s.host;
     const ic = document.createElement('div'); ic.className = 'ic';
-    const img = new Image(); img.src = `https://icons.duckduckgo.com/ip3/${s.host}.ico`;
+    const img = new Image(); img.src = s.icon || `https://icons.duckduckgo.com/ip3/${s.host}.ico`;
     img.onerror = () => { ic.innerHTML = ''; const l = document.createElement('div'); l.className = 'l'; l.style.background = color(s.host); l.textContent = s.host[0]; ic.append(l); };
     ic.append(img);
     const label = document.createElement('span'); label.textContent = s.host.replace(/\.(com|org|net)$/, '');
-    a.append(ic, label); sites.append(a);
+    const x = document.createElement('button'); x.className = 'x'; x.title = 'Remove from this page';
+    x.innerHTML = '<svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.6" stroke-linecap="round"><path d="M6 6l12 12M18 6L6 18"/></svg>';
+    x.addEventListener('click', async (e) => {
+      e.preventDefault(); e.stopPropagation();
+      a.style.opacity = '0';
+      try {
+        const r = await fetch('drift://newtab/hide?host=' + encodeURIComponent(s.host), { method: 'POST', headers: { 'x-drift-newtab': '1' } });
+        if (r.ok) renderSites(await r.json());
+      } catch { a.remove(); }
+    });
+    a.append(ic, label, x); sites.append(a);
   }
+  }
+  renderSites(D.sites);
   if (D.blocked) document.getElementById('stat').innerHTML = `<b>${D.blocked.toLocaleString()}</b> ads and trackers blocked this session`;
 </script>
 </body>

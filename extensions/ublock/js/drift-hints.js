@@ -31,7 +31,7 @@ function identity() {
   [realLow, realHigh] = mk(brands, full);
   const id = identity();
   const engineMajor = Number((brands.find(b => b.brand === 'Chromium') || {}).version || 0);
-  if (id && engineMajor < id.chromeMajor) {
+  if (id && id.enabled !== false && engineMajor < id.chromeMajor) {
     brands = [{ brand: id.greaseBrand, version: id.greaseVersion }, { brand: 'Chromium', version: String(id.chromeMajor) }];
     full = [{ brand: id.greaseBrand, version: id.greaseVersion + '.0.0.0' }, { brand: 'Chromium', version: id.chromeFull }];
   }
@@ -40,21 +40,30 @@ function identity() {
 // Google asks for the detailed hints on its sites (Accept-CH); Chrome remembers and sends them
 // on every request there, including the sign-in page's own background requests.
 const WANTS_HIGH = /(^|\.)(google\.[a-z.]+|youtube\.com|gstatic\.com|googleapis\.com|googleusercontent\.com|withgoogle\.com|blogger\.com|gmail\.com)$/i;
-chrome.webRequest.onBeforeSendHeaders.addListener((details) => {
+const SIGNIN = /^accounts\.google\.[a-z.]+$/i;
+const onHeaders = (details) => {
   if (!low) return;
   const frame = details.type === 'main_frame' || details.type === 'sub_frame';
   let host = ''; try { host = new URL(details.url).hostname; } catch {}
   const google = WANTS_HIGH.test(host);
+  if (!frame && !google) return;
   // Google's sign-in pages, and everything they load, see the engine as it is (see main.js).
-  const SIGNIN = /^accounts\.google\.[a-z.]+$/i;
   let initHost = ''; try { initHost = details.initiator ? new URL(details.initiator).hostname : ''; } catch {}
   const signin = SIGNIN.test(host) && frame || SIGNIN.test(initHost);
-  if (!frame && !google) return;
   const headers = details.requestHeaders;
   const have = new Set(headers.map(h => h.name.toLowerCase()));
   const add = (set) => { for (const [name, value] of Object.entries(set)) if (!have.has(name)) headers.push({ name, value }); };
   add(signin ? realLow : low);
   if (google) add(signin ? realHigh : high);
   return { requestHeaders: headers };
-}, { urls: ['https://*/*'] }, ['blocking', 'requestHeaders', 'extraHeaders']);
+};
+// Only the requests that need it pass through here (each one is a round trip to this page):
+// page and frame loads everywhere, and Google's own scripts and data requests.
+const SPEC = ['blocking', 'requestHeaders', 'extraHeaders'];
+chrome.webRequest.onBeforeSendHeaders.addListener(onHeaders, { urls: ['https://*/*'], types: ['main_frame', 'sub_frame'] }, SPEC);
+chrome.webRequest.onBeforeSendHeaders.addListener(onHeaders, {
+  urls: ['google', 'youtube', 'gstatic', 'googleapis', 'googleusercontent', 'withgoogle', 'blogger', 'gmail']
+    .flatMap(d => [`https://${d}.com/*`, `https://*.${d}.com/*`]),
+  types: ['xmlhttprequest', 'script', 'ping', 'other'],
+}, SPEC);
 })();

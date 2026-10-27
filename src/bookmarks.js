@@ -69,6 +69,23 @@ class Bookmarks {
     this.bar.splice(Math.max(0, Math.min(toIndex, this.bar.length)), 0, hit.item);
     this.save();
   }
+  // Move a bookmark or folder to the end of a folder (not into itself or its own subfolders).
+  moveInto(id, folderId) {
+    const hit = this.find(id), dest = this.find(folderId);
+    if (!hit || !dest || dest.item.type !== 'folder' || id === folderId) return false;
+    if (hit.item.type === 'folder' && walk(hit.item.children, (it) => it.id !== folderId) === false) return false;
+    hit.list.splice(hit.list.indexOf(hit.item), 1);
+    dest.item.children.push(hit.item);
+    this.save();
+    return true;
+  }
+  addToFolder(item, folderId) {
+    const dest = this.find(folderId); if (!dest || dest.item.type !== 'folder') return null;
+    const it = { id: newId(), type: 'link', title: item.title || '', url: item.url, icon: item.icon || '' };
+    dest.item.children.push(it);
+    this.save();
+    return it;
+  }
   // Remember favicons for bookmarked pages as they are visited.
   noteIcon(url, icon) {
     if (!icon) return;

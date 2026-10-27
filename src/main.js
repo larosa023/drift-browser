@@ -66,7 +66,9 @@ const DEFAULT_SETTINGS = {
   sleepTabs: true,
   sleepMinutes: 20,
   permissions: {},           // { "origin|perm": true/false }
-  hiddenActions: [],         // extension ids whose buttons are hidden from the sidebar
+  hiddenActions: [],         // (old setting, no longer used)
+  pinnedActions: [],
+  hiddenSites: [],           // sites removed from the new tab page's tiles         // extension ids whose buttons stay in the toolbar; the rest are under the puzzle button
   unpacked: [],              // folders of extensions loaded with "Load unpacked"
   bounds: null,
   maximized: false,
@@ -181,7 +183,7 @@ function identity() {
 }
 const ENGINE_MAJOR = Number(process.versions.chrome.split('.')[0]);
 const IDENTITY = identity();
-const CLAIM = IDENTITY && IDENTITY.chromeMajor > ENGINE_MAJOR ? IDENTITY : null;   // null: report the engine as-is
+const CLAIM = IDENTITY && IDENTITY.enabled !== false && IDENTITY.chromeMajor > ENGINE_MAJOR ? IDENTITY : null;   // null: report the engine as-is
 function chromeUA() {
   const major = CLAIM ? CLAIM.chromeMajor : ENGINE_MAJOR;
   const plat = process.platform === 'win32' ? 'Windows NT 10.0; Win64; x64'
@@ -367,11 +369,11 @@ function layout() {
     panes: ps.map(p => ({ id: p.tab ? p.tab.id : 0, rect: p.rect })), split: sp ? { dir: sp.dir, ratio: sp.ratio } : null, activeId });
 }
 
-function setOverlay(mode) {
+function setOverlay(mode, keepFocus) {
   overlay = mode;
   layout();
-  if (mode === 'palette' || mode === 'modal') ui.webContents.focus();
-  else focusPage();
+  if (mode === 'palette' || mode === 'modal' || mode === 'extmenu') ui.webContents.focus();
+  else if (!keepFocus) focusPage();   // keepFocus: an extension popup just opened and must keep focus
   push();
 }
 
@@ -848,6 +850,7 @@ function notePendingNav(url, wcId) {
 }
 const originOf = (u) => { try { return new URL(u).origin; } catch { return ''; } };
 
+const frameTab = new Map();   // Chromium frame-tree node id -> tab webContents id (ids are never reused)
 function tabIdForRequest(d) {
   const live = tabs.filter(t => t.view && !t.view.webContents.isDestroyed());
   // A page load: match the navigation the tab just started.
@@ -859,9 +862,16 @@ function tabIdForRequest(d) {
   }
   // Inside an embedded frame: frame ids are Chromium frame-tree node ids.
   if (d.frameId > 0) {
+    const known = frameTab.get(d.frameId);
+    if (known && live.some(t => t.view.webContents.id === known)) return known;
     for (const t of live) {
-      try { if (t.view.webContents.mainFrame.framesInSubtree.some(f => f.frameTreeNodeId === d.frameId)) return t.view.webContents.id; } catch {}
+      try {
+        const wc = t.view.webContents;
+        for (const f of wc.mainFrame.framesInSubtree) frameTab.set(f.frameTreeNodeId, wc.id);   // index every frame seen
+        if (frameTab.get(d.frameId) === wc.id) return wc.id;
+      } catch {}
     }
+    if (frameTab.size > 5000) frameTab.clear();
   }
   // From a tab's top frame: match the requesting site against what each tab shows.
   const origin = d.type === 'port' ? originOf(d.url) : (d.initiator && d.initiator !== 'null' ? d.initiator : '');
@@ -1143,7 +1153,30 @@ async function suggest(q) {
       remote = (j[1] || []).filter(s => s.toLowerCase() !== q).slice(0, 4);
     } catch {}
   }
-  return { items: out.slice(0, 10), searches: remote };
+  return { items: out.slice(0, 10), searches: remote, inline: inlineCompletion(q) };
+}
+
+// Address-bar autocomplete: the most-visited site (or address) that starts with what's typed,
+// e.g. "tw" -> "twitch.tv". Only whole hosts, or full addresses once a "/" is typed.
+function inlineCompletion(q) {
+  if (!q || /\s/.test(q) || /^[a-z]+:/.test(q)) return '';
+  const bare = (u) => u.replace(/^https?:\/\/(www\.)?/i, '').replace(/\/$/, '');
+  const pathMode = q.includes('/');
+  const scores = new Map();
+  for (const h of history.values()) {
+    if (!/^https?:/i.test(h.url)) continue;
+    const cand = pathMode ? bare(h.url) : hostOf(h.url);
+    if (!cand || !cand.toLowerCase().startsWith(q) || cand.length <= q.length) continue;
+    scores.set(cand, (scores.get(cand) || 0) + frecency(h));
+  }
+  if (bookmarks) for (const b of bookmarks.all()) {
+    if (!/^https?:/i.test(b.url || '')) continue;
+    const cand = pathMode ? bare(b.url) : hostOf(b.url);
+    if (cand && cand.toLowerCase().startsWith(q) && cand.length > q.length) scores.set(cand, (scores.get(cand) || 0) + 50);
+  }
+  let best = '', bestScore = -1;
+  for (const [cand, sc] of scores) if (sc > bestScore || (sc === bestScore && cand.length < best.length)) { best = cand; bestScore = sc; }
+  return best;
 }
 
 function topSites() {
@@ -1155,7 +1188,9 @@ function topSites() {
       acc.set(host, e); return acc;
     }, new Map())
   ;
-  return [...m.values()].sort((a, b) => b.score - a.score).slice(0, 8);
+  const hidden = new Set(settings.hiddenSites);
+  return [...m.values()].filter(e => !hidden.has(e.host)).sort((a, b) => b.score - a.score).slice(0, 8)
+    .map(e => ({ ...e, icon: faviconStore[e.host] || faviconStore[e.host.replace(/^www\./, '')] || '' }));
 }
 
 // ---------------------------------------------------------------------------
@@ -1426,7 +1461,7 @@ function listExtensions() {
       unpacked: settings.unpacked.includes(e.path),
       builtin: e.id === uboId,
       hasAction: !!(m.action || m.browser_action),
-      hidden: settings.hiddenActions.includes(e.id),
+      hidden: !settings.pinnedActions.includes(e.id),
     };
   }).sort((a, b) => a.name.localeCompare(b.name));
 }
@@ -1566,7 +1601,8 @@ async function removeExtension(id) {
     try { await uninstallExtension(id, { session: session.defaultSession }); }
     catch (e) { console.error('[extensions] uninstall failed', e.message); extApi().removeExtension(id); }
   }
-  settings.hiddenActions = settings.hiddenActions.filter(x => x !== id); saveSettings();
+  settings.hiddenActions = settings.hiddenActions.filter(x => x !== id);
+  settings.pinnedActions = settings.pinnedActions.filter(x => x !== id); saveSettings();
   sendExtensions();
 }
 
@@ -1655,6 +1691,14 @@ function setupDownloads(ses) {
 function setupProtocol() {
   protocol.handle('drift', async (req) => {
     const u = new URL(req.url);
+    // Remove a tile from the new tab page. Needs a custom header, so other sites can't send it
+    // (cross-origin requests with custom headers need permission they don't get).
+    if (u.hostname === 'newtab' && u.pathname === '/hide') {
+      if (req.method !== 'POST' || req.headers.get('x-drift-newtab') !== '1') return new Response('', { status: 403 });
+      const host = String(u.searchParams.get('host') || '').slice(0, 253);
+      if (host && !settings.hiddenSites.includes(host)) { settings.hiddenSites.push(host); saveSettings(); }
+      return new Response(JSON.stringify(topSites()), { headers: { 'content-type': 'application/json' } });
+    }
     if (u.hostname === 'newtab') {
       let html = fs.readFileSync(path.join(PAGES_DIR, 'newtab.html'), 'utf8');
       const data = {
@@ -1762,6 +1806,7 @@ const sendBookmarks = debounce(() => {
   if (ui && !ui.webContents.isDestroyed() && bookmarks) ui.webContents.send('bookmarks', withIcons(bookmarks.bar));
   push();
   setTimeout(() => prefetchBookmarkIcons().catch(() => {}), 1500);
+  setTimeout(prepareBookmarkMenuIcons, 500);
 }, 30);
 
 // Bookmarks (imported ones especially) may point at sites never opened in Drift, so they
@@ -1815,12 +1860,51 @@ function openBookmark(item, newTab, background) {
   else navigate(item.url);
 }
 
+// Site icons for native menus (folder menus, overflow), from the saved favicons. Native menus
+// only take PNG/JPEG, so other formats (SVG, ICO) are drawn to a PNG once by the UI page.
+const menuIconCache = new Map();   // icon data URL -> 16px nativeImage (null while unusable)
+function toPngInUi(dataUrl, size = 32) {
+  if (!ui || ui.webContents.isDestroyed()) return Promise.resolve(null);
+  return ui.webContents.executeJavaScript(`(async () => {
+    const img = new Image(); img.src = ${JSON.stringify(dataUrl)}; await img.decode();
+    const c = document.createElement('canvas'); c.width = c.height = ${size};
+    c.getContext('2d').drawImage(img, 0, 0, ${size}, ${size}); return c.toDataURL('image/png');
+  })()`).catch(() => null);
+}
+async function prepareMenuIcon(data) {
+  if (menuIconCache.has(data)) return;
+  menuIconCache.set(data, null);
+  let img = null;
+  try { img = nativeImage.createFromDataURL(data); } catch {}
+  if (!img || img.isEmpty()) { const png = await toPngInUi(data); if (png) img = nativeImage.createFromDataURL(png); }
+  if (img && !img.isEmpty()) menuIconCache.set(data, img.resize({ width: 16, height: 16, quality: 'best' }));
+  else menuIconCache.delete(data);   // try again next time
+  if (menuIconCache.size > 600) menuIconCache.clear();
+}
+// Called when bookmarks change, so icons are ready before a folder menu opens.
+function prepareBookmarkMenuIcons() {
+  if (!bookmarks) return;
+  for (const b of bookmarks.all()) { const d = faviconStore[hostOf(b.url)]; if (d && d.startsWith('data:image/')) prepareMenuIcon(d); }
+  if (folderMenuIcon === null) {
+    folderMenuIcon = undefined;
+    const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="${isDark() ? '#c8c8d0' : '#55555f'}" stroke-width="1.8" stroke-linejoin="round"><path d="M3.5 7a2 2 0 0 1 2-2h4l2 2.5h7a2 2 0 0 1 2 2V17a2 2 0 0 1-2 2h-13a2 2 0 0 1-2-2z"/></svg>`;
+    toPngInUi('data:image/svg+xml;base64,' + Buffer.from(svg).toString('base64')).then(png => {
+      folderMenuIcon = png ? nativeImage.createFromDataURL(png).resize({ width: 16, height: 16, quality: 'best' }) : null;
+    });
+  }
+}
+function menuIcon(url) {
+  const data = faviconStore[hostOf(url)] || '';
+  return (data && menuIconCache.get(data)) || undefined;
+}
+let folderMenuIcon = null;
+function folderIcon() { return folderMenuIcon || undefined; }
 function bookmarkMenuItems(items) {
   return items.map(it => it.type === 'folder'
-    ? { label: it.title || 'Folder', submenu: it.children.length ? [
+    ? { label: it.title || 'Folder', icon: folderIcon(), submenu: it.children.length ? [
         ...bookmarkMenuItems(it.children), { type: 'separator' },
         { label: `Open all (${it.children.filter(c => c.type === 'link').length})`, click: () => openBookmark(it, true, true) }] : [{ label: '(empty)', enabled: false }] }
-    : { label: (it.title || it.url).slice(0, 60), click: (_m, _w, ev) => openBookmark(it, ev && (ev.ctrlKey || ev.metaKey), false) });
+    : { label: (it.title || it.url).slice(0, 60), icon: menuIcon(it.url), click: (_m, _w, ev) => openBookmark(it, ev && (ev.ctrlKey || ev.metaKey), false) });
 }
 
 function bookmarkContextMenu(id) {
@@ -2027,7 +2111,7 @@ function setupIPC() {
   on('forward', () => { const t = activeTab(); t?.view?.webContents.navigationHistory.canGoForward() && t.view.webContents.navigationHistory.goForward(); });
   on('reload', () => { const t = activeTab(); if (t?.view) t.loading ? t.view.webContents.stop() : t.view.webContents.reload(); });
   on('home', () => navigate(NEWTAB));
-  on('overlay', (mode) => setOverlay(mode));
+  on('overlay', (mode, keepFocus) => setOverlay(mode, !!keepFocus));
   on('find', (text, forward, next) => {
     const t = activeTab(); if (!t?.view) return;
     if (!text) { t.view.webContents.stopFindInPage('clearSelection'); ui.webContents.send('find-result', { active: 0, matches: 0 }); return; }
@@ -2044,7 +2128,7 @@ function setupIPC() {
   on('site-shields', () => toggleSiteShields());
   on('zoom', (d) => zoom(d));
   on('set', (key, value) => {
-    if (!(key in DEFAULT_SETTINGS) || ['permissions', 'bounds', 'shieldsAllow', 'hiddenActions', 'unpacked', 'forceDarkOff'].includes(key)) return;
+    if (!(key in DEFAULT_SETTINGS) || ['permissions', 'bounds', 'shieldsAllow', 'hiddenActions', 'pinnedActions', 'hiddenSites', 'unpacked', 'forceDarkOff'].includes(key)) return;
     if (key === 'shields') return setShieldsGlobal(!!value);
     if (key === 'shieldsEngine') return setShieldsEngine(value === 'builtin' ? 'builtin' : 'ubo');
     setSetting(key, value);
@@ -2075,9 +2159,9 @@ function setupIPC() {
   on('ext-list', () => sendExtensions());
   on('ext-remove', (id) => removeExtension(id));
   on('ext-options', (id) => { const e = listExtensions().find(x => x.id === id); if (e && e.options) createTab(e.options); });
-  on('ext-visible', (id, visible) => {
-    settings.hiddenActions = settings.hiddenActions.filter(x => x !== id);
-    if (!visible) settings.hiddenActions.push(id);
+  on('ext-visible', (id, pinned) => {
+    settings.pinnedActions = settings.pinnedActions.filter(x => x !== id);
+    if (pinned) settings.pinnedActions.push(id);
     saveSettings(); sendExtensions();
   });
   on('ext-store', () => createTab('https://chromewebstore.google.com/category/extensions'));
@@ -2116,6 +2200,11 @@ function setupIPC() {
     if (items.length) Menu.buildFromTemplate(bookmarkMenuItems(items)).popup({ window: win, x: Math.round(x), y: Math.round(y) });
   });
   on('bm-move', (id, idx) => { bookmarks.move(id, idx); sendBookmarks(); });
+  on('bm-move-into', (id, folderId) => { if (bookmarks.moveInto(id, folderId)) sendBookmarks(); });
+  on('bm-add-tab-into', (tabId, folderId) => {
+    const t = tabs.find(x => x.id === tabId); if (!t || isInternal(t.url)) return;
+    if (bookmarks.addToFolder({ title: t.title || hostOf(t.url), url: t.url, icon: t.favicon }, folderId)) sendBookmarks();
+  });
   on('bm-add-tab', (tabId, idx) => {
     const t = tabs.find(x => x.id === tabId); if (!t || isInternal(t.url)) return;
     bookmarks.add({ title: t.title || hostOf(t.url), url: t.url, icon: t.favicon }, idx); sendBookmarks();
@@ -2217,7 +2306,7 @@ function createWindow() {
   startupGate.then(() => {
     if (s && s.tabs && s.tabs.length && tabs.length) activate(tabs[Math.min(s.active, tabs.length - 1)].id);
     for (const u of urls) createTab(u);
-    if (!tabs.length) createTab(NEWTAB);
+    if (!tabs.length || (process.argv.includes('--new-tab') && !urls.length)) createTab(NEWTAB);
   });
 }
 
@@ -2245,6 +2334,7 @@ if (!app.requestSingleInstanceLock()) {
     if (win.isMinimized()) win.restore();
     win.focus();
     argv.filter(a => /^https?:\/\//.test(a)).forEach(u => createTab(u));
+    if (argv.includes('--new-tab')) createTab(NEWTAB);
   });
 
   app.whenReady().then(async () => {
@@ -2273,7 +2363,7 @@ if (!app.requestSingleInstanceLock()) {
     setupDownloads(ses);
     setupIPC();
     setupPageIPC();
-    nativeTheme.on('updated', () => { push(); refreshNewTabs(); });
+    nativeTheme.on('updated', () => { push(); refreshNewTabs(); folderMenuIcon = null; prepareBookmarkMenuIcons(); });
     PERF('setup done');
     await setupExtensions(ses);
     PERF('extensions loaded');
@@ -2284,9 +2374,14 @@ if (!app.requestSingleInstanceLock()) {
     let openGate; startupGate = new Promise(r => { openGate = r; });
     createWindow();
     PERF('window created');
-    const uiReady = new Promise(r => ui.webContents.once('did-finish-load', r)).then(initIdentity);
+    const uiReady = new Promise(r => ui.webContents.once('did-finish-load', r)).then(() => { setTimeout(prepareBookmarkMenuIcons, 300); return initIdentity(); });
     Promise.race([Promise.all([shieldsReady, uiReady]), new Promise(r => setTimeout(r, 2000))]).then(() => { PERF('gate open'); openGate(); });
     setupUpdates();
+
+    // Taskbar right-click menu (Windows jump list).
+    if (process.platform === 'win32') {
+      try { app.setUserTasks([{ program: process.execPath, arguments: '--new-tab', iconPath: process.execPath, iconIndex: 0, title: 'New tab', description: 'Open a new tab in Drift' }]); } catch {}
+    }
   });
 
   app.on('window-all-closed', () => app.quit());

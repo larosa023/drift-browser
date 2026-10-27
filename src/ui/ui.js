@@ -116,6 +116,7 @@ function render() {
   if (panel === 'downloads') renderDownloads();
   $('#palette-wrap').hidden = S.overlay !== 'palette';
   $('#modal-wrap').hidden = S.overlay !== 'modal';
+  if (S.overlay !== 'extmenu') $('#extmenu-wrap').hidden = true;
   if (panel === 'passwords') renderPasswords();
   placeActions();
   $('#findbar').hidden = !S.findOpen;
@@ -169,9 +170,9 @@ function applyWallpaper() {
 
 // Extension buttons live in the toolbar when it's on, otherwise under the sidebar pill.
 function placeActions() {
-  const list = $('#actions');
+  const list = $('#actions'), wrap = $('#actions-wrap');
   const target = S && S.settings.titleBar ? $('#tb-actions') : $('#ext-bar');
-  if (list.parentElement !== target) target.append(list);
+  if (wrap.parentElement !== target) target.append(wrap);
   list.setAttribute('alignment', S && S.settings.titleBar ? 'bottom left' : 'bottom right');
 }
 
@@ -204,7 +205,7 @@ function renderTabs() {
       <span class="fav-x" data-act="close" title="Close tab">${favHTML(t)}<span class="xic">${icon('x', 12)}</span></span>
       <span class="title">${esc(tabTitle(t))}</span>
       ${t.audible || t.muted || t.volume !== 1 ? `<button class="audio" data-act="mute" title="${t.muted ? 'Unmute' : 'Mute'} · volume ${Math.round(t.volume * 100)}% (scroll to adjust)">${icon(t.muted ? 'muted' : 'sound', 18)}</button>` : ''}
-      <button class="close" data-act="close" title="Close (Ctrl+W)">${icon('x', 14)}</button>
+      <button class="close" data-act="close" title="Close (Ctrl+W)">${icon('x', 10)}</button>
     </div>`).join('');
 }
 
@@ -390,19 +391,35 @@ function looksLikeUrl(t) {
 }
 
 let seq = 0;
-async function updatePalette() {
-  const q = $('#p-input').value.trim();
+// Inline autocomplete: after typing (not deleting), the best match from history fills in
+// after the caret, selected, so Enter goes there and typing on replaces it.
+let typedText = null;      // what the user actually typed while a completion is shown
+async function updatePalette(completeInline) {
+  const input = $('#p-input');
+  const q = input.value.trim();
   const my = ++seq;
   const engine = S ? S.engines[S.settings.searchEngine] : 'the web';
-  const base = [];
-  if (q) {
-    if (looksLikeUrl(q)) base.push({ kind: 'go', text: q, title: q, sub: 'Open address' });
-    base.push({ kind: 'search', text: q, title: q, sub: `Search ${engine}` });
-  }
-  renderPalette(base, null);
+  const baseFor = (text, typed) => {
+    const b = [];
+    if (text) {
+      if (looksLikeUrl(text)) b.push({ kind: 'go', text, title: text, sub: 'Open address' });
+      b.push({ kind: 'search', text: typed, title: typed, sub: `Search ${engine}` });
+    }
+    return b;
+  };
+  renderPalette(baseFor(q, q), null);
   const r = await window.drift.suggest(q);
   if (my !== seq) return;
-  renderPalette(base, r);
+  const inline = r && r.inline;
+  if (completeInline && inline && input.value === q && input.selectionStart === q.length && inline.toLowerCase().startsWith(q.toLowerCase())) {
+    input.value = q + inline.slice(q.length);
+    input.setSelectionRange(q.length, input.value.length);
+    typedText = q;
+    paletteSel = 0;
+    renderPalette(baseFor(input.value, q), r);
+    return;
+  }
+  renderPalette(baseFor(q, q), r);
 }
 
 function renderPalette(base, r) {
@@ -434,7 +451,7 @@ function renderPalette(base, r) {
       <span class="pt"><b>${esc(title)}</b><span>${esc(sub)}</span></span>${badge ? `<span class="badge">${badge}</span>` : ''}</div>`);
   });
   $('#p-results').innerHTML = html.join('');
-  if (q) warm(paletteItems[paletteSel]);
+  if ($('#p-input').value.trim()) warm(paletteItems[paletteSel]);
 }
 
 function runItem(it, forceNew) {
@@ -446,7 +463,10 @@ function runItem(it, forceNew) {
   else send('navigate', it.url, newTab);
 }
 
-$('#p-input').addEventListener('input', () => { paletteSel = 0; updatePalette(); });
+$('#p-input').addEventListener('input', (e) => {
+  paletteSel = 0; typedText = null;
+  updatePalette(/^insert(Text|CompositionText)?$/.test(e.inputType || '') && !/\s/.test($('#p-input').value));
+});
 $('#p-input').addEventListener('keydown', (e) => {
   if (e.key === 'ArrowDown') { e.preventDefault(); paletteSel = Math.min(paletteSel + 1, paletteItems.length - 1); highlight(); }
   else if (e.key === 'ArrowUp') { e.preventDefault(); paletteSel = Math.max(paletteSel - 1, 0); highlight(); }
@@ -457,7 +477,12 @@ $('#p-input').addEventListener('keydown', (e) => {
     if (!q && !it) { if (paletteNewTab) send('navigate', '', true); closePalette(); return; }
     if (!it) send('navigate', q, paletteNewTab || e.altKey);
     else runItem(it, e.altKey);
-  } else if (e.key === 'Escape') { e.preventDefault(); closePalette(); }
+  } else if (e.key === 'Escape') {
+    e.preventDefault();
+    const inp = $('#p-input');
+    if (typedText !== null && inp.selectionEnd > inp.selectionStart) { inp.value = typedText; typedText = null; paletteSel = 0; updatePalette(false); return; }
+    closePalette();
+  }
 });
 function highlight() {
   document.querySelectorAll('.pr').forEach(el => el.classList.toggle('sel', Number(el.dataset.i) === paletteSel));
@@ -667,22 +692,80 @@ $('#downloads-body').addEventListener('click', (e) => {
 // ---------------------------------------------------------------------- extensions
 // The extension buttons come from <browser-action-list> (electron-chrome-extensions).
 // We point it at the active tab and hide the ones the user tucked away.
+// Only pinned extensions sit in the toolbar; the puzzle button lists all of them.
 function syncActions() {
-  const list = $('#actions');
-  if (S && list.getAttribute('tab') !== String(S.activeWcId)) list.setAttribute('tab', String(S.activeWcId));
-  const visible = EXT.filter(e => e.hasAction && !e.hidden && !e.builtin);
-  $('#ext-bar').hidden = visible.length === 0 || panel === 'extensions';
+  for (const list of [$('#actions'), $('#actions-all')]) {
+    if (S && list.getAttribute('tab') !== String(S.activeWcId)) list.setAttribute('tab', String(S.activeWcId));
+  }
+  const withButtons = EXT.filter(e => e.hasAction && !e.builtin);
+  $('#ext-bar').hidden = withButtons.length === 0 || panel === 'extensions';
+  $('#ext-menu-btn').hidden = withButtons.length === 0;
   applyHiddenActions();
+  if (S && S.overlay === 'extmenu') renderExtMenu();
 }
 function applyHiddenActions() {
-  const root = $('#actions').shadowRoot; if (!root) return;
-  const hidden = new Set(EXT.filter(e => e.hidden || e.builtin).map(e => e.id));
-  root.querySelectorAll('.action').forEach(b => { b.style.display = hidden.has(b.id) ? 'none' : ''; });
+  const root = $('#actions').shadowRoot;
+  if (root) {
+    const hidden = new Set(EXT.filter(e => e.hidden || e.builtin).map(e => e.id));
+    root.querySelectorAll('.action').forEach(b => { b.style.display = hidden.has(b.id) ? 'none' : ''; });
+  }
+  const all = $('#actions-all').shadowRoot;
+  if (all) {
+    const builtin = new Set(EXT.filter(e => e.builtin).map(e => e.id));
+    all.querySelectorAll('.action').forEach(b => { b.style.display = builtin.has(b.id) ? 'none' : ''; });
+  }
 }
 customElements.whenDefined('browser-action-list').then(() => {
-  const root = $('#actions').shadowRoot;
-  if (root) new MutationObserver(applyHiddenActions).observe(root, { childList: true });
+  for (const id of ['#actions', '#actions-all']) {
+    const root = $(id).shadowRoot;
+    if (root) new MutationObserver(() => { applyHiddenActions(); if (S && S.overlay === 'extmenu') renderExtMenu(); }).observe(root, { childList: true });
+  }
 });
+
+// Rows line up with the buttons of the second <browser-action-list>, which opens the popups.
+function extMenuButtons() {
+  const root = $('#actions-all').shadowRoot; if (!root) return [];
+  return [...root.querySelectorAll('.action')].filter(b => b.style.display !== 'none');
+}
+function renderExtMenu() {
+  const btns = extMenuButtons();
+  $('#em-rows').innerHTML = btns.map(b => {
+    const e = EXT.find(x => x.id === b.id) || { name: b.id, hidden: true };
+    return `<div class="em-row" data-ext="${esc(b.id)}" title="${esc(e.name)}"><span>${esc(e.name)}</span>
+      <button class="em-pin ${e.hidden ? '' : 'on'}" data-pin title="${e.hidden ? 'Pin to toolbar' : 'Unpin from toolbar'}">${icon('pin', 15)}</button></div>`;
+  }).join('');
+  $('#em-empty').hidden = btns.length > 0;
+}
+function openExtMenu() {
+  const r = $('#ext-menu-btn').getBoundingClientRect();
+  const m = $('#extmenu');
+  $('#extmenu-wrap').hidden = false;
+  renderExtMenu();
+  const left = Math.max(8, Math.min(window.innerWidth - 268, r.right - 260));
+  m.style.left = left + 'px'; m.style.top = (r.bottom + 6) + 'px';
+  m.tabIndex = -1;
+  send('overlay', 'extmenu');
+  setTimeout(() => m.focus({ preventScroll: true }), 0);
+}
+function closeExtMenu(keepFocus) { $('#extmenu-wrap').hidden = true; if (S && S.overlay === 'extmenu') send('overlay', null, !!keepFocus); }
+$('#ext-menu-btn').addEventListener('click', () => { if (S && S.overlay === 'extmenu') closeExtMenu(); else openExtMenu(); });
+$('#extmenu-wrap').addEventListener('mousedown', (e) => { if (e.target.id === 'extmenu-wrap') closeExtMenu(); });
+document.addEventListener('keydown', (e) => { if (e.key === 'Escape' && S && S.overlay === 'extmenu') closeExtMenu(); });
+$('#em-manage').addEventListener('click', () => { closeExtMenu(); if (panel !== 'extensions') togglePanel('extensions'); });
+$('#em-rows').addEventListener('click', (e) => {
+  const row = e.target.closest('[data-ext]'); if (!row) return;
+  const id = row.dataset.ext;
+  if (e.target.closest('[data-pin]')) { const x = EXT.find(z => z.id === id); send('ext-visible', id, !x || x.hidden); return; }
+  const btn = extMenuButtons().find(b => b.id === id);
+  if (btn) { btn.click(); setTimeout(() => closeExtMenu(true), 50); }
+});
+$('#em-rows').addEventListener('mouseover', (e) => {
+  const row = e.target.closest('[data-ext]');
+  document.querySelectorAll('.em-row.hover').forEach(x => x.classList.remove('hover'));
+  if (row) row.classList.add('hover');
+});
+// Clicking an icon in the menu opens its popup too; close the menu after.
+$('#actions-all').addEventListener('click', () => setTimeout(() => closeExtMenu(true), 50));
 
 function renderExtensions() {
   const body = $('#extensions-body');
@@ -690,7 +773,7 @@ function renderExtensions() {
     <div class="ext" data-ext="${esc(e.id)}" title="${esc(e.description)}">
       <img src="crx://extension-icon/${esc(e.id)}/32/2?partition=_self" alt="">
       <div class="meta"><div class="name">${esc(e.name)}</div><div class="sub">${e.builtin ? 'Built in · Shields · ' : e.unpacked ? 'Unpacked · ' : ''}${esc(e.version)}</div></div>
-      ${e.hasAction && !e.builtin ? `<button class="ib ${e.hidden ? 'off' : ''}" data-act="vis" title="${e.hidden ? 'Show button in sidebar' : 'Hide button from sidebar'}">${icon(e.hidden ? 'eyeoff' : 'eye', 15)}</button>` : ''}
+      ${e.hasAction && !e.builtin ? `<button class="ib ${e.hidden ? 'off' : 'on'}" data-act="vis" title="${e.hidden ? 'Pin button to toolbar' : 'Unpin button from toolbar'}">${icon('pin', 15)}</button>` : ''}
       ${e.options ? `<button class="ib" data-act="opt" title="Options">${icon('gear', 15)}</button>` : ''}
       ${e.builtin ? '' : `<button class="ib" data-act="rm" title="Remove">${icon('trash', 15)}</button>`}
     </div>`).join('');
@@ -860,17 +943,26 @@ $('#bm-items').addEventListener('dragstart', (e) => {
   requestAnimationFrame(() => b.classList.add('dragging'));
 });
 $('#bm-items').addEventListener('dragend', () => { bmDrag = null; document.querySelectorAll('.bm.dragging').forEach(x => x.classList.remove('dragging')); clearBmDrop(); });
-function clearBmDrop() { document.querySelectorAll('.bm-drop').forEach(x => x.remove()); $('#bmbar').classList.remove('drop-target'); }
+function clearBmDrop() { document.querySelectorAll('.bm-drop').forEach(x => x.remove()); document.querySelectorAll('.bm.drop-into').forEach(x => x.classList.remove('drop-into')); $('#bmbar').classList.remove('drop-target'); }
 function bmDropIndex(x) {
   const items = [...$('#bm-items').querySelectorAll('.bm')].filter(b => b.style.display !== 'none' && b.dataset.bm !== bmDrag);
   const i = items.findIndex(b => { const r = b.getBoundingClientRect(); return x < r.left + r.width / 2; });
   return { items, before: i < 0 ? null : items[i] };
+}
+// Over the middle of a folder, a drop goes into the folder; elsewhere it reorders the bar.
+function bmFolderUnder(e) {
+  const f = e.target.closest && e.target.closest('.bm.folder');
+  if (!f || f.dataset.bm === bmDrag) return null;
+  const r = f.getBoundingClientRect();
+  return e.clientX > r.left + r.width * 0.2 && e.clientX < r.right - r.width * 0.2 ? f : null;
 }
 $('#bmbar').addEventListener('dragover', (e) => {
   if (bmDrag == null && dragId == null) return;
   e.preventDefault();
   clearBmDrop();
   if (dragId != null) $('#bmbar').classList.add('drop-target');
+  const folder = bmFolderUnder(e);
+  if (folder) { folder.classList.add('drop-into'); return; }
   const { before } = bmDropIndex(e.clientX);
   const line = document.createElement('i'); line.className = 'bm-drop';
   before ? before.before(line) : $('#bm-items').append(line);
@@ -878,6 +970,12 @@ $('#bmbar').addEventListener('dragover', (e) => {
 $('#bmbar').addEventListener('dragleave', (e) => { if (!e.relatedTarget || !$('#bmbar').contains(e.relatedTarget)) clearBmDrop(); });
 $('#bmbar').addEventListener('drop', (e) => {
   e.preventDefault();
+  const folder = bmFolderUnder(e);
+  if (folder) {
+    if (bmDrag != null) send('bm-move-into', bmDrag, folder.dataset.bm);
+    else if (dragId != null) send('bm-add-tab-into', dragId, folder.dataset.bm);
+    clearBmDrop(); return;
+  }
   const { before } = bmDropIndex(e.clientX);
   const idx = before ? BM.findIndex(b => b.id === before.dataset.bm) : BM.length;
   if (bmDrag != null) send('bm-move', bmDrag, idx < 0 ? BM.length : idx);

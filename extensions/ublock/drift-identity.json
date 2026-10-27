@@ -1,5 +1,6 @@
 {
-  "_comment": "The Chrome version Drift reports. Google's sign-in only admits recent Chrome versions, and the Electron engine can trail Chrome stable. Raise this with each Chrome stable release; it is ignored once the engine itself is at least this new.",
+  "_comment": "Optional: report a newer Chrome version than the engine (set enabled to true). Off by default: bot checks such as reCAPTCHA and Cloudflare compare the claimed version with the engine's real features and fail sites like Letterboxd when they disagree. Google sign-in works without it (Drift shows the engine as-is there).",
+  "enabled": false,
   "chromeMajor": 156,
   "chromeFull": "156.0.8078.54",
   "greaseBrand": "Not:A-Brand",

@@ -4,7 +4,8 @@ licensed GPLv3 (see LICENSE.txt), bundled with Drift with five small changes:
 1. js/vapi-background-ext.js, normalizeDetails(): Electron reports tabId -1 for every
    webRequest event, so uBO would treat all traffic as "behind-the-scene" and filter
    nothing per-site. When tabId is -1, ask Drift (self.__driftTabFor) which tab the
-   request belongs to.
+   request belongs to. Answers for sub-frames (and per initiator for top frames) are cached,
+   since Chromium never reuses frame ids.
 
 2. js/vapi-background.js, onPortConnect(): Electron doesn't fill port.sender.tab for
    content scripts, so cosmetic filtering and scriptlets had no tab. Ask Drift the same way.

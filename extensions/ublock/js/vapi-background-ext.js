@@ -96,7 +96,23 @@ vAPI.Tabs = class extends vAPI.Tabs {
             // Drift: Electron reports tabId -1 for all requests; ask the browser
             // which tab the request belongs to (see DRIFT-CHANGES.txt).
             if ( details.tabId === -1 && typeof self.__driftTabFor === 'function' ) {
-                const tabId = self.__driftTabFor(details);
+                // Frame ids are never reused, so a sub-frame's or top frame's tab is
+                // cached; page loads (main_frame) always ask.
+                const cache = self.__driftTabCache || (self.__driftTabCache = new Map());
+                const key = details.type !== 'main_frame' && details.frameId >= 0
+                    ? `${details.frameId}|${details.frameId === 0 ? details.initiator || '' : ''}`
+                    : '';
+                const now = Date.now();
+                const hit = key ? cache.get(key) : undefined;
+                // Top-frame entries expire quickly: two tabs on one site share an initiator.
+                let tabId = hit && (details.frameId !== 0 || now - hit.at < 3000) ? hit.tabId : undefined;
+                if ( tabId === undefined ) {
+                    tabId = self.__driftTabFor(details);
+                    if ( key && tabId > 0 ) {
+                        if ( cache.size > 2000 ) { cache.clear(); }
+                        cache.set(key, { tabId, at: now });
+                    }
+                }
                 if ( tabId > 0 ) { details.tabId = tabId; }
             }
             // Chromium 63+ supports the `initiator` property, which contains

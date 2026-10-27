@@ -29,18 +29,20 @@ To build the Windows installer locally: `npm run dist` (output goes to `dist/`).
 
 - **Vertical tabs** in a resizable sidebar, with drag-to-reorder. Drag the sidebar's edge all the way in (or click the sidebar icon at the top left) for an **icon-only sidebar**.
 - **Pinned tabs** shown as tiles at the top (drag a tab up there, or right-click → Pin)
-- **Command bar** (Ctrl+T / Ctrl+L): search, open sites, jump to open tabs and history
+- **Command bar** (Ctrl+T / Ctrl+L): search, open sites, jump to open tabs and history. Sites you've visited autocomplete as you type ("tw" → twitch.tv); Esc clears the completion.
 - **Shields = built-in uBlock Origin 1.75.0.** Click the shield in the address bar for its popup (per-site switch, counts, and the dynamic-filtering grid in advanced mode). Settings → Shields → *uBlock Origin dashboard* opens My filters, filter lists, and advanced settings. A lighter built-in blocker can be chosen instead.
 - **Compact mode** (Ctrl+Alt+S): hides the sidebar; touch the left edge to peek at it
 - **Tab sleeping**: background tabs are unloaded after 20 minutes to save memory
-- **Chrome extensions**: click the puzzle icon → *Get extensions*, then **Add to Chrome** on any Chrome Web Store page. Extension buttons appear under the address pill; their popups, badges and options pages work. Hide a button with the eye icon in the Extensions panel.
+- **Chrome extensions**: click the puzzle icon → *Get extensions*, then **Add to Chrome** on any Chrome Web Store page. The puzzle button in the toolbar lists every extension (click one to open its popup); pin the ones you want to keep in the toolbar. Popups, badges and options pages work.
 - **Volume mixer** (sliders icon at the bottom of the sidebar): per-tab volume from 0 to 300%, mute, reset. Scroll on a tab's speaker icon to adjust it, or right-click a tab → Volume.
 - **Top toolbar** with back/forward/reload, an **address bar** you can click into (suggestions drop down from it), bookmark star, Shields, extension buttons, and window buttons. Drag empty space to move the window.
-- **Bookmarks bar** under the address bar (Ctrl+Shift+B). Ctrl+D or the star bookmarks a page; drag a tab onto the bar to bookmark it; drag bookmarks to reorder; right-click to edit or delete. Folders open as menus. Import straight from Chrome, Edge, Brave, Opera or Vivaldi on the same PC, or from any browser's bookmarks.html file.
-- **Split view**: the split button right of the address bar puts two tabs side by side (or stacked). Pick a new tab or any open tab; drag the divider to resize (double-click it to even them out); click a page to make it the one the toolbar controls. Right-click a tab → *Open in split view* also works.
+- **Bookmarks bar** under the address bar (Ctrl+Shift+B). Ctrl+D or the star bookmarks a page; drag a tab onto the bar to bookmark it; drag bookmarks to reorder, or onto a folder to move them inside; right-click to edit or delete. Folders open as menus with site icons. Import straight from Chrome, Edge, Brave, Opera or Vivaldi on the same PC, or from any browser's bookmarks.html file.
+- **Split view**: the split button next to reload puts two tabs side by side (or stacked). Pick a new tab or any open tab; drag the divider to resize (double-click it to even them out); click a page to make it the one the toolbar controls. Right-click a tab → *Open in split view* also works.
 - **Wallpapers** (Settings → Appearance): 8 built-in, your own image, or your Windows desktop background. Shows behind the sidebar and toolbar and on the new tab page, with dim and blur sliders.
 - **Force dark pages** (Settings → Appearance), the same Chromium feature Opera uses. The moon in the address bar turns it off for one site.
 - **Passwords** (Settings → Passwords): encrypted with your Windows account, offers to save when you sign in, and suggests saved logins when you click a sign-in field. Import a CSV export from Chrome, Edge, Brave, Opera, Firefox, Bitwarden, 1Password, LastPass and others; export to CSV.
+- **New tab page** with your most-visited sites (hover a tile and click × to remove it)
+- **Taskbar menu**: right-click Drift's taskbar icon → *New tab*
 - **Session restore**, downloads panel, find on page, zoom, dark/light themes, 10 accent colors
 - Site permissions (camera, mic, location, notifications) prompt you instead of being granted automatically
 
@@ -49,7 +51,8 @@ To build the Windows installer locally: `npm run dist` (output goes to `dist/`).
 - The window and uBlock Origin start in parallel; the first page waits until uBlock is ready, so it's filtered from its first request.
 - Restored tabs stay unloaded until you open them, and background tabs are detached from the window so Chromium throttles them. **Sleep inactive tabs** (Settings) frees their memory entirely after a while.
 - Hovering a bookmark, or highlighting a suggestion in the address bar, opens the connection early so the page starts sooner.
-- The client-hints helper runs inside uBlock Origin's background page instead of its own process.
+- The client-hints helper runs inside uBlock Origin's background page instead of its own process, and only sees page loads and Google's own requests.
+- uBlock Origin learns which tab a request belongs to from a per-frame cache instead of asking Drift on every request.
 - `DRIFT_PERF=1 npm start` prints a startup timeline and per-process memory.
 
 ## Shortcuts
@@ -74,7 +77,8 @@ To build the Windows installer locally: `npm run dist` (output goes to `dist/`).
 
 - **DRM video** (Netflix, Disney+, Spotify web player) won't play. Stock Electron doesn't ship Widevine. Switching to the castLabs Electron build fixes this.
 - **Extensions** work through the `electron-chrome-extensions` library, which covers most but not all of Chrome's extension APIs. uBlock Origin is built in (a separately loaded copy is removed automatically). Extensions are told they were installed normally, as Chrome does for store installs, since some refuse to keep settings otherwise. Extensions that capture tab audio (volume mixers) won't work either, since that API isn't available; use the built-in volume mixer instead.
-- **Google sign-in**: on accounts.google.com Drift shows the engine exactly as Electron ships it (no version claim, no DevTools-protocol session, no page patches); claiming to be Chrome there makes Google run Chrome-only checks an embedded engine fails. Every other site sees Chrome at the version in `extensions/drift-hints/identity.json` (Google services admit only recent Chrome versions, and Electron 45 isn't usable yet because blocking `webRequest` listeners, which uBlock Origin needs, hang page loads), applied through Chromium's native user-agent override, plus the client-hint headers Electron leaves off (`drift-hints` extension). Raise `chromeMajor`/`chromeFull` when Chrome stable moves on.
+- **Google sign-in**: on accounts.google.com Drift shows the engine exactly as Electron ships it (no page patches); claiming to be Chrome there makes Google run Chrome-only checks an embedded engine fails. Elsewhere Drift identifies as Chrome at the engine's real version, plus the client-hint headers Electron leaves off (the `drift-hints` helper, which runs inside uBlock Origin). `extensions/drift-hints/identity.json` can report a newer version, but that's off by default: bot checks (reCAPTCHA, Cloudflare) compare the claim with the engine's real features and block sign-ins such as Letterboxd's.
+- Drift has one window (tabs, split view and the sidebar all live in it), so there's no *New window*.
 - Passwords can't be imported directly from another browser's profile (Chrome encrypts them to itself); export a CSV from that browser first and import the file. Delete the CSV afterwards.
 
 ## Where data lives

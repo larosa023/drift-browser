@@ -158,9 +158,15 @@ body.platform-darwin .winbtns { display: none; }
 .tab .title { flex: 1; min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .tab.asleep .title, .tab.asleep .fav { opacity: .5; }
 .tab .close, .tab .audio { width: 24px; height: 24px; border-radius: 6px; display: grid; place-items: center; color: var(--muted); }
-.tab .close { opacity: 0; }
-.tab:hover .close, .tab.active .close { opacity: 1; }
-.tab .close:hover, .tab .audio:hover { background: var(--hover); color: var(--fg); }
+/* Small close button tucked into the tab's top-right corner, so most of the tab is a click target */
+.tab { padding-right: 18px; }
+.tab .close {
+  position: absolute; top: 3px; right: 3px; width: 16px; height: 16px; border-radius: 5px; padding: 0;
+  opacity: 0; transition: opacity .1s;
+}
+.tab:hover .close { opacity: .8; }
+.tab .close:hover { opacity: 1; background: #e5484d; color: #fff; }
+.tab .audio:hover { background: var(--hover); color: var(--fg); }
 .tab .audio { color: var(--accent); }
 .tab.dragging { opacity: .4; }
 .drop-line { height: 2px; margin: -1px 8px; background: var(--accent); border-radius: 1px; }
@@ -575,7 +581,8 @@ body.rail .tab.in-split { margin-left: 0; }
 body.rail .tab.in-split::before { left: -4px; }
 
 /* ------------------------------------------------------------------ centered address bar */
-.tb-main { display: grid; grid-template-columns: minmax(0, 1fr) minmax(220px, 680px) minmax(0, 1fr); gap: 8px; }
+/* Side columns are equal (keeps the address bar centred) and never narrower than the nav buttons */
+.tb-main { display: grid; grid-template-columns: minmax(126px, 1fr) minmax(220px, 680px) minmax(126px, 1fr); gap: 8px; }
 .tb-nav { justify-self: start; }
 #addr { margin: 0; width: 100%; max-width: none; grid-column: 2; }
 .tb-right { grid-column: 3; justify-self: end; display: flex; align-items: center; gap: 2px; min-width: 0; -webkit-app-region: no-drag; }
@@ -600,3 +607,38 @@ body.rail .tab .audio svg { width: 13px; height: 13px; }
   color: var(--accent); background: var(--card); box-shadow: 0 0 0 1.5px var(--bg);
 }
 .ess .audio:hover { background: var(--accent); color: #fff; }
+
+/* Extensions menu (puzzle button): every extension button, with pins for the toolbar */
+#actions-wrap { display: flex; align-items: center; gap: 2px; }
+#extmenu-wrap { position: fixed; inset: 0; z-index: 30; }
+#extmenu {
+  position: absolute; width: 260px; padding: 6px; border-radius: 12px;
+  background: var(--bg); color: var(--fg);
+  box-shadow: 0 0 0 1px var(--border), 0 18px 50px rgba(0,0,0,.45); animation: drop .1s ease-out;
+}
+
+.em-head { font-size: 12px; font-weight: 600; color: var(--muted); padding: 4px 8px 6px; }
+.em-body { display: grid; grid-template-columns: 34px 1fr; }
+#actions-all { display: flex; flex-direction: column; gap: 0; }
+#actions-all::part(action) { width: 34px; height: 34px; border-radius: 8px 0 0 8px; background-size: 18px; }
+.em-rows { display: flex; flex-direction: column; }
+.em-row {
+  height: 34px; display: flex; align-items: center; gap: 6px; padding: 0 4px 0 6px;
+  border-radius: 0 8px 8px 0; cursor: default; font-size: 13px;
+}
+.em-row span { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.em-body .em-row.hover, .em-row:hover { background: var(--hover); }
+.em-pin { width: 26px; height: 26px; border: 0; border-radius: 6px; background: none; color: var(--muted); display: grid; place-items: center; }
+.em-pin:hover { background: var(--hover); color: var(--fg); }
+.em-pin.on { color: var(--accent); }
+.em-empty { padding: 8px; color: var(--muted); font-size: 12.5px; }
+.em-manage {
+  display: block; width: 100%; margin-top: 4px; padding: 8px; border: 0; border-top: 1px solid var(--border);
+  background: none; color: var(--fg); font: inherit; font-size: 12.5px; text-align: left; border-radius: 0 0 8px 8px;
+}
+.em-manage:hover { background: var(--hover); }
+
+/* Dropping a bookmark or tab into a folder on the bookmarks bar */
+.bm.folder.drop-into { background: color-mix(in srgb, var(--accent) 22%, transparent); box-shadow: 0 0 0 1.5px var(--accent) inset; }
+
+#extmenu:focus { outline: none; }
