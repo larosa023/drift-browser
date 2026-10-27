@@ -1,27 +1,52 @@
 # Builds the Windows installer and publishes it as a GitHub Release.
-# Run by pushing a version tag:   git tag v1.8.1 && git push origin v1.8.1
+# Runs on every push to main; if a release for package.json's version already exists it
+# does nothing. So to ship an update: bump "version" in package.json and push.
 # Installed copies of Drift pick the new release up automatically.
 name: Release
 
 on:
   push:
+    branches: [main]
     tags: ['v*']
   workflow_dispatch:
 
 permissions:
   contents: write
 
+concurrency:
+  group: release
+  cancel-in-progress: false
+
 jobs:
   windows:
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v4
+
+      - name: Already released?
+        id: check
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          v=$(node -p "require('./package.json').version")
+          echo "version=$v" >> "$GITHUB_OUTPUT"
+          if gh release view "v$v" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            echo "v$v is already released; nothing to do."
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+          fi
+
       - uses: actions/setup-node@v4
+        if: steps.check.outputs.skip != 'true'
         with:
           node-version: 22
           cache: npm
+
       - run: npm ci
-      - name: Build and publish
+        if: steps.check.outputs.skip != 'true'
+
+      - name: Build and publish v${{ steps.check.outputs.version }}
+        if: steps.check.outputs.skip != 'true'
         run: npm run release
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}

@@ -10,9 +10,9 @@ After that, Drift updates itself: it checks GitHub for new releases, downloads t
 
 ## Releasing a new version
 
-1. Bump `version` in `package.json` and commit.
-2. Tag and push: `git tag v1.8.1 && git push origin main v1.8.1`
-3. GitHub Actions builds the installer on Windows and publishes the release; installed copies update themselves.
+1. Bump `version` in `package.json`, commit, and push to `main`.
+2. GitHub Actions builds the installer on Windows and publishes release `v<version>` (pushes that don't change the version are skipped).
+3. Installed copies of Drift update themselves.
 
 ## Run from source
 
