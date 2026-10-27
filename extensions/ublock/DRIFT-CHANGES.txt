@@ -1,5 +1,5 @@
 uBlock Origin 1.75.0 (Chromium build, https://github.com/gorhill/uBlock/releases/tag/1.75.0),
-licensed GPLv3 (see LICENSE.txt), bundled with Drift with four small changes:
+licensed GPLv3 (see LICENSE.txt), bundled with Drift with five small changes:
 
 1. js/vapi-background-ext.js, normalizeDetails(): Electron reports tabId -1 for every
    webRequest event, so uBO would treat all traffic as "behind-the-scene" and filter
@@ -18,5 +18,10 @@ licensed GPLv3 (see LICENSE.txt), bundled with Drift with four small changes:
 4. manifest.json: added a "key" so the extension ID is always kfjbnefaejpefdfmciibdijcalgdfaec, wherever Drift is
    installed (an unpacked extension's ID otherwise depends on its folder path, which reset
    uBO's settings whenever Drift moved).
+
+5. background.html loads js/drift-hints.js (copied from extensions/drift-hints/bg.js by
+   scripts/sync-hints.js, with drift-identity.json). It adds Chromium's User-Agent client-hint
+   headers that Electron leaves off page loads, and runs here so it doesn't need a process of
+   its own. It doesn't touch uBO's filtering.
 
 Nothing else is modified.

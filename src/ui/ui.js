@@ -434,6 +434,7 @@ function renderPalette(base, r) {
       <span class="pt"><b>${esc(title)}</b><span>${esc(sub)}</span></span>${badge ? `<span class="badge">${badge}</span>` : ''}</div>`);
   });
   $('#p-results').innerHTML = html.join('');
+  if (q) warm(paletteItems[paletteSel]);
 }
 
 function runItem(it, forceNew) {
@@ -461,6 +462,17 @@ $('#p-input').addEventListener('keydown', (e) => {
 function highlight() {
   document.querySelectorAll('.pr').forEach(el => el.classList.toggle('sel', Number(el.dataset.i) === paletteSel));
   const sel = document.querySelector('.pr.sel'); if (sel) sel.scrollIntoView({ block: 'nearest' });
+  warm(paletteItems[paletteSel]);
+}
+// Open a connection to where the highlighted suggestion or hovered bookmark leads, so the page
+// starts loading sooner if it's picked (Chrome does the same).
+let warmTimer = 0;
+function warm(it) {
+  clearTimeout(warmTimer);
+  if (!it) return;
+  const target = it.kind === 'go' ? it.text : it.kind === 'search' ? '?' + it.text : it.url;
+  if (!target || it.kind === 'tab') return;
+  warmTimer = setTimeout(() => send('preconnect', target), 80);
 }
 $('#p-results').addEventListener('mousemove', (e) => {
   const el = e.target.closest('.pr'); if (!el) return;
@@ -821,6 +833,10 @@ $('#bm-more').onclick = (e) => {
   const r = e.currentTarget.getBoundingClientRect();
   send('bm-overflow', JSON.parse(e.currentTarget.dataset.ids || '[]'), r.left, r.bottom + 2);
 };
+$('#bm-items').addEventListener('mouseover', (e) => {
+  const b = e.target.closest('[data-bm]'); if (!b) return;
+  const it = findBm(b.dataset.bm); if (it && it.type !== 'folder') warm({ url: it.url });
+});
 $('#bm-items').addEventListener('click', (e) => {
   const b = e.target.closest('[data-bm]'); if (!b) return;
   const it = findBm(b.dataset.bm); if (!it) return;

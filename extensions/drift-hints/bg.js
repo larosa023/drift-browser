@@ -3,13 +3,18 @@
 // without them as a tampered browser, so add the values Chromium itself would send.
 // Drift reports the version in identity.json when the engine is older (main.js applies the
 // same identity to pages natively, so headers and navigator.userAgentData agree).
+(() => {
 let low = null, high = null;          // the reported Chrome identity
 let realLow = null, realHigh = null;  // the engine as it is, for Google's sign-in pages
 const fmt = (list) => list.map(b => `"${b.brand}";v="${b.version}"`).join(', ');
 const q = (s) => `"${s}"`;
 function identity() {
-  try { const x = new XMLHttpRequest(); x.open('GET', chrome.runtime.getURL('identity.json'), false); x.send(); return JSON.parse(x.responseText); }
-  catch { return null; }
+  // drift-identity.json when running inside uBlock Origin's background page, identity.json standalone.
+  for (const name of ['drift-identity.json', 'identity.json']) {
+    try { const x = new XMLHttpRequest(); x.open('GET', chrome.runtime.getURL(name), false); x.send(); if (x.status === 200 || x.status === 0 && x.responseText) return JSON.parse(x.responseText); }
+    catch {}
+  }
+  return null;
 }
 (async () => {
   const d = navigator.userAgentData;
@@ -52,3 +57,4 @@ chrome.webRequest.onBeforeSendHeaders.addListener((details) => {
   if (google) add(signin ? realHigh : high);
   return { requestHeaders: headers };
 }, { urls: ['https://*/*'] }, ['blocking', 'requestHeaders', 'extraHeaders']);
+})();

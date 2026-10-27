@@ -1,5 +1,9 @@
 // Drift — a lightweight Chromium browser (Electron)
 // Main process: window, tabs, shields, sessions, shortcuts, downloads.
+// Startup timing and process memory, printed when DRIFT_PERF=1 is set (for profiling).
+const __T0 = Date.now();
+const PERF_ON = !!process.env.DRIFT_PERF;
+global.PERF = PERF_ON ? (l) => console.log(`[perf] ${String(Date.now() - __T0).padStart(5)}ms ${l}`) : () => {};
 
 const {
   app, BaseWindow, WebContentsView, ipcMain, session, Menu, shell, dialog,
@@ -632,14 +636,15 @@ function togglePin(id) {
 setInterval(() => {
   if (!settings || !settings.sleepTabs) return;
   const cutoff = Date.now() - settings.sleepMinutes * 60000;
+  let slept = false;
   for (const t of tabs) {
     const sp = splitOf(t.id);
     if (sp && sp === splitOf(activeId)) continue;
     if (t.id !== activeId && t.view && !t.audible && t.lastActive < cutoff) {
-      destroyView(t);
+      destroyView(t); slept = true;
     }
   }
-  push();
+  if (slept) push();
 }, 60000);
 
 // ---------------------------------------------------------------------------
@@ -1169,16 +1174,41 @@ function uboPath() {
   return app.isPackaged ? path.join(process.resourcesPath, 'extensions', 'ublock') : path.join(__dirname, '..', 'extensions', 'ublock');
 }
 
-// Built-in helper extension that adds Chromium's User-Agent client hints to page loads
-// (Electron omits them there). It's an extension so it runs alongside uBlock Origin's
-// network filtering instead of replacing it. See extensions/drift-hints/bg.js.
+// Chromium's User-Agent client hints, which Electron leaves off page loads, are added by a
+// small helper (extensions/drift-hints/bg.js). It normally runs inside uBlock Origin's
+// background page (scripts/sync-hints.js copies it there), so it costs no extra process; the
+// standalone extension is loaded only when uBlock Origin is off. Either way it runs as an
+// extension, alongside uBO's network filtering instead of replacing it.
 function hintsPath() {
   return app.isPackaged ? path.join(process.resourcesPath, 'extensions', 'drift-hints') : path.join(__dirname, '..', 'extensions', 'drift-hints');
 }
+let hintsId = null;
+async function loadHintsExt() {
+  if (hintsId) return;
+  try { const ext = await extApi().loadExtension(hintsPath(), { allowFileAccess: false }); hintsId = ext.id; await bgReady(ext.id); }
+  catch (e) { console.error('[hints] could not load:', e.message); }
+}
+function unloadHintsExt() {
+  if (!hintsId) return;
+  try { extApi().removeExtension(hintsId); } catch {}
+  hintsId = null;
+}
+// Resolves once an extension's background page has loaded (or after `ms`).
+async function bgReady(id, ms = 1500) {
+  const prefix = `chrome-extension://${id}/`;
+  for (let t = 0; t < ms; t += 25) {
+    const bg = webContents.getAllWebContents().find(w => w.getType() === 'backgroundPage' && w.getURL().startsWith(prefix));
+    if (bg && !bg.isLoading()) return;
+    await new Promise(r => setTimeout(r, 25));
+  }
+}
+
 // Report the claimed Chrome version through Chromium's own user-agent override (the one
 // DevTools device emulation uses), so navigator.userAgent, navigator.userAgentData and the
 // request headers all agree natively, without patching anything in the page.
-let uaMeta = null;
+let startupGate = Promise.resolve();   // first page loads wait for this (see app startup)
+let uaMeta = null;       // override for normal sites (null when the engine is reported as-is)
+let hintSets = null;     // header values for the built-in blocker path: { low, high, realLow, realHigh }
 function applyIdentity(wc) {
   if (!uaMeta || !wc || wc.isDestroyed() || wc.__driftSignin) return;
   const type = wc.getType();
@@ -1192,58 +1222,48 @@ function applyIdentity(wc) {
   }
   dbg.sendCommand('Emulation.setUserAgentOverride', { userAgent: chromeUA(), userAgentMetadata: uaMeta }).catch(() => {});
 }
-
-async function loadHints() {
-  try {
-    const ext = await extApi().loadExtension(hintsPath(), { allowFileAccess: false });
-    // Wait (briefly) for its background page, so restored tabs' first loads get the hints too.
-    const prefix = `chrome-extension://${ext.id}/`;
-    for (let i = 0; i < 40; i++) {
-      const bg = webContents.getAllWebContents().find(w => w.getURL().startsWith(prefix));
-      if (bg && !bg.isLoading()) break;
-      await new Promise(r => setTimeout(r, 50));
-    }
-    if (CLAIM) {
-      const bg = webContents.getAllWebContents().find(w => w.getURL().startsWith(prefix));
-      const real = bg ? await bg.executeJavaScript(`navigator.userAgentData.getHighEntropyValues(['architecture','bitness','model','platformVersion','wow64']).then(h => ({ ...h, platform: navigator.userAgentData.platform }))`).catch(() => null) : null;
-      if (real) {
-        uaMeta = {
-          brands: [{ brand: CLAIM.greaseBrand, version: CLAIM.greaseVersion }, { brand: 'Chromium', version: String(CLAIM.chromeMajor) }],
-          fullVersionList: [{ brand: CLAIM.greaseBrand, version: CLAIM.greaseVersion + '.0.0.0' }, { brand: 'Chromium', version: CLAIM.chromeFull }],
-          fullVersion: CLAIM.chromeFull, platform: real.platform, platformVersion: real.platformVersion || '',
-          architecture: real.architecture || '', model: real.model || '', mobile: false, bitness: real.bitness || '', wow64: !!real.wow64,
-        };
-        for (const w of webContents.getAllWebContents()) if (/^https?:/.test(w.getURL()) && !isSignin(w.getURL())) applyIdentity(w);
-      }
-    }
-  } catch (e) { console.error('[hints] could not load:', e.message); }
+// Reads the engine's real platform details once, from Drift's own UI page.
+async function initIdentity() {
+  const real = await ui.webContents.executeJavaScript(`(async () => {
+    const d = navigator.userAgentData;
+    const h = await d.getHighEntropyValues(['architecture','bitness','fullVersionList','model','platformVersion','wow64']);
+    return { ...h, brands: d.brands, platform: d.platform, mobile: d.mobile };
+  })()`).catch(() => null);
+  if (!real) return;
+  const fmt = (l) => l.map(b => `"${b.brand}";v="${b.version}"`).join(', ');
+  const q = (v) => `"${v || ''}"`;
+  const sets = (brands, full) => [
+    { 'sec-ch-ua': fmt(brands), 'sec-ch-ua-mobile': real.mobile ? '?1' : '?0', 'sec-ch-ua-platform': q(real.platform) },
+    { 'sec-ch-ua-arch': q(real.architecture), 'sec-ch-ua-bitness': q(real.bitness), 'sec-ch-ua-full-version-list': fmt(full),
+      'sec-ch-ua-model': q(real.model), 'sec-ch-ua-platform-version': q(real.platformVersion), 'sec-ch-ua-wow64': real.wow64 ? '?1' : '?0' },
+  ];
+  let brands = real.brands, full = real.fullVersionList || [];
+  if (CLAIM) {
+    brands = [{ brand: CLAIM.greaseBrand, version: CLAIM.greaseVersion }, { brand: 'Chromium', version: String(CLAIM.chromeMajor) }];
+    full = [{ brand: CLAIM.greaseBrand, version: CLAIM.greaseVersion + '.0.0.0' }, { brand: 'Chromium', version: CLAIM.chromeFull }];
+    uaMeta = { brands, fullVersionList: full, fullVersion: CLAIM.chromeFull, platform: real.platform, platformVersion: real.platformVersion || '',
+      architecture: real.architecture || '', model: real.model || '', mobile: false, bitness: real.bitness || '', wow64: !!real.wow64 };
+    for (const w of webContents.getAllWebContents()) if (/^https?:/.test(w.getURL()) && !isSignin(w.getURL())) applyIdentity(w);
+  }
+  const [low, high] = sets(brands, full), [realLow, realHigh] = sets(real.brands, real.fullVersionList || []);
+  hintSets = { low, high, realLow, realHigh };
 }
 
 // With the built-in blocker, Electron's own request hooks are in use and extensions can't
-// see requests, so add the same hints here instead.
-let hintSets = null;
-async function getHintSets() {
-  if (hintSets || !ui || ui.webContents.isDestroyed()) return hintSets;
-  try {
-    hintSets = await ui.webContents.executeJavaScript(`(async () => {
-      const d = navigator.userAgentData; if (!d) return null;
-      const fmt = (l) => l.map(b => '"' + b.brand + '";v="' + b.version + '"').join(', '); const q = (s) => '"' + (s || '') + '"';
-      const h = await d.getHighEntropyValues(['architecture','bitness','fullVersionList','model','platformVersion','wow64']);
-      return { low: { 'sec-ch-ua': fmt(d.brands), 'sec-ch-ua-mobile': d.mobile ? '?1' : '?0', 'sec-ch-ua-platform': q(d.platform) },
-        high: { 'sec-ch-ua-arch': q(h.architecture), 'sec-ch-ua-bitness': q(h.bitness), 'sec-ch-ua-full-version-list': fmt(h.fullVersionList || []),
-          'sec-ch-ua-model': q(h.model), 'sec-ch-ua-platform-version': q(h.platformVersion), 'sec-ch-ua-wow64': h.wow64 ? '?1' : '?0' } };
-    })()`);
-  } catch {}
-  return hintSets;
-}
+// see requests, so the same hints are added here instead.
 const HINTS_HIGH = /(^|\.)(google\.[a-z.]+|youtube\.com|gstatic\.com|googleapis\.com|googleusercontent\.com|withgoogle\.com|blogger\.com|gmail\.com)$/i;
 function addHintHeaders(details, cb) {
   const sets = hintSets;
-  if (!sets || !/^https:/.test(details.url) || !['mainFrame', 'subFrame'].includes(details.resourceType)) return cb({});
+  if (!sets || !/^https:/.test(details.url)) return cb({});
+  const frame = details.resourceType === 'mainFrame' || details.resourceType === 'subFrame';
+  let google = false; try { google = HINTS_HIGH.test(new URL(details.url).hostname); } catch {}
+  if (!frame && !google) return cb({});
+  let signin = false;
+  try { const wc = details.webContentsId && webContents.fromId(details.webContentsId); signin = !!(wc && wc.__driftSignin); } catch {}
   const h = details.requestHeaders, have = new Set(Object.keys(h).map(k => k.toLowerCase()));
   const add = (o) => { for (const [k, v] of Object.entries(o)) if (!have.has(k)) h[k] = v; };
-  add(sets.low);
-  try { if (HINTS_HIGH.test(new URL(details.url).hostname)) add(sets.high); } catch {}
+  add(signin ? sets.realLow : sets.low);
+  if (google) add(signin ? sets.realHigh : sets.high);
   cb({ requestHeaders: h });
 }
 
@@ -1252,14 +1272,17 @@ async function loadUbo() {
   try {
     const ext = await extApi().loadExtension(uboPath(), { allowFileAccess: true });
     uboId = ext.id;
+    unloadHintsExt();   // uBO's background page carries the hints helper
+    await bgReady(ext.id);
     console.log('[shields] uBlock Origin', ext.version, 'loaded');
   } catch (e) { console.error('[shields] could not load uBlock Origin:', e.message); }
   sendExtensions(); push();
 }
-function unloadUbo() {
+function unloadUbo(keepHints = true) {
   if (!uboId) return;
   try { extApi().removeExtension(uboId); } catch {}
   uboId = null;
+  if (keepHints) loadHintsExt();
   sendExtensions(); push();
 }
 
@@ -1267,7 +1290,7 @@ function unloadUbo() {
 // blocking engine runs at a time. uBlock Origin is the default; the built-in one is lighter.
 async function initShields() {
   if (settings.shieldsEngine === 'ubo') {
-    if (settings.shields) await loadUbo();
+    if (settings.shields) await loadUbo(); else await loadHintsExt();
     return;
   }
   try {
@@ -1302,7 +1325,6 @@ async function initShields() {
       if (t) { t.blocked++; if (t.id === activeId) push(); }
     });
     if (settings.shields) blocker.enableBlockingInSession(session.defaultSession);
-    getHintSets().catch(() => {});
     session.defaultSession.webRequest.onBeforeSendHeaders(addHintHeaders);
     console.log('[shields] ready');
   } catch (e) {
@@ -1327,9 +1349,10 @@ async function setShieldsEngine(engine) {
   if (engine === 'ubo') {
     if (blocker) { try { blocker.disableBlockingInSession(session.defaultSession); } catch {} }
     session.defaultSession.webRequest.onBeforeSendHeaders(null);
-    if (settings.shields) await loadUbo();
+    if (settings.shields) await loadUbo(); else await loadHintsExt();
   } else {
-    unloadUbo();
+    unloadUbo(false);
+    unloadHintsExt();   // extensions can't see requests with the built-in blocker; it adds the hints itself
     if (blocker) { if (settings.shields) blocker.enableBlockingInSession(session.defaultSession); session.defaultSession.webRequest.onBeforeSendHeaders(addHintHeaders); }
     else await initShields();
   }
@@ -1979,6 +2002,14 @@ function setupUpdates() {
 
 function setupIPC() {
   const on = (ch, fn) => ipcMain.on(ch, (e, ...a) => { if (ui && e.sender === ui.webContents) fn(...a); });
+  // Warm up a connection to a suggestion or bookmark under the pointer (once per site per 10s).
+  const warmed = new Map();
+  on('preconnect', (target) => {
+    let origin; try { const u = new URL(toUrl(String(target || ''))); if (!/^https?:$/.test(u.protocol)) return; origin = u.origin; } catch { return; }
+    const now = Date.now(); if (now - (warmed.get(origin) || 0) < 10000) return;
+    warmed.set(origin, now); if (warmed.size > 200) warmed.clear();
+    try { session.defaultSession.preconnect({ url: origin, numSockets: 1 }); } catch {}
+  });
   const handle = (ch, fn) => ipcMain.handle(ch, (e, ...a) => (ui && e.sender === ui.webContents) ? fn(...a) : null);
 
   on('ready', () => { push(); layout(); sendBookmarks(); });
@@ -2178,14 +2209,16 @@ function createWindow() {
   const urls = process.argv.slice(1).filter(a => /^https?:\/\//.test(a));
   const s = settings.restoreTabs ? readJSON('session.json', null) : null;
   if (s && s.tabs && s.tabs.length) {
-    s.tabs.forEach((t, i) => createTab(t.url, { title: t.title, favicon: t.favicon, pinned: t.pinned, lazy: i !== s.active, activate: false }));
+    s.tabs.forEach((t) => createTab(t.url, { title: t.title, favicon: t.favicon, pinned: t.pinned, lazy: true, activate: false }));
     for (const [i, j, ratio, dir] of s.splits || []) {
       if (tabs[i] && tabs[j] && !splitOf(tabs[i].id) && !splitOf(tabs[j].id)) splits.push({ a: tabs[i].id, b: tabs[j].id, ratio: ratio || 0.5, dir: dir === 'col' ? 'col' : 'row' });
     }
-    activate(tabs[Math.min(s.active, tabs.length - 1)].id);
   }
-  for (const u of urls) createTab(u);
-  if (!tabs.length) createTab(NEWTAB);
+  startupGate.then(() => {
+    if (s && s.tabs && s.tabs.length && tabs.length) activate(tabs[Math.min(s.active, tabs.length - 1)].id);
+    for (const u of urls) createTab(u);
+    if (!tabs.length) createTab(NEWTAB);
+  });
 }
 
 // ---------------------------------------------------------------------------
@@ -2215,6 +2248,15 @@ if (!app.requestSingleInstanceLock()) {
   });
 
   app.whenReady().then(async () => {
+    PERF('ready');
+    if (PERF_ON) {
+      setTimeout(() => {
+        for (const w of webContents.getAllWebContents()) PERF(`wc ${w.id} ${w.getType()} pid=${w.getOSProcessId()} ${w.getURL().slice(0, 70)}`);
+        let tot = 0; for (const m of app.getAppMetrics()) { tot += m.memory.workingSetSize; PERF(`proc ${m.pid} ${m.type} ${(m.memory.workingSetSize/1024).toFixed(0)}MB cpu=${m.cpu.percentCPUUsage.toFixed(1)}`); }
+        PERF(`total ${(tot/1024).toFixed(0)}MB`);
+      }, 8000);
+      app.on('web-contents-created', (_e, w) => { PERF('created wc' + w.id + ' ' + w.getType()); w.on('did-finish-load', () => PERF('loaded wc' + w.id + ' ' + w.getURL().slice(0, 60))); w.once('destroyed', () => PERF('destroyed wc' + w.id)); });
+    }
     settings = { ...DEFAULT_SETTINGS, ...readJSON('settings.json', {}) };
     nativeTheme.themeSource = settings.theme;
     history = new Map(readJSON('history.json', []).map(h => [h.url, h]));
@@ -2232,10 +2274,18 @@ if (!app.requestSingleInstanceLock()) {
     setupIPC();
     setupPageIPC();
     nativeTheme.on('updated', () => { push(); refreshNewTabs(); });
+    PERF('setup done');
     await setupExtensions(ses);
-    await loadHints();
+    PERF('extensions loaded');
+    // uBlock Origin (or the built-in blocker) starts while the window and its UI load; the
+    // first page waits for both, so it's filtered and carries the right identity from its
+    // first request. Capped so a slow first-run filter download can't hold the window up.
+    const shieldsReady = initShields().then(() => PERF('shields ready'));
+    let openGate; startupGate = new Promise(r => { openGate = r; });
     createWindow();
-    initShields();
+    PERF('window created');
+    const uiReady = new Promise(r => ui.webContents.once('did-finish-load', r)).then(initIdentity);
+    Promise.race([Promise.all([shieldsReady, uiReady]), new Promise(r => setTimeout(r, 2000))]).then(() => { PERF('gate open'); openGate(); });
     setupUpdates();
   });
 

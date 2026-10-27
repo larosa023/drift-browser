@@ -44,6 +44,14 @@ To build the Windows installer locally: `npm run dist` (output goes to `dist/`).
 - **Session restore**, downloads panel, find on page, zoom, dark/light themes, 10 accent colors
 - Site permissions (camera, mic, location, notifications) prompt you instead of being granted automatically
 
+## Performance
+
+- The window and uBlock Origin start in parallel; the first page waits until uBlock is ready, so it's filtered from its first request.
+- Restored tabs stay unloaded until you open them, and background tabs are detached from the window so Chromium throttles them. **Sleep inactive tabs** (Settings) frees their memory entirely after a while.
+- Hovering a bookmark, or highlighting a suggestion in the address bar, opens the connection early so the page starts sooner.
+- The client-hints helper runs inside uBlock Origin's background page instead of its own process.
+- `DRIFT_PERF=1 npm start` prints a startup timeline and per-process memory.
+
 ## Shortcuts
 
 | Action | Keys |
@@ -84,5 +92,6 @@ src/passwords.js     encrypted password store + CSV import/export
 src/wallpapers.js    built-in wallpapers
 extensions/ublock/   bundled uBlock Origin (see DRIFT-CHANGES.txt for the three small patches)
 scripts/patch-deps.js  fixes applied to electron-chrome-extensions after npm install
+scripts/sync-hints.js  copies the client-hints helper into the bundled uBlock Origin
 build/               app icon
 ```

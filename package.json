@@ -1,14 +1,15 @@
 {
   "name": "drift-browser",
-  "version": "1.8.5",
+  "version": "1.9.0",
   "description": "A lightweight Chromium browser with vertical tabs and built-in ad blocking",
   "main": "src/main.js",
   "scripts": {
-    "start": "npm run build:preload && electron .",
-    "dist": "npm run build:preload && electron-builder --win",
+    "start": "npm run sync:hints && npm run build:preload && electron .",
+    "dist": "npm run sync:hints && npm run build:preload && electron-builder --win",
     "build:preload": "esbuild src/ui/preload.src.js --bundle --platform=node --external:electron --format=cjs --outfile=src/ui/preload.js",
     "postinstall": "node scripts/patch-deps.js",
-    "release": "npm run build:preload && electron-builder --win --publish always"
+    "release": "npm run sync:hints && npm run build:preload && electron-builder --win --publish always",
+    "sync:hints": "node scripts/sync-hints.js"
   },
   "author": "Anthony",
   "license": "MIT",
