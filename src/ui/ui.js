@@ -190,7 +190,7 @@ function renderTabs() {
   ess.innerHTML = pinned.map(t => `
     <div class="ess ${t.id === S.activeId ? 'active' : ''} ${t.asleep ? 'asleep' : ''}" data-id="${t.id}" draggable="true" title="${esc(tabTitle(t))}">
       ${favHTML(t, 18)}
-      ${t.audible || t.muted ? `<span class="audio">${icon(t.muted ? 'muted' : 'sound', 11)}</span>` : ''}
+      ${t.audible || t.muted ? `<button class="audio" data-act="mute" title="${t.muted ? 'Unmute' : 'Mute'} tab">${icon(t.muted ? 'muted' : 'sound', 13)}</button>` : ''}
     </div>`).join('');
   const splitClass = (t) => {
     const sp = (S.splits || []).find(x => x.a === t.id || x.b === t.id);
@@ -203,7 +203,7 @@ function renderTabs() {
     <div class="tab ${t.id === S.activeId ? 'active' : ''} ${t.asleep ? 'asleep' : ''} ${splitClass(t)}" data-id="${t.id}" draggable="true" title="${esc(tabTitle(t))}${t.asleep ? ' (sleeping)' : ''}">
       <span class="fav-x" data-act="close" title="Close tab">${favHTML(t)}<span class="xic">${icon('x', 12)}</span></span>
       <span class="title">${esc(tabTitle(t))}</span>
-      ${t.audible || t.muted || t.volume !== 1 ? `<button class="audio" data-act="mute" title="${t.muted ? 'Unmute' : 'Mute'} · volume ${Math.round(t.volume * 100)}% (scroll to adjust)">${icon(t.muted ? 'muted' : 'sound', 14)}</button>` : ''}
+      ${t.audible || t.muted || t.volume !== 1 ? `<button class="audio" data-act="mute" title="${t.muted ? 'Unmute' : 'Mute'} · volume ${Math.round(t.volume * 100)}% (scroll to adjust)">${icon(t.muted ? 'muted' : 'sound', 18)}</button>` : ''}
       <button class="close" data-act="close" title="Close (Ctrl+W)">${icon('x', 14)}</button>
     </div>`).join('');
 }

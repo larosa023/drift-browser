@@ -588,3 +588,15 @@ body.rail .tab.in-split::before { left: -4px; }
 .fav-x:hover .xic:hover { background: #e5484d; color: #fff; }
 body.rail .fav-x { width: 18px; height: 18px; }
 body.rail .fav-x .xic { inset: -5px; }
+
+/* ------------------------------------------------------------------ bigger mute targets */
+.tab .audio { width: 30px; height: 28px; border-radius: 8px; margin-right: 1px; }
+.tab .audio:hover { background: color-mix(in srgb, var(--accent) 18%, transparent); color: var(--accent); }
+.tab .audio svg { width: 18px; height: 18px; }
+body.rail .tab .audio { top: -2px; right: -3px; width: 22px; height: 22px; border-radius: 50%; background: var(--card); box-shadow: 0 0 0 1.5px var(--bg); }
+body.rail .tab .audio svg { width: 13px; height: 13px; }
+.ess .audio {
+  position: absolute; top: 2px; right: 2px; width: 22px; height: 22px; border-radius: 50%; display: grid; place-items: center;
+  color: var(--accent); background: var(--card); box-shadow: 0 0 0 1.5px var(--bg);
+}
+.ess .audio:hover { background: var(--accent); color: #fff; }

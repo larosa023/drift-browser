@@ -107,12 +107,13 @@
     "webRequestBlocking",
     "<all_urls>"
   ],
-  "short_name": "uBlock\u2080",
+  "short_name": "uBlock₀",
   "storage": {
     "managed_schema": "managed_storage.json"
   },
   "version": "1.75.0",
   "web_accessible_resources": [
     "/web_accessible_resources/*"
-  ]
+  ],
+  "key": "MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEAlc4n0OoogS14X/0e7TQmPulE/WLL9v0GwupSoF9lsvefX5O4lXKKZiJahfttyaXW+mcRqDXXuTW6qPlYig9rgJpk8ovZe6sIqtw9BiGe0j4cl7Z3S4b4P7ZNvAzDzVZin8wZVx9V9B32MQuryq2l+bqZsI4J1rHVqK9W59Fu+tHVEKbHLMLiJ6JKFDuM/EzS+La89QMUOf4oItjw9Vp/WLvw3Tg5N3CFunlqAsr8OqAbSzV/Ub6bdGv5HBNua9Htsp/dFbss/c0tHBaIIgCYuCDOCdoFYYmvc7yatfe2AEhohPKePD8+/PXtcLi13iqwCQxIkmZ6h2G57GBLp4pWLQIDAQAB"
 }

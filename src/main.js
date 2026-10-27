@@ -688,35 +688,64 @@ function compactIcon(buf, type) {
   return buf.length < 60000 ? `data:${type};base64,${buf.toString('base64')}` : null;
 }
 
-// Fetched in a separate session: no extensions or ad blocking in the way, no cookies sent.
+// Small rolling diagnostic log for icon problems: %APPDATA%\Drift\logs\favicons.log
+function iconLog(line) {
+  try {
+    const dir = file('logs'); fs.mkdirSync(dir, { recursive: true });
+    const f = path.join(dir, 'favicons.log');
+    try { if (fs.statSync(f).size > 200000) fs.renameSync(f, f + '.old'); } catch {}
+    fs.appendFileSync(f, `${new Date().toISOString()} ${line}\n`);
+  } catch {}
+}
+
+function withTimeout(promise, ms, what) {
+  let t; return Promise.race([promise, new Promise((_, rej) => { t = setTimeout(() => rej(new Error(`${what} timed out`)), ms); })]).finally(() => clearTimeout(t));
+}
+
+// Try the browser's own session first (same cookies and identity as the page, which bot
+// checks like Cloudflare expect), then a clean session without extensions in the way.
 let iconSession = null;
+async function fetchIconBytes(iconUrl) {
+  iconSession = iconSession || session.fromPartition('drift-favicons');
+  iconSession.setUserAgent(chromeUA());
+  const attempts = [['browser', session.defaultSession], ['clean', iconSession]];
+  let lastErr = '';
+  for (const [name, ses] of attempts) {
+    try {
+      const ctl = new AbortController();
+      const r = await withTimeout(ses.fetch(iconUrl, { signal: ctl.signal, headers: { Accept: 'image/avif,image/webp,image/svg+xml,image/png,image/*,*/*;q=0.8' } }), 7000, 'fetch')
+        .catch((e) => { ctl.abort(); throw e; });
+      if (!r.ok) { lastErr = `${name}:HTTP ${r.status}`; continue; }
+      const buf = Buffer.from(await withTimeout(r.arrayBuffer(), 7000, 'read'));
+      return { buf, type: (r.headers.get('content-type') || '').split(';')[0].trim().toLowerCase() };
+    } catch (e) { lastErr = `${name}:${e.message}`; }
+  }
+  throw new Error(lastErr);
+}
+
 async function fetchFavicon(iconUrl) {
   if (!iconUrl) return null;
   if (iconUrl.startsWith('data:image/')) return iconUrl.length < 60000 ? iconUrl : null;
   if (!/^https?:/.test(iconUrl)) return null;
   if (faviconMem.has(iconUrl)) return faviconMem.get(iconUrl);
-  let out = null;
+  let out = null, why = '';
   try {
-    iconSession = iconSession || session.fromPartition('drift-favicons');
-    iconSession.setUserAgent(chromeUA());
-    const ctl = new AbortController(); const timer = setTimeout(() => ctl.abort(), 8000);
-    const r = await iconSession.fetch(iconUrl, { signal: ctl.signal, headers: { Accept: 'image/avif,image/webp,image/svg+xml,image/png,image/*,*/*;q=0.8' } });
-    clearTimeout(timer);
-    if (r.ok) {
-      let type = (r.headers.get('content-type') || '').split(';')[0].trim().toLowerCase();
-      const buf = Buffer.from(await r.arrayBuffer());
-      const head = buf.subarray(0, 64).toString('latin1');
-      if (!type.startsWith('image/')) {
-        // Servers often mislabel icons; sniff the bytes.
-        type = head.startsWith('\x89PNG') ? 'image/png' : head.startsWith('\x00\x00\x01\x00') ? 'image/x-icon'
-          : head.startsWith('GIF8') ? 'image/gif' : head.startsWith('\xff\xd8') ? 'image/jpeg'
-          : /^\s*(<\?xml[^>]*>\s*)?<svg/i.test(head) ? 'image/svg+xml' : (head.slice(8, 12) === 'WEBP' ? 'image/webp' : '');
-      }
-      const looksLikeHtml = type !== 'image/svg+xml' && /^\s*<(!doctype|html)/i.test(head);
-      if (type && buf.length > 0 && buf.length < 2000000 && !looksLikeHtml) out = compactIcon(buf, type);
+    let { buf, type } = await fetchIconBytes(iconUrl);
+    const head = buf.subarray(0, 64).toString('latin1');
+    if (!type.startsWith('image/')) {
+      // Servers often mislabel icons; sniff the bytes.
+      type = head.startsWith('\x89PNG') ? 'image/png' : head.startsWith('\x00\x00\x01\x00') ? 'image/x-icon'
+        : head.startsWith('GIF8') ? 'image/gif' : head.startsWith('\xff\xd8') ? 'image/jpeg'
+        : /^\s*(<\?xml[^>]*>\s*)?<svg/i.test(head) ? 'image/svg+xml' : (head.slice(8, 12) === 'WEBP' ? 'image/webp' : '');
     }
-  } catch {}
+    const looksLikeHtml = type !== 'image/svg+xml' && /^\s*<(!doctype|html)/i.test(head);
+    if (!type || looksLikeHtml) why = `not an image (${type || 'unknown'})`;
+    else if (!buf.length || buf.length >= 2000000) why = `bad size ${buf.length}`;
+    else { out = compactIcon(buf, type); if (!out) why = 'could not decode'; }
+  } catch (e) { why = e.message; }
+  if (!out) iconLog(`miss ${iconUrl.slice(0, 160)} — ${why}`);
   faviconMem.set(iconUrl, out);
+  if (!out) setTimeout(() => faviconMem.delete(iconUrl), 10 * 60 * 1000);   // retry later
   return out;
 }
 
@@ -739,15 +768,22 @@ async function resolveTabIcon(tab, wc, hinted) {
   if (iconJobs.get(tab) === host + '|' + hinted.join()) return;
   iconJobs.set(tab, host + '|' + hinted.join());
   let fromPage = [];
-  try { if (!wc.isDestroyed()) fromPage = await wc.executeJavaScriptInIsolatedWorld(1999, [{ code: ICON_SCAN }]) || []; } catch {}
+  try { if (!wc.isDestroyed()) fromPage = await withTimeout(wc.executeJavaScriptInIsolatedWorld(1999, [{ code: ICON_SCAN }]), 2500, 'page scan') || []; }
+  catch (e) { iconLog(`scan ${host} — ${e.message}`); }
   let origin = ''; try { origin = new URL(pageUrl).origin; } catch {}
-  const cands = [...new Set([...fromPage, ...hinted, origin + '/favicon.ico', `https://icons.duckduckgo.com/ip3/${host}.ico`])];
-  for (const c of cands) {
-    if (hostOf(tab.url) !== host) break;      // tab moved to another site meanwhile
-    const data = await fetchFavicon(c);
-    if (data && hostOf(tab.url) === host) { tab.iconHost = host; setTabIcon(tab, data); break; }
+  const cands = [...new Set([...fromPage, ...hinted, origin + '/favicon.ico',
+    `https://icons.duckduckgo.com/ip3/${host}.ico`, `https://www.google.com/s2/favicons?domain=${encodeURIComponent(host)}&sz=32`])];
+  let found = false;
+  try {
+    for (const c of cands) {
+      if (hostOf(tab.url) !== host) break;      // tab moved to another site meanwhile
+      const data = await fetchFavicon(c);
+      if (data && hostOf(tab.url) === host) { tab.iconHost = host; setTabIcon(tab, data); found = true; break; }
+    }
+  } finally {
+    iconJobs.delete(tab);
+    if (!found && hostOf(tab.url) === host) iconLog(`NO ICON for ${host} after ${cands.length} tries`);
   }
-  iconJobs.delete(tab);
 }
 
 function setTabIcon(tab, data) {
@@ -1262,7 +1298,65 @@ async function startWorker(ext) {
   }
 }
 
+// ---------------------------------------------------------------------------
+// Extension data housekeeping (runs before any extension loads)
+// ---------------------------------------------------------------------------
+
+const UBO_ID = 'kfjbnefaejpefdfmciibdijcalgdfaec';   // fixed by the "key" in extensions/ublock/manifest.json
+
+// The ID Chromium gives an unpacked extension: a hash of its folder path.
+function unpackedExtensionId(dir) {
+  const h = require('crypto').createHash('sha256').update(Buffer.from(path.resolve(dir), process.platform === 'win32' ? 'utf16le' : 'utf8')).digest('hex').slice(0, 32);
+  return [...h].map(c => String.fromCharCode(97 + parseInt(c, 16))).join('');
+}
+function extDataDirs(id) {
+  return [path.join(userData(), 'Local Extension Settings', id),
+    path.join(userData(), 'IndexedDB', `chrome-extension_${id}_0.indexeddb.leveldb`),
+    path.join(userData(), 'IndexedDB', `chrome-extension_${id}_0.indexeddb.blob`)];
+}
+function dirSize(d) { let n = 0; try { for (const f of fs.readdirSync(d, { withFileTypes: true })) n += f.isFile() ? fs.statSync(path.join(d, f.name)).size : dirSize(path.join(d, f.name)); } catch {} return n; }
+function rmData(id) { for (const d of extDataDirs(id)) { try { fs.rmSync(d, { recursive: true, force: true }); } catch (e) { console.error('[ext] cleanup', e.message); } } }
+
+function tidyExtensionData() {
+  const les = path.join(userData(), 'Local Extension Settings');
+  // 1. A separately loaded copy of uBlock Origin duplicates the built-in one (and older
+  //    copies grow without bound): stop loading it and delete its data.
+  const keep = [];
+  for (const dir of settings.unpacked) {
+    let name = '';
+    try { name = JSON.parse(fs.readFileSync(path.join(dir, 'manifest.json'), 'utf8')).name || ''; } catch {}
+    if (/^uBlock Origin/i.test(name)) { rmData(unpackedExtensionId(dir)); console.log('[ext] removed duplicate uBlock Origin', dir); }
+    else keep.push(dir);
+  }
+  if (keep.length !== settings.unpacked.length) { settings.unpacked = keep; writeJSON('settings.json', settings); }
+
+  // 2. Before uBO had a fixed ID, each install location got fresh uBO settings. Carry the most
+  //    recent ones over once, then remove the orphaned copies.
+  if (fs.existsSync(path.join(les, UBO_ID))) return;
+  let installed = [];
+  try { installed = fs.readdirSync(path.join(userData(), 'Extensions')); } catch {}
+  const exclude = new Set([UBO_ID, ...installed, ...settings.unpacked.map(unpackedExtensionId)]);
+  let orphans = [];
+  try {
+    orphans = fs.readdirSync(les).filter(id => /^[a-p]{32}$/.test(id) && !exclude.has(id))
+      .map(id => ({ id, mtime: fs.statSync(path.join(les, id)).mtimeMs, size: dirSize(path.join(les, id)) }))
+      .filter(o => o.size > 500000);            // uBO data is megabytes; tiny dirs are other extensions
+  } catch {}
+  if (!orphans.length) return;
+  const src = orphans.sort((a, b) => b.mtime - a.mtime)[0];
+  try {
+    const [fromLes, fromIdb, fromBlob] = extDataDirs(src.id), [toLes, toIdb, toBlob] = extDataDirs(UBO_ID);
+    fs.cpSync(fromLes, toLes, { recursive: true });
+    if (fs.existsSync(fromIdb)) fs.cpSync(fromIdb, toIdb, { recursive: true });
+    if (fs.existsSync(fromBlob)) fs.cpSync(fromBlob, toBlob, { recursive: true });
+    for (const lock of ['LOCK']) { try { fs.rmSync(path.join(toLes, lock), { force: true }); } catch {} }
+    console.log('[ext] carried uBlock Origin settings over from', src.id);
+    for (const o of orphans) rmData(o.id);
+  } catch (e) { console.error('[ext] uBO settings migration failed:', e.message); }
+}
+
 async function setupExtensions(ses) {
+  try { tidyExtensionData(); } catch (e) { console.error('[ext] housekeeping', e.message); }
   extensions = new ElectronChromeExtensions({
     session: ses,
     // chrome.tabs.create → a Drift tab

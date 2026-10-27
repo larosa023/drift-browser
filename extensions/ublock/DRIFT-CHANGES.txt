@@ -1,5 +1,5 @@
 uBlock Origin 1.75.0 (Chromium build, https://github.com/gorhill/uBlock/releases/tag/1.75.0),
-licensed GPLv3 (see LICENSE.txt), bundled with Drift with three small changes:
+licensed GPLv3 (see LICENSE.txt), bundled with Drift with four small changes:
 
 1. js/vapi-background-ext.js, normalizeDetails(): Electron reports tabId -1 for every
    webRequest event, so uBO would treat all traffic as "behind-the-scene" and filter
@@ -14,5 +14,9 @@ licensed GPLv3 (see LICENSE.txt), bundled with Drift with three small changes:
    so storage doubled on every launch (gigabytes within days) and startup slowed to a
    crawl. Drift has no admin policies, so managed storage is treated as absent and the
    stale cachedManagedStorage entry is removed.
+
+4. manifest.json: added a "key" so the extension ID is always kfjbnefaejpefdfmciibdijcalgdfaec, wherever Drift is
+   installed (an unpacked extension's ID otherwise depends on its folder path, which reset
+   uBO's settings whenever Drift moved).
 
 Nothing else is modified.
