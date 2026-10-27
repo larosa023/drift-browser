@@ -7,7 +7,8 @@ const { contextBridge } = require('electron');
 // own pages are left alone.
 const IS_WEB_PAGE = process.contextIsolated && /^(https?|file):$/.test(location.protocol);
 
-if (IS_WEB_PAGE) contextBridge.executeInMainWorld({
+// Not on Google's sign-in pages, which check that built-in browser functions are untouched.
+if (IS_WEB_PAGE && !/^accounts\.google\./i.test(location.hostname)) contextBridge.executeInMainWorld({
   func: () => {
     if (AudioNode.prototype.connect.__drift) return;
     const origConnect = AudioNode.prototype.connect;

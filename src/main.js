@@ -1124,6 +1124,53 @@ function uboPath() {
   return app.isPackaged ? path.join(process.resourcesPath, 'extensions', 'ublock') : path.join(__dirname, '..', 'extensions', 'ublock');
 }
 
+// Built-in helper extension that adds Chromium's User-Agent client hints to page loads
+// (Electron omits them there). It's an extension so it runs alongside uBlock Origin's
+// network filtering instead of replacing it. See extensions/drift-hints/bg.js.
+function hintsPath() {
+  return app.isPackaged ? path.join(process.resourcesPath, 'extensions', 'drift-hints') : path.join(__dirname, '..', 'extensions', 'drift-hints');
+}
+async function loadHints() {
+  try {
+    const ext = await extApi().loadExtension(hintsPath(), { allowFileAccess: false });
+    // Wait (briefly) for its background page, so restored tabs' first loads get the hints too.
+    const prefix = `chrome-extension://${ext.id}/`;
+    for (let i = 0; i < 40; i++) {
+      const bg = webContents.getAllWebContents().find(w => w.getURL().startsWith(prefix));
+      if (bg && !bg.isLoading()) break;
+      await new Promise(r => setTimeout(r, 50));
+    }
+  } catch (e) { console.error('[hints] could not load:', e.message); }
+}
+
+// With the built-in blocker, Electron's own request hooks are in use and extensions can't
+// see requests, so add the same hints here instead.
+let hintSets = null;
+async function getHintSets() {
+  if (hintSets || !ui || ui.webContents.isDestroyed()) return hintSets;
+  try {
+    hintSets = await ui.webContents.executeJavaScript(`(async () => {
+      const d = navigator.userAgentData; if (!d) return null;
+      const fmt = (l) => l.map(b => '"' + b.brand + '";v="' + b.version + '"').join(', '); const q = (s) => '"' + (s || '') + '"';
+      const h = await d.getHighEntropyValues(['architecture','bitness','fullVersionList','model','platformVersion','wow64']);
+      return { low: { 'sec-ch-ua': fmt(d.brands), 'sec-ch-ua-mobile': d.mobile ? '?1' : '?0', 'sec-ch-ua-platform': q(d.platform) },
+        high: { 'sec-ch-ua-arch': q(h.architecture), 'sec-ch-ua-bitness': q(h.bitness), 'sec-ch-ua-full-version-list': fmt(h.fullVersionList || []),
+          'sec-ch-ua-model': q(h.model), 'sec-ch-ua-platform-version': q(h.platformVersion), 'sec-ch-ua-wow64': h.wow64 ? '?1' : '?0' } };
+    })()`);
+  } catch {}
+  return hintSets;
+}
+const HINTS_HIGH = /(^|\.)(google\.[a-z.]+|youtube\.com|gstatic\.com|googleapis\.com|googleusercontent\.com|withgoogle\.com|blogger\.com|gmail\.com)$/i;
+function addHintHeaders(details, cb) {
+  const sets = hintSets;
+  if (!sets || !/^https:/.test(details.url) || !['mainFrame', 'subFrame'].includes(details.resourceType)) return cb({});
+  const h = details.requestHeaders, have = new Set(Object.keys(h).map(k => k.toLowerCase()));
+  const add = (o) => { for (const [k, v] of Object.entries(o)) if (!have.has(k)) h[k] = v; };
+  add(sets.low);
+  try { if (HINTS_HIGH.test(new URL(details.url).hostname)) add(sets.high); } catch {}
+  cb({ requestHeaders: h });
+}
+
 async function loadUbo() {
   if (uboId) return;
   try {
@@ -1179,6 +1226,8 @@ async function initShields() {
       if (t) { t.blocked++; if (t.id === activeId) push(); }
     });
     if (settings.shields) blocker.enableBlockingInSession(session.defaultSession);
+    getHintSets().catch(() => {});
+    session.defaultSession.webRequest.onBeforeSendHeaders(addHintHeaders);
     console.log('[shields] ready');
   } catch (e) {
     console.error('[shields] could not load filter lists:', e.message);
@@ -1201,10 +1250,11 @@ async function setShieldsEngine(engine) {
   settings.shieldsEngine = engine; saveSettings();
   if (engine === 'ubo') {
     if (blocker) { try { blocker.disableBlockingInSession(session.defaultSession); } catch {} }
+    session.defaultSession.webRequest.onBeforeSendHeaders(null);
     if (settings.shields) await loadUbo();
   } else {
     unloadUbo();
-    if (blocker) { if (settings.shields) blocker.enableBlockingInSession(session.defaultSession); }
+    if (blocker) { if (settings.shields) blocker.enableBlockingInSession(session.defaultSession); session.defaultSession.webRequest.onBeforeSendHeaders(addHintHeaders); }
     else await initShields();
   }
   for (const t of tabs) if (t.view && !isInternal(t.url)) t.view.webContents.reload();
@@ -1266,7 +1316,8 @@ function describePermissions(manifest) {
 function listExtensions() {
   let all = [];
   try { all = extApi().getAllExtensions(); } catch {}
-  return all.map(e => {
+  const hp = hintsPath();
+  return all.filter(e => path.resolve(e.path || '') !== path.resolve(hp)).map(e => {
     const m = e.manifest || {};
     const opt = (m.options_ui && m.options_ui.page) || m.options_page || '';
     return {
@@ -2106,6 +2157,7 @@ if (!app.requestSingleInstanceLock()) {
     setupPageIPC();
     nativeTheme.on('updated', () => { push(); refreshNewTabs(); });
     await setupExtensions(ses);
+    await loadHints();
     createWindow();
     initShields();
     setupUpdates();
