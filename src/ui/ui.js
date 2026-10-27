@@ -55,7 +55,7 @@ function render() {
   b.classList.toggle('light', !S.dark);
   b.classList.toggle('hidden-bar', S.settings.sidebarHidden);
   b.classList.toggle('docked', !S.settings.sidebarHidden);
-  b.classList.toggle('over-palette', S.overlay === 'palette' || S.overlay === 'modal');
+  b.classList.toggle('over-palette', S.overlay === 'palette' || S.overlay === 'modal' || S.overlay === 'extmenu');
   b.classList.toggle('rail', !!S.settings.sidebarRail && !S.settings.sidebarHidden);
   b.classList.toggle('bm-on', !!S.settings.titleBar && !!S.settings.bookmarksBar);
   b.classList.toggle('over-peek', S.overlay === 'peek');
@@ -178,7 +178,7 @@ function placeActions() {
 
 function applyHole() {
   const w = $('#wash');
-  if (S && (S.overlay === 'palette' || S.overlay === 'modal')) {
+  if (S && (S.overlay === 'palette' || S.overlay === 'modal' || S.overlay === 'extmenu')) {
     const { x, y, width: cw, height: ch } = content;
     w.style.clipPath = `polygon(evenodd, 0 0, 100% 0, 100% 100%, 0 100%, 0 0, ${x}px ${y}px, ${x + cw}px ${y}px, ${x + cw}px ${y + ch}px, ${x}px ${y + ch}px, ${x}px ${y}px)`;
   } else w.style.clipPath = '';
@@ -202,10 +202,10 @@ function renderTabs() {
   };
   list.innerHTML = normal.map(t => `
     <div class="tab ${t.id === S.activeId ? 'active' : ''} ${t.asleep ? 'asleep' : ''} ${splitClass(t)}" data-id="${t.id}" draggable="true" title="${esc(tabTitle(t))}${t.asleep ? ' (sleeping)' : ''}">
-      <span class="fav-x" data-act="close" title="Close tab">${favHTML(t)}<span class="xic">${icon('x', 12)}</span></span>
+      ${favHTML(t)}
       <span class="title">${esc(tabTitle(t))}</span>
       ${t.audible || t.muted || t.volume !== 1 ? `<button class="audio" data-act="mute" title="${t.muted ? 'Unmute' : 'Mute'} · volume ${Math.round(t.volume * 100)}% (scroll to adjust)">${icon(t.muted ? 'muted' : 'sound', 18)}</button>` : ''}
-      <button class="close" data-act="close" title="Close (Ctrl+W)">${icon('x', 10)}</button>
+      <button class="close" data-act="close" title="Close (Ctrl+W)">${icon('x', 9)}</button>
     </div>`).join('');
 }
 
@@ -615,8 +615,16 @@ function renderSettings() {
       <div><span>Developer tools</span><span><kbd>F12</kbd></span></div>
     </div></div>
     <div class="group"><h4>About</h4>
-      <div class="row"><span class="lbl">Drift ${esc(S.appVersion)}<small>${({ checking: 'Checking for updates…', downloading: `Downloading ${esc(S.update.version)}…`, ready: `Version ${esc(S.update.version)} is ready`, none: 'Up to date', error: "Couldn't check for updates", portable: 'Portable version — install Drift to get automatic updates' })[S.update.status] || 'Updates install automatically'} · Chromium ${esc(S.chrome || '')}</small></span>
-        ${S.update.status === 'ready' ? `<button class="mini" id="upd-install">Restart</button>` : S.update.status !== 'portable' ? `<button class="mini" id="upd-check">Check</button>` : ''}</div>
+      <div class="row"><span class="lbl">Drift ${esc(S.appVersion)}<small>${({
+          checking: 'Checking for updates…',
+          downloading: `Downloading ${esc(S.update.version)}… ${S.update.percent ? S.update.percent + '%' : ''}`,
+          ready: `Version ${esc(S.update.version)} is ready to install`,
+          none: "You're up to date",
+          error: `Couldn't update (${esc(S.update.why || 'unexpected error')}) — try again`,
+          portable: 'Portable version — install Drift to get automatic updates' })[S.update.status] || 'Updates download automatically'} · Chromium ${esc(S.chrome || '')}</small></span>
+        ${S.update.status === 'ready' ? `<button class="mini accent" id="upd-install">Restart to update</button>`
+          : S.update.status === 'checking' || S.update.status === 'downloading' ? `<button class="mini" disabled>${S.update.status === 'checking' ? 'Checking…' : 'Downloading…'}</button>`
+          : S.update.status !== 'portable' ? `<button class="mini" id="upd-check">Check for updates</button>` : ''}</div>
     </div>`;
 }
 $('#settings-body').addEventListener('click', (e) => {
@@ -741,7 +749,7 @@ function openExtMenu() {
   const m = $('#extmenu');
   $('#extmenu-wrap').hidden = false;
   renderExtMenu();
-  const left = Math.max(8, Math.min(window.innerWidth - 268, r.right - 260));
+  const left = Math.max(8, Math.min(window.innerWidth - 308, r.right - 300));
   m.style.left = left + 'px'; m.style.top = (r.bottom + 6) + 'px';
   m.tabIndex = -1;
   send('overlay', 'extmenu');

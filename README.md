@@ -6,7 +6,7 @@ A lightweight Chromium browser with Zen-style vertical tabs and Brave-style shie
 
 Download **Drift-Setup-x.y.z.exe** from [Releases](https://github.com/larosa023/drift-browser/releases/latest) and run it. Windows SmartScreen will warn the first time because the app isn't code-signed: click **More info → Run anyway**.
 
-After that, Drift updates itself: it checks GitHub for new releases, downloads them in the background, and installs on the next restart (Settings → About shows the status). The portable zip is also on each release but doesn't auto-update.
+After that, Drift updates itself: it checks GitHub for new releases and downloads them in the background. Settings → About has **Check for updates** (with download progress) and **Restart to update**, which installs and reopens Drift with your tabs. The portable zip is also on each release but doesn't auto-update.
 
 ## Releasing a new version
 

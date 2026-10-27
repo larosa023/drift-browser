@@ -2060,11 +2060,21 @@ function setupUpdates() {
   }
   autoUpdater.autoDownload = true;
   autoUpdater.autoInstallOnAppQuit = true;
-  const set = (status, version = updateState.version) => { updateState = { status, version }; push(); };
+  const set = (status, version = updateState.version, extra = {}) => { updateState = { status, version, ...extra }; push(); };
   autoUpdater.on('checking-for-update', () => set('checking'));
-  autoUpdater.on('update-available', (i) => set('downloading', i.version));
-  autoUpdater.on('update-not-available', () => set('none'));
-  autoUpdater.on('error', (e) => { console.error('[update]', e && e.message); set('error'); });
+  autoUpdater.on('update-available', (i) => set('downloading', i.version, { percent: 0 }));
+  autoUpdater.on('download-progress', (p) => {
+    const percent = Math.floor(p.percent || 0);
+    if (updateState.status === 'downloading' && percent !== updateState.percent) set('downloading', updateState.version, { percent });
+  });
+  autoUpdater.on('update-not-available', () => set('none', '', { checkedAt: Date.now() }));
+  autoUpdater.on('error', (e) => {
+    const msg = String((e && e.message) || '');
+    console.error('[update]', msg);
+    // Short reason for Settings; the full message is in the console.
+    const why = /ENOTFOUND|ECONNRESET|ETIMEDOUT|net::ERR/i.test(msg) ? 'no connection to GitHub' : /404|latest\.yml/i.test(msg) ? 'release not found' : /signature|sha512|checksum/i.test(msg) ? 'download was damaged' : 'unexpected error';
+    set('error', updateState.version, { why });
+  });
   autoUpdater.on('update-downloaded', (i) => {
     set('ready', i.version);
     if (ui) ui.webContents.send('toast', { text: `Drift ${i.version} is ready — it installs when you restart`, icon: 'download', action: { label: 'Restart', update: true } });
@@ -2072,11 +2082,15 @@ function setupUpdates() {
   const check = () => autoUpdater.checkForUpdates().catch(() => {});
   setTimeout(check, 8000);
   setInterval(check, 4 * 3600 * 1000);
-  ipcMain.on('update-check', (e) => { if (ui && e.sender === ui.webContents) check(); });
+  ipcMain.on('update-check', (e) => {
+    if (!ui || e.sender !== ui.webContents || ['checking', 'downloading', 'ready'].includes(updateState.status)) return;
+    check();
+  });
+  // Restart to update: installs silently and reopens Drift with the same tabs.
   ipcMain.on('update-install', (e) => {
     if (!ui || e.sender !== ui.webContents || updateState.status !== 'ready') return;
     writeJSON('session.json', sessionSnapshot()); writeJSON('settings.json', settings);
-    autoUpdater.quitAndInstall(false, true);
+    setImmediate(() => autoUpdater.quitAndInstall(true, true));
   });
 }
 
@@ -2377,6 +2391,7 @@ if (!app.requestSingleInstanceLock()) {
     const uiReady = new Promise(r => ui.webContents.once('did-finish-load', r)).then(() => { setTimeout(prepareBookmarkMenuIcons, 300); return initIdentity(); });
     Promise.race([Promise.all([shieldsReady, uiReady]), new Promise(r => setTimeout(r, 2000))]).then(() => { PERF('gate open'); openGate(); });
     setupUpdates();
+
 
     // Taskbar right-click menu (Windows jump list).
     if (process.platform === 'win32') {

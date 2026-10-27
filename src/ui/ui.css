@@ -161,9 +161,10 @@ body.platform-darwin .winbtns { display: none; }
 /* Small close button tucked into the tab's top-right corner, so most of the tab is a click target */
 .tab { padding-right: 18px; }
 .tab .close {
-  position: absolute; top: 3px; right: 3px; width: 16px; height: 16px; border-radius: 5px; padding: 0;
+  position: absolute; top: 3px; right: 3px; width: 14px; height: 14px; border-radius: 4px; padding: 0;
   opacity: 0; transition: opacity .1s;
 }
+.tab .close svg { stroke-width: 2.4; }
 .tab:hover .close { opacity: .8; }
 .tab .close:hover { opacity: 1; background: #e5484d; color: #fff; }
 .tab .audio:hover { background: var(--hover); color: var(--fg); }
@@ -446,7 +447,9 @@ body.rail .tabs-head { padding-top: 6px; }
 body.rail #btn-newtab { justify-content: center; padding: 0; gap: 0; }
 body.rail .nt-label { display: none; }
 body.rail .tab { justify-content: center; padding: 0; height: 38px; gap: 0; }
-body.rail .tab .title, body.rail .tab .close { display: none; }
+body.rail .tab .title { display: none; }
+/* Icon-only sidebar: close sits in the top-left corner (the speaker uses the top-right) */
+body.rail .tab .close { top: 1px; left: 1px; right: auto; }
 body.rail .tab .audio { position: absolute; top: 1px; right: 1px; width: 15px; height: 15px; border-radius: 50%; background: var(--card); }
 body.rail .tab .audio svg { width: 10px; height: 10px; }
 body.rail .tab .fav, body.rail .tab .fav img, body.rail .tab .letter { width: 18px !important; height: 18px !important; }
@@ -612,16 +615,16 @@ body.rail .tab .audio svg { width: 13px; height: 13px; }
 #actions-wrap { display: flex; align-items: center; gap: 2px; }
 #extmenu-wrap { position: fixed; inset: 0; z-index: 30; }
 #extmenu {
-  position: absolute; width: 260px; padding: 6px; border-radius: 12px;
+  position: absolute; width: 300px; padding: 6px; border-radius: 12px; overflow: hidden;
   background: var(--bg); color: var(--fg);
   box-shadow: 0 0 0 1px var(--border), 0 18px 50px rgba(0,0,0,.45); animation: drop .1s ease-out;
 }
 
 .em-head { font-size: 12px; font-weight: 600; color: var(--muted); padding: 4px 8px 6px; }
-.em-body { display: grid; grid-template-columns: 34px 1fr; }
+.em-body { display: grid; grid-template-columns: 34px minmax(0, 1fr); }
 #actions-all { display: flex; flex-direction: column; gap: 0; }
 #actions-all::part(action) { width: 34px; height: 34px; border-radius: 8px 0 0 8px; background-size: 18px; }
-.em-rows { display: flex; flex-direction: column; }
+.em-rows { display: flex; flex-direction: column; min-width: 0; }
 .em-row {
   height: 34px; display: flex; align-items: center; gap: 6px; padding: 0 4px 0 6px;
   border-radius: 0 8px 8px 0; cursor: default; font-size: 13px;
@@ -642,3 +645,6 @@ body.rail .tab .audio svg { width: 13px; height: 13px; }
 .bm.folder.drop-into { background: color-mix(in srgb, var(--accent) 22%, transparent); box-shadow: 0 0 0 1.5px var(--accent) inset; }
 
 #extmenu:focus { outline: none; }
+
+.mini.accent { background: var(--accent); color: #fff; }
+.mini[disabled] { opacity: .6; }
