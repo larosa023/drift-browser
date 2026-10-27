@@ -103,18 +103,10 @@ function searchUrl(q) {
 }
 
 // A Chrome-like user agent so sites don't treat us as an "embedded" app.
-// Google's sign-in pages refuse browsers they recognise as embedded Chromium. Presenting as
-// Firefox on those pages only (as Ferdium, Rambox and other Electron browsers do) gets past it.
-const GOOGLE_SIGNIN = /^accounts\.google\.[a-z.]+$/i;
-function firefoxUA() {
-  const plat = process.platform === 'win32' ? 'Windows NT 10.0; Win64; x64'
-    : process.platform === 'darwin' ? 'Macintosh; Intel Mac OS X 10.15' : 'X11; Linux x86_64';
-  return `Mozilla/5.0 (${plat}; rv:144.0) Gecko/20100101 Firefox/144.0`;
-}
-function uaFor(url) {
-  try { if (GOOGLE_SIGNIN.test(new URL(url).hostname)) return firefoxUA(); } catch {}
-  return chromeUA();
-}
+// Google's sign-in pages refuse browsers that look tampered with. Since mid-2026 the
+// old trick (claiming to be Firefox) fails, because Chromium still sends its client-hint
+// headers and JS features. A clean, consistent Chrome identity everywhere passes.
+function uaFor(url) { return chromeUA(); }
 // Load a URL with the right user agent for where it's going.
 function loadIn(wc, url) {
   const want = uaFor(url);
@@ -1619,7 +1611,40 @@ const sendBookmarks = debounce(() => {
     : { ...it, icon: (it.icon && it.icon.startsWith('data:')) ? it.icon : (faviconStore[hostOf(it.url)] || '') });
   if (ui && !ui.webContents.isDestroyed() && bookmarks) ui.webContents.send('bookmarks', withIcons(bookmarks.bar));
   push();
+  setTimeout(() => prefetchBookmarkIcons().catch(() => {}), 1500);
 }, 30);
+
+// Bookmarks (imported ones especially) may point at sites never opened in Drift, so they
+// have no cached icon. Fetch one in the background for each such host.
+const bmIconTried = new Set();
+let bmIconRunning = false;
+async function prefetchBookmarkIcons() {
+  if (bmIconRunning || !bookmarks) return;
+  bmIconRunning = true;
+  try {
+    const hosts = [...new Set(bookmarks.all().map(b => b.url && /^https?:/.test(b.url) ? hostOf(b.url) : '').filter(Boolean))]
+      .filter(h => !faviconStore[h] && !bmIconTried.has(h));
+    let got = 0;
+    const work = async (host) => {
+      bmIconTried.add(host);
+      const bare = host.replace(/^www\./, '');
+      const cands = [
+        `https://www.google.com/s2/favicons?domain=${encodeURIComponent(bare)}&sz=32`,
+        `https://icons.duckduckgo.com/ip3/${bare}.ico`,
+        `https://${host}/favicon.ico`,
+      ];
+      for (const c of cands) {
+        const data = await fetchFavicon(c);
+        if (data && data.length < 60000) { faviconStore[host] = data; got++; return; }
+      }
+      iconLog(`NO ICON for bookmark host ${host}`);
+    };
+    for (let i = 0; i < hosts.length; i += 4) {
+      await Promise.all(hosts.slice(i, i + 4).map(h => work(h).catch(() => {})));
+      if (got) { saveFavicons(); sendBookmarks(); got = 0; }
+    }
+  } finally { bmIconRunning = false; }
+}
 
 function toggleBookmarkActive() {
   const t = activeTab(); if (!t || isInternal(t.url)) return;

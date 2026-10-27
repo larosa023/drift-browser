@@ -66,7 +66,7 @@ To build the Windows installer locally: `npm run dist` (output goes to `dist/`).
 
 - **DRM video** (Netflix, Disney+, Spotify web player) won't play. Stock Electron doesn't ship Widevine. Switching to the castLabs Electron build fixes this.
 - **Extensions** work through the `electron-chrome-extensions` library, which covers most but not all of Chrome's extension APIs. uBlock Origin is built in (a separately loaded copy is removed automatically). Extensions are told they were installed normally, as Chrome does for store installs, since some refuse to keep settings otherwise. Extensions that capture tab audio (volume mixers) won't work either, since that API isn't available; use the built-in volume mixer instead.
-- **Google sign-in**: Drift presents itself as Firefox on accounts.google.com only, because Google refuses sign-in from browsers it recognises as embedded Chromium.
+- **Google sign-in**: Drift presents a clean, standard Chrome identity everywhere (no "Electron" in the user agent, client-hint headers left intact), which Google accepts for sign-in.
 - Passwords can't be imported directly from another browser's profile (Chrome encrypts them to itself); export a CSV from that browser first and import the file. Delete the CSV afterwards.
 
 ## Where data lives

@@ -33,14 +33,6 @@ if (IS_WEB_PAGE) contextBridge.executeInMainWorld({
   },
 });
 
-// On Google's sign-in pages Drift presents as Firefox (see main.js); Firefox has no
-// navigator.userAgentData, so hide it there too to keep the two consistent.
-if (IS_WEB_PAGE && /^accounts\.google\./i.test(location.hostname)) {
-  contextBridge.executeInMainWorld({
-    func: () => { try { delete Navigator.prototype.userAgentData; } catch {} },
-  });
-}
-
 // ---------------------------------------------------------------------------
 // Passwords: offer saved logins on sign-in forms, and offer to save new ones.
 // Runs in the isolated world, so the page's own scripts can't call into it.
