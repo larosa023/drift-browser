@@ -1,0 +1,7 @@
+{
+  "_comment": "The Chrome version Drift reports. Google's sign-in only admits recent Chrome versions, and the Electron engine can trail Chrome stable. Raise this with each Chrome stable release; it is ignored once the engine itself is at least this new.",
+  "chromeMajor": 156,
+  "chromeFull": "156.0.8078.54",
+  "greaseBrand": "Not:A-Brand",
+  "greaseVersion": "8"
+}

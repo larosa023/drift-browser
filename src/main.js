@@ -133,8 +133,15 @@ function guardUserAgent(wc) {
   });
 }
 
+// The Chrome version Drift reports (see extensions/drift-hints/identity.json).
+function identity() {
+  try { return JSON.parse(fs.readFileSync(path.join(hintsPath(), 'identity.json'), 'utf8')); } catch { return null; }
+}
+const ENGINE_MAJOR = Number(process.versions.chrome.split('.')[0]);
+const IDENTITY = identity();
+const CLAIM = IDENTITY && IDENTITY.chromeMajor > ENGINE_MAJOR ? IDENTITY : null;   // null: report the engine as-is
 function chromeUA() {
-  const major = process.versions.chrome.split('.')[0];
+  const major = CLAIM ? CLAIM.chromeMajor : ENGINE_MAJOR;
   const plat = process.platform === 'win32' ? 'Windows NT 10.0; Win64; x64'
     : process.platform === 'darwin' ? 'Macintosh; Intel Mac OS X 10_15_7'
     : 'X11; Linux x86_64';
@@ -1130,6 +1137,24 @@ function uboPath() {
 function hintsPath() {
   return app.isPackaged ? path.join(process.resourcesPath, 'extensions', 'drift-hints') : path.join(__dirname, '..', 'extensions', 'drift-hints');
 }
+// Report the claimed Chrome version through Chromium's own user-agent override (the one
+// DevTools device emulation uses), so navigator.userAgent, navigator.userAgentData and the
+// request headers all agree natively, without patching anything in the page.
+let uaMeta = null;
+function applyIdentity(wc) {
+  if (!uaMeta || !wc || wc.isDestroyed()) return;
+  const type = wc.getType();
+  if (type !== 'window' && type !== 'browserView' && type !== 'webview') return;
+  const dbg = wc.debugger;
+  try { if (!dbg.isAttached()) dbg.attach('1.3'); } catch { return; }
+  if (!wc.__driftIdentity) {
+    wc.__driftIdentity = true;
+    // DevTools or a crash can drop the session; put it back.
+    dbg.on('detach', () => { wc.__driftIdentity = false; setTimeout(() => applyIdentity(wc), 500); });
+  }
+  dbg.sendCommand('Emulation.setUserAgentOverride', { userAgent: chromeUA(), userAgentMetadata: uaMeta }).catch(() => {});
+}
+
 async function loadHints() {
   try {
     const ext = await extApi().loadExtension(hintsPath(), { allowFileAccess: false });
@@ -1139,6 +1164,19 @@ async function loadHints() {
       const bg = webContents.getAllWebContents().find(w => w.getURL().startsWith(prefix));
       if (bg && !bg.isLoading()) break;
       await new Promise(r => setTimeout(r, 50));
+    }
+    if (CLAIM) {
+      const bg = webContents.getAllWebContents().find(w => w.getURL().startsWith(prefix));
+      const real = bg ? await bg.executeJavaScript(`navigator.userAgentData.getHighEntropyValues(['architecture','bitness','model','platformVersion','wow64']).then(h => ({ ...h, platform: navigator.userAgentData.platform }))`).catch(() => null) : null;
+      if (real) {
+        uaMeta = {
+          brands: [{ brand: CLAIM.greaseBrand, version: CLAIM.greaseVersion }, { brand: 'Chromium', version: String(CLAIM.chromeMajor) }],
+          fullVersionList: [{ brand: CLAIM.greaseBrand, version: CLAIM.greaseVersion + '.0.0.0' }, { brand: 'Chromium', version: CLAIM.chromeFull }],
+          fullVersion: CLAIM.chromeFull, platform: real.platform, platformVersion: real.platformVersion || '',
+          architecture: real.architecture || '', model: real.model || '', mobile: false, bitness: real.bitness || '', wow64: !!real.wow64,
+        };
+        for (const w of webContents.getAllWebContents()) if (/^https?:/.test(w.getURL())) applyIdentity(w);
+      }
     }
   } catch (e) { console.error('[hints] could not load:', e.message); }
 }
@@ -2169,5 +2207,11 @@ if (!app.requestSingleInstanceLock()) {
     wc.on('will-attach-webview', (e) => e.preventDefault());
     // Tabs and sign-in popups both need the Google sign-in user agent switch.
     if (wc.getType() === 'window' || wc.getType() === 'browserView') guardUserAgent(wc);
+    // Web pages (tabs and their popups) get the reported Chrome identity on their first web load.
+    if (wc.getType() === 'window' || wc.getType() === 'browserView') {
+      wc.on('did-start-navigation', (e) => {
+        if (!wc.__driftIdentity && e.isMainFrame && /^https?:/.test(e.url)) applyIdentity(wc);
+      });
+    }
   });
 }
