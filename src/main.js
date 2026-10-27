@@ -415,6 +415,9 @@ function wantsDark(url) {
   return !settings.forceDarkOff.includes(hostOf(url));
 }
 
+// Background behind a tab's page before it draws: the theme's page colour (matches the new tab page).
+function pageBase() { return isDark() ? '#1b1b20' : '#fafafb'; }
+function baseFor(url) { return isInternal(url) || /^(chrome-extension|devtools):/.test(url || '') ? pageBase() : '#ffffff'; }
 function ensureView(tab, restore) {
   if (tab.view) return tab.view;
   tab.dark = wantsDark(tab.url);
@@ -428,7 +431,15 @@ function ensureView(tab, restore) {
       additionalArguments: tab.dark ? ['--blink-settings=forceDarkModeEnabled=true'] : [],
     },
   });
-  view.setBackgroundColor('#ffffff'); // pages without a background expect white, like Chrome
+  // Until a page has drawn, show the theme's page colour instead of a white flash. Web pages
+  // switch to white once their document is ready (pages without a background expect white,
+  // like Chrome); Drift's own pages keep the theme colour.
+  view.setBackgroundColor(pageBase());
+  view.webContents.on('dom-ready', () => { if (!view.webContents.isDestroyed()) view.setBackgroundColor(baseFor(view.webContents.getURL())); });
+  view.webContents.on('did-start-navigation', (e) => {
+    // Going from a web page to Drift's new tab page (or back): use the right colour from the start.
+    if (e.isMainFrame && !e.isSameDocument && !view.webContents.isDestroyed()) view.setBackgroundColor(isInternal(e.url) ? pageBase() : baseFor(view.webContents.getURL()));
+  });
   view.setBorderRadius(RADIUS);
   tab.view = view;
   tab.crashed = false;
@@ -2376,7 +2387,10 @@ if (!app.requestSingleInstanceLock()) {
     setupDownloads(ses);
     setupIPC();
     setupPageIPC();
-    nativeTheme.on('updated', () => { push(); refreshNewTabs(); folderMenuIcon = null; prepareBookmarkMenuIcons(); });
+    nativeTheme.on('updated', () => {
+      push(); refreshNewTabs(); folderMenuIcon = null; prepareBookmarkMenuIcons();
+      for (const t of tabs) if (t.view && !t.view.webContents.isDestroyed()) t.view.setBackgroundColor(baseFor(t.view.webContents.getURL()));
+    });
     PERF('setup done');
     await setupExtensions(ses);
     PERF('extensions loaded');
@@ -2390,6 +2404,7 @@ if (!app.requestSingleInstanceLock()) {
     const uiReady = new Promise(r => ui.webContents.once('did-finish-load', r)).then(() => { setTimeout(prepareBookmarkMenuIcons, 300); return initIdentity(); });
     Promise.race([Promise.all([shieldsReady, uiReady]), new Promise(r => setTimeout(r, 2000))]).then(() => { PERF('gate open'); openGate(); });
     setupUpdates();
+
 
 
 
