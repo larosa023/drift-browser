@@ -717,12 +717,28 @@ body.rail:not(.rail-open) .tab .audio svg { width: 13px; height: 13px; }
 
 /* Collapsed sidebar opens to full width while the pointer is on it (over the page), and
    collapses again when it leaves. */
+/* The full sidebar is laid out once and revealed by sweeping its clip edge outward (no
+   reflow per frame); a soft shadow travels with the edge and the tab names fade in. */
 body.rail.rail-open #sidebar {
   width: var(--sw); z-index: 25; background: var(--bg);
-  box-shadow: 1px 0 0 var(--border), 12px 0 40px rgba(0,0,0,.35);
-  animation: railopen .14s ease-out;
+  clip-path: inset(0 calc(var(--sw) - var(--rw)) 0 0);
+  transition: clip-path .24s cubic-bezier(.4, 0, .2, 1);
+  will-change: clip-path;
 }
-@keyframes railopen { from { width: var(--rw); } to { width: var(--sw); } }
+body.rail.rail-open.rail-in #sidebar { clip-path: inset(0 0 0 0); transition: clip-path .28s cubic-bezier(.22, .8, .24, 1); }
+#rail-shade {
+  position: fixed; top: 0; bottom: 0; left: var(--rw); width: 26px; z-index: 24; pointer-events: none; display: none;
+  background: linear-gradient(to right, rgba(0,0,0,.30), rgba(0,0,0,0)); border-left: 1px solid var(--border); opacity: 0;
+  transform: translateX(0); will-change: transform;
+  transition: transform .24s cubic-bezier(.4, 0, .2, 1), opacity .24s ease;
+}
+body.rail.rail-open #rail-shade { display: block; }
+body.rail.rail-open.rail-in #rail-shade { transform: translateX(calc(var(--sw) - var(--rw))); opacity: 1; transition: transform .28s cubic-bezier(.22, .8, .24, 1), opacity .2s ease; }
+body.rail.rail-open #sidebar .tab .title, body.rail.rail-open #sidebar .nt-label { opacity: 0; transition: opacity .1s ease; }
+body.rail.rail-open.rail-in #sidebar .tab .title, body.rail.rail-open.rail-in #sidebar .nt-label { opacity: 1; transition: opacity .22s ease .06s; }
+/* Line the icons up with where they sit in the icon-only sidebar, so they don't shift */
+body.rail.rail-open #sidebar { padding-left: 6px; }
+body.rail.rail-open #sidebar .tab { padding-left: 12px; }
 
 /* Bookmark folder dropdowns */
 #bmpop-wrap { position: fixed; inset: 0; z-index: 30; }

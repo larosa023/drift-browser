@@ -119,7 +119,7 @@ function render() {
   if (S.overlay !== 'extmenu') $('#extmenu-wrap').hidden = true;
   if (S.overlay !== 'siteinfo') $('#siteinfo-wrap').hidden = true;
   if (S.overlay !== 'dlmenu') $('#dlmenu-wrap').hidden = true; else renderDlMenu();
-  if (S.overlay !== 'railpeek' && document.body.classList.contains('rail-open')) document.body.classList.remove('rail-open');
+  if (S.overlay !== 'railpeek' && document.body.classList.contains('rail-open') && !(pendingOverlay && pendingOverlay.mode === 'railpeek')) document.body.classList.remove('rail-open', 'rail-in');
   if (S.overlay !== 'bmpop') closeBmPopups(true);
   if (panel === 'passwords') renderPasswords();
   placeActions();
@@ -1281,6 +1281,7 @@ window.drift.on('state', (s) => {
     else s.overlay = pendingOverlay.mode;
   }
   S = s; render();
+  if (S.overlay === 'railpeek' && document.body.classList.contains('rail-open') && !document.body.classList.contains('rail-in') && !railEndTimer) startRailSweep();
 });
 window.drift.on('extensions', (list) => { EXT = list; render(); });
 window.drift.on('bookmarks', (list) => { BM = list; renderBookmarks(); });
@@ -1397,18 +1398,37 @@ $('#siteinfo').addEventListener('click', async (e) => {
 // ---------------------------------------------------------------------- sidebar hover (icon mode)
 // With the sidebar collapsed to icons, resting the pointer on it opens the full sidebar over the
 // page; moving off collapses it again. (Not while another menu or the command bar is open.)
-let railTimer = 0, railCloseAfterDrag = false;
+let railTimer = 0, railCloseAfterDrag = false, railEndTimer = 0;
 const railMode = () => S && S.settings.sidebarRail && !S.settings.sidebarHidden;
+// Opening: lay out the full sidebar (still clipped to icon width, so nothing visibly changes),
+// bring it above the page, then start the sweep once it's actually on top.
 function openRail() {
   if (!railMode() || (S.overlay && S.overlay !== 'railpeek')) return;
-  document.body.classList.add('rail-open');
-  if (S.overlay !== 'railpeek') raiseOverlay('railpeek');
+  clearTimeout(railEndTimer); railEndTimer = 0;
+  const b = document.body;
+  $('#rail-shade').style.top = $('#sidebar').getBoundingClientRect().top + 'px';
+  if (b.classList.contains('rail-open')) { b.classList.add('rail-in'); return; }   // reopened mid-close
+  b.classList.add('rail-open');
+  if (S.overlay !== 'railpeek') raiseOverlay('railpeek'); else startRailSweep();
 }
+function startRailSweep() {
+  requestAnimationFrame(() => requestAnimationFrame(() => {
+    if (document.body.classList.contains('rail-open')) document.body.classList.add('rail-in');
+  }));
+}
+// Closing: sweep back to icon width, then switch to the icon layout and drop below the page.
 function closeRail() {
-  if (!document.body.classList.contains('rail-open')) return;
-  document.body.classList.remove('rail-open');
-  if (pendingOverlay && pendingOverlay.mode === 'railpeek') pendingOverlay = null;
-  if (S && S.overlay === 'railpeek') send('overlay', null, true);
+  const b = document.body;
+  if (!b.classList.contains('rail-open')) return;
+  b.classList.remove('rail-in');
+  clearTimeout(railEndTimer);
+  railEndTimer = setTimeout(() => {
+    railEndTimer = 0;
+    if (b.classList.contains('rail-in')) return;
+    b.classList.remove('rail-open');
+    if (pendingOverlay && pendingOverlay.mode === 'railpeek') pendingOverlay = null;
+    if (S && S.overlay === 'railpeek') send('overlay', null, true);
+  }, 250);
 }
 $('#sidebar').addEventListener('mouseenter', () => {
   clearTimeout(railTimer);
@@ -1418,7 +1438,7 @@ $('#sidebar').addEventListener('mouseleave', () => {
   clearTimeout(railTimer);
   if (!document.body.classList.contains('rail-open')) return;
   if (dragId != null || bmDrag != null) { railCloseAfterDrag = true; return; }
-  railTimer = setTimeout(closeRail, 200);
+  railTimer = setTimeout(closeRail, 140);
 });
 document.addEventListener('dragend', () => {
   if (!railCloseAfterDrag) return;
