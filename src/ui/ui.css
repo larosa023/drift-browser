@@ -736,6 +736,8 @@ body.rail.rail-open #sidebar > * {
 body.rail.rail-open.rail-in #sidebar {
   background: var(--bg); box-shadow: 1px 0 0 var(--border), 8px 0 22px rgba(0,0,0,.22);
 }
+/* Preparing (and tearing down) happens instantly, never animated. */
+body.rail-noanim #sidebar, body.rail-noanim #sidebar > *, body.rail-noanim #sidebar .tab .title, body.rail-noanim #sidebar .nt-label { transition: none !important; }
 body.rail.rail-open.rail-in #sidebar,
 body.rail.rail-open.rail-in #sidebar > * { transform: translateX(0); transition: transform .34s cubic-bezier(.16, 1, .3, 1); }
 #rail-shade { display: none !important; }

@@ -565,7 +565,26 @@ function ensureView(tab, restore) {
   // like Chrome); Drift's own pages keep the theme colour.
   view.setBackgroundColor(pageBase());
   bindToTab(view.webContents, tab);
-  view.webContents.on('dom-ready', () => { if (!view.webContents.isDestroyed()) view.setBackgroundColor(baseFor(view.webContents.getURL())); });
+  // Once the document is ready, match the colour behind the page to what the page itself paints:
+  // its own background if it has one (dark sites stay dark — no white flash), white only if it
+  // has none (like Chrome). Checked again after load for pages that set it late.
+  const matchBase = () => {
+    const wc = view.webContents; if (wc.isDestroyed()) return;
+    const url = wc.getURL();
+    if (isInternal(url) || /^(chrome-extension|devtools):/.test(url)) { view.setBackgroundColor(pageBase()); return; }
+    wc.executeJavaScriptInIsolatedWorld(1998, [{ code: `(() => {
+      const bg = (el) => el ? getComputedStyle(el).backgroundColor : '';
+      const solid = (c) => !!c && c !== 'transparent' && !(c.indexOf('rgba') === 0 && c.split(',').pop().trim() === '0)');
+      const h = bg(document.documentElement), b = bg(document.body);
+      return solid(h) ? h : solid(b) ? b : '';
+    })()` }]).then((c) => {
+      if (view.webContents.isDestroyed()) return;
+      const m = /rgba?\((\d+),\s*(\d+),\s*(\d+)/.exec(c || '');
+      view.setBackgroundColor(m ? '#' + [m[1], m[2], m[3]].map(n => Number(n).toString(16).padStart(2, '0')).join('') : '#ffffff');
+    }).catch(() => {});
+  };
+  view.webContents.on('dom-ready', matchBase);
+  view.webContents.on('did-finish-load', matchBase);
   view.webContents.on('did-start-navigation', (e) => {
     // Going from a web page to Drift's new tab page (or back): use the right colour from the start.
     if (e.isMainFrame && !e.isSameDocument && !view.webContents.isDestroyed()) view.setBackgroundColor(isInternal(e.url) ? pageBase() : baseFor(view.webContents.getURL()));
@@ -2803,6 +2822,7 @@ if (!app.requestSingleInstanceLock()) {
     const uiReady = new Promise(r => first.ui.webContents.once('did-finish-load', r)).then(() => { setTimeout(prepareBookmarkMenuIcons, 300); return initIdentity(); });
     Promise.race([Promise.all([shieldsReady, uiReady]), new Promise(r => setTimeout(r, 2000))]).then(() => { PERF('gate open'); openGate(); });
     setupUpdates();
+
 
 
 

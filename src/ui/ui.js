@@ -126,7 +126,7 @@ function render() {
   if (S.overlay !== 'extmenu') $('#extmenu-wrap').hidden = true;
   if (S.overlay !== 'siteinfo') $('#siteinfo-wrap').hidden = true;
   if (S.overlay !== 'dlmenu') $('#dlmenu-wrap').hidden = true; else renderDlMenu();
-  if (S.overlay !== 'railpeek' && document.body.classList.contains('rail-open') && !(pendingOverlay && pendingOverlay.mode === 'railpeek')) document.body.classList.remove('rail-open', 'rail-in');
+  if (S.overlay !== 'railpeek' && document.body.classList.contains('rail-open') && !(pendingOverlay && pendingOverlay.mode === 'railpeek')) instantRail(() => document.body.classList.remove('rail-open', 'rail-in'));
   if (S.overlay !== 'bmpop') closeBmPopups(true);
   if (panel === 'passwords') renderPasswords();
   placeActions();
@@ -1443,7 +1443,7 @@ const railMode = () => S && S.settings.sidebarRail && !S.settings.sidebarHidden;
 function prepRail() {
   if (!railMode() || (S.overlay && S.overlay !== 'railpeek')) return false;
   clearTimeout(railEndTimer); railEndTimer = 0;
-  document.body.classList.add('rail-open');
+  instantRail(() => document.body.classList.add('rail-open'));
   if (S.overlay !== 'railpeek') raiseOverlay('railpeek');
   return true;
 }
@@ -1454,6 +1454,14 @@ function openRail() {
   if (S.overlay === 'railpeek') startRailSweep();
 }
 let railWant = false;
+// Apply a class change to the sidebar without any transition (flush styles, then re-enable).
+function instantRail(fn) {
+  const b = document.body;
+  b.classList.add('rail-noanim');
+  fn();
+  void $('#sidebar').offsetWidth;
+  b.classList.remove('rail-noanim');
+}
 function startRailSweep() {
   requestAnimationFrame(() => {
     if (railWant && document.body.classList.contains('rail-open')) document.body.classList.add('rail-in');
@@ -1470,7 +1478,7 @@ function closeRail() {
   railEndTimer = setTimeout(() => {
     railEndTimer = 0;
     if (b.classList.contains('rail-in') || railWant) return;
-    b.classList.remove('rail-open');
+    instantRail(() => b.classList.remove('rail-open'));
     if (pendingOverlay && pendingOverlay.mode === 'railpeek') pendingOverlay = null;
     if (S && S.overlay === 'railpeek') send('overlay', null, true);
   }, wasIn ? 260 : 0);
