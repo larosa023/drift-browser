@@ -2433,6 +2433,7 @@ async function exportPasswords() {
 // using CPU (each tab by site, extensions, graphics, Drift itself) to logs\perf.log, plus any
 // moment Drift's main thread was frozen.
 // ---------------------------------------------------------------------------
+let perfNote = () => {};   // replaced by the performance log when it's on
 function startPerfLog() {
   if (!fs.existsSync(file('perf-log'))) return;
   const out = path.join(file('logs'), 'perf.log');
@@ -2446,6 +2447,7 @@ function startPerfLog() {
       await fs.promises.appendFile(out, text);
     } catch {}
   };
+  perfNote = (line) => { log(line); flush(); };
   log(`--- start Drift ${app.getVersion()} (Chromium ${process.versions.chrome}) ${process.platform} ${require('os').cpus().length} cores`);
   // Main-thread freezes: a 50 ms timer that fires late means the browser couldn't respond.
   let last = Date.now();
@@ -2663,19 +2665,29 @@ function setupIPC() {
   on('tab-menu', (id) => tabContextMenu(id));
   on('move-tab', (id, idx, pinned) => moveTab(id, idx, pinned));
   on('tab-adopt', (id, idx) => { const t = findTab(Number(id)); if (t && ctxOfTab(t) !== cur) moveTabToWindow(t, cur, idx); });
-  // A tab drag ended where nothing took it. Windows doesn't report where a drag that leaves
-  // the page ended, so ask for the cursor position instead.
-  on('tab-drop-out', (id, sidebarRect) => {
+  // A tab drag ended. Decided from where the cursor is (Windows doesn't report where a drag that
+  // leaves the window ended, and other programs may claim the drop): over this window's own
+  // sidebar, or taken by something inside this window → nothing; anywhere else → the tab moves
+  // to the Drift window there, or into a new window. A drop on another window's tab list
+  // arrives there as tab-adopt, so wait a moment and leave the tab alone if it already moved.
+  on('tab-drag-end', (id, effect, sidebarRect) => {
     const t = findTab(Number(id)); if (!t) return;
+    const src = ctxOfTab(t); if (!src || !src.win || src.win.isDestroyed()) return;
     const p = screen.getCursorScreenPoint();
-    // Dropped back over this window's own sidebar (between tabs, say): nothing to do.
-    if (sidebarRect && win && !win.isDestroyed()) {
-      const cb = win.getContentBounds();
-      const x = p.x - cb.x, y = p.y - cb.y;
-      if (x >= sidebarRect.x && x < sidebarRect.x + sidebarRect.width && y >= sidebarRect.y && y < sidebarRect.y + sidebarRect.height) return;
-    }
-    tabDroppedOutside(t, p.x, p.y);
+    const cb = src.win.getContentBounds();
+    const x = p.x - cb.x, y = p.y - cb.y;
+    const inWin = x >= 0 && y >= 0 && x < cb.width && y < cb.height;
+    const inSidebar = sidebarRect && x >= sidebarRect.x && x < sidebarRect.x + sidebarRect.width && y >= sidebarRect.y && y < sidebarRect.y + sidebarRect.height;
+    perfNote(`tab drag end: tab ${t.id} effect=${effect} cursor=${p.x},${p.y} window=${cb.x},${cb.y} ${cb.width}x${cb.height} inWindow=${inWin} inSidebar=${!!inSidebar} tabs=${src.tabs.length}`);
+    if (inSidebar || inWin && effect !== 'none') return;
+    setTimeout(() => {
+      if (!findTab(t.id) || ctxOfTab(t) !== src) { perfNote('  -> taken by another window'); return; }
+      useTab(t);
+      perfNote('  -> ' + (inWin ? 'dropped on own page' : 'dropped outside'));
+      tabDroppedOutside(t, p.x, p.y);
+    }, 150);
   });
+  on('tab-drag-start', (id) => perfNote(`tab drag start: tab ${id}`));
   on('new-window', () => newWindow());
   on('toggle-pin', (id) => togglePin(id));
   on('toggle-mute', (id) => toggleMute(id));
@@ -3042,6 +3054,8 @@ protocol.registerSchemesAsPrivileged([
 ]);
 app.userAgentFallback = chromeUA();
 app.setName('Drift');
+// Every window under one taskbar icon, the same one as Drift's shortcuts (electron-builder's appId).
+if (process.platform === 'win32') app.setAppUserModelId('com.drift.browser');
 app.commandLine.appendSwitch('disable-features', 'HardwareMediaKeyHandling');
 // Faster downloads: fetch large files over several connections at once (Chromium's parallel
 // downloading). Servers that don't support it fall back to a normal single download.

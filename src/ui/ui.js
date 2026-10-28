@@ -264,17 +264,19 @@ function tabEvents(container) {
     const el = e.target.closest('[data-id]'); if (!el) return;
     dragId = Number(el.dataset.id);
     e.dataTransfer.effectAllowed = 'move';
-    e.dataTransfer.setData('text/plain', String(dragId));
+    // Only Drift's own type: as plain text, other programs (or the desktop) could accept the
+    // drop, and Drift would think the tab had landed somewhere.
     e.dataTransfer.setData('application/x-drift-tab', String(dragId));   // lets other Drift windows take it
+    send('tab-drag-start', dragId);
     requestAnimationFrame(() => el.classList.add('dragging'));
     $('#essentials').classList.add('drop-target');
   });
   container.addEventListener('dragend', (e) => {
     // Dropped where nothing took it (outside the window, or onto another window's page):
     // Drift moves it to that window or opens a new one there.
-    if (dragId != null && e.dataTransfer && e.dataTransfer.dropEffect === 'none') {
+    if (dragId != null) {
       const r = $('#sidebar').getBoundingClientRect();
-      send('tab-drop-out', dragId, { x: r.left, y: r.top, width: r.width, height: r.height });
+      send('tab-drag-end', dragId, e.dataTransfer ? e.dataTransfer.dropEffect : 'none', { x: r.left, y: r.top, width: r.width, height: r.height });
     }
     dragId = null;
     document.querySelectorAll('.dragging').forEach(x => x.classList.remove('dragging'));
