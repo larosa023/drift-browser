@@ -2457,6 +2457,46 @@ function startPerfLog() {
     log(`cpu ${total.toFixed(0)}% | ` + rows.filter(r => r.cpu >= 1 || /\*/.test(r.label)).map(r => `${r.label} ${r.cpu.toFixed(0)}% ${r.mb}MB`).join(' | '));
     flush();
   }, 2000).unref();
+  // Pages that freeze: Chromium's long-animation-frame timing names the scripts that ran (the
+  // site's own, or an extension's) and how long style/layout and rendering took.
+  const LOAF = `(() => {
+    if (window.__driftLoaf) return 0;
+    const a = window.__driftLoaf = [];
+    try {
+      new PerformanceObserver((l) => { for (const e of l.getEntries()) if (e.duration > 120) a.push({
+        t: Math.round(e.startTime), d: Math.round(e.duration), block: Math.round(e.blockingDuration || 0),
+        render: e.renderStart ? Math.round(e.startTime + e.duration - e.renderStart) : 0,
+        style: e.styleAndLayoutStart ? Math.round(e.startTime + e.duration - e.styleAndLayoutStart) : 0,
+        scripts: (e.scripts || []).filter(x => x.duration > 15).map(x => ({ src: (x.sourceURL || '').slice(0, 100), fn: (x.sourceFunctionName || '').slice(0, 40),
+          inv: (x.invoker || '').slice(0, 60), d: Math.round(x.duration), layout: Math.round(x.forcedStyleAndLayoutDuration || 0) })),
+      }); }).observe({ type: 'long-animation-frame', buffered: true });
+    } catch (e) { a.push({ err: String(e) }); }
+    return 0;
+  })()`;
+  const READ = `(() => { const a = window.__driftLoaf || []; const out = a.splice(0); return JSON.stringify(out); })()`;
+  const instrument = (wc, label) => {
+    const arm = () => { if (!wc.isDestroyed()) wc.executeJavaScriptInIsolatedWorld(1997, [{ code: LOAF }]).catch(() => {}); };
+    const collect = () => {
+      if (wc.isDestroyed()) return;
+      wc.executeJavaScriptInIsolatedWorld(1997, [{ code: READ }]).then((j) => {
+        let list = []; try { list = JSON.parse(j); } catch {}
+        const where = label();
+        for (const e of list) {
+          if (e.err) { log(`${where} long-frame timing unavailable: ${e.err}`); continue; }
+          log(`SLOW FRAME ${where} at +${e.t}ms: ${e.d}ms (blocking ${e.block}, style/layout ${e.style}, render ${e.render})` +
+            e.scripts.map(x => `\n      script ${x.d}ms${x.layout ? ` (forced layout ${x.layout}ms)` : ''} ${x.src || '(inline)'} ${x.fn} [${x.inv}]`).join(''));
+        }
+        if (list.length) flush();
+      }).catch(() => {});
+    };
+    wc.on('dom-ready', arm);
+    wc.on('did-finish-load', () => { arm(); setTimeout(collect, 1500); setTimeout(collect, 8000); });
+    const iv = setInterval(collect, 10000); iv.unref();
+    wc.once('destroyed', () => clearInterval(iv));
+  };
+  const labelOf = (wc) => () => { try { if (ui && wc === ui.webContents) return 'Drift sidebar'; const t = wcToTab.get(wc.id); return `tab:${hostOf(wc.getURL()) || wc.getURL().slice(0, 40)}${t && t.dark ? ' (force dark)' : ''}`; } catch { return '?'; } };
+  app.on('web-contents-created', (_e, wc) => { if (wc.getType() === 'window' || wc.getType() === 'browserView') instrument(wc, labelOf(wc)); });
+  for (const wc of webContents.getAllWebContents()) if (wc.getType() === 'window' || wc.getType() === 'browserView') { instrument(wc, labelOf(wc)); try { wc.executeJavaScriptInIsolatedWorld(1997, [{ code: LOAF }]).catch(() => {}); } catch {} }
   // Which extension service workers are running (they have no page of their own).
   setTimeout(() => { try { log('service workers: ' + Object.values(session.defaultSession.serviceWorkers.getAllRunning()).map(w => w.scope).join(', ')); } catch {} }, 8000);
 }
