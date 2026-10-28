@@ -2377,6 +2377,53 @@ async function exportPasswords() {
 
 // Messages from web pages (page-preload.js). Only real tabs may ask, and the site
 // is taken from the requesting frame itself, never from what the page says.
+// ---------------------------------------------------------------------------
+// Performance log, for tracking down lag on a user's machine. Off unless a file named
+// "perf-log" exists in Drift's data folder; then every 2 s it writes which processes are
+// using CPU (each tab by site, extensions, graphics, Drift itself) to logs\perf.log, plus any
+// moment Drift's main thread was frozen.
+// ---------------------------------------------------------------------------
+function startPerfLog() {
+  if (!fs.existsSync(file('perf-log'))) return;
+  const out = path.join(file('logs'), 'perf.log');
+  let buf = '';
+  const log = (line) => { buf += `${new Date().toISOString().slice(11, 23)} ${line}\n`; };
+  const flush = async () => {
+    if (!buf) return; const text = buf; buf = '';
+    try {
+      await fs.promises.mkdir(file('logs'), { recursive: true });
+      try { if ((await fs.promises.stat(out)).size > 3e6) await fs.promises.rename(out, out + '.old'); } catch {}
+      await fs.promises.appendFile(out, text);
+    } catch {}
+  };
+  log(`--- start Drift ${app.getVersion()} (Chromium ${process.versions.chrome}) ${process.platform} ${require('os').cpus().length} cores`);
+  // Main-thread freezes: a 50 ms timer that fires late means the browser couldn't respond.
+  let last = Date.now();
+  setInterval(() => { const now = Date.now(), late = now - last - 50; last = now; if (late > 150) log(`FREEZE main thread blocked ${late} ms`); }, 50).unref();
+  const extName = (id) => { try { const e = extApi().getExtension(id); return e ? localize(e.manifest.name || e.name, e) : id; } catch { return id; } };
+  setInterval(() => {
+    const labels = new Map();
+    for (const wc of webContents.getAllWebContents()) {
+      try {
+        const pid = wc.getOSProcessId(), url = wc.getURL(), type = wc.getType();
+        let label;
+        if (ui && wc === ui.webContents) label = 'Drift sidebar';
+        else if (/^chrome-extension:/.test(url)) label = `ext:${extName(new URL(url).hostname)}${type === 'backgroundPage' ? ' (background)' : ''}`;
+        else label = `tab:${hostOf(url) || url.slice(0, 40)}${wcToTab.get(wc.id) && wcToTab.get(wc.id).id === activeId ? '*' : ''}`;
+        labels.set(pid, labels.has(pid) ? labels.get(pid) + ' + ' + label : label);
+      } catch {}
+    }
+    const rows = app.getAppMetrics().map(m => ({ label: labels.get(m.pid) || (m.type === 'Tab' ? 'worker/extension' : m.type) + (m.serviceName ? ':' + m.serviceName.replace(/^.*\./, '') : ''),
+      cpu: m.cpu.percentCPUUsage, mb: Math.round(m.memory.workingSetSize / 1024), pid: m.pid }));
+    const total = rows.reduce((a, r) => a + r.cpu, 0);
+    rows.sort((a, b) => b.cpu - a.cpu);
+    log(`cpu ${total.toFixed(0)}% | ` + rows.filter(r => r.cpu >= 1 || /\*/.test(r.label)).map(r => `${r.label} ${r.cpu.toFixed(0)}% ${r.mb}MB`).join(' | '));
+    flush();
+  }, 2000).unref();
+  // Which extension service workers are running (they have no page of their own).
+  setTimeout(() => { try { log('service workers: ' + Object.values(session.defaultSession.serviceWorkers.getAllRunning()).map(w => w.scope).join(', ')); } catch {} }, 8000);
+}
+
 function setupPageIPC() {
   // Synchronous tab lookup for extension background pages only.
   ipcMain.on('drift-tab-for', (e, d) => {
@@ -2934,6 +2981,7 @@ if (!app.requestSingleInstanceLock()) {
     const uiReady = new Promise(r => first.ui.webContents.once('did-finish-load', r)).then(() => { setTimeout(prepareBookmarkMenuIcons, 300); return initIdentity(); });
     Promise.race([Promise.all([shieldsReady, uiReady]), new Promise(r => setTimeout(r, 2000))]).then(() => { PERF('gate open'); openGate(); });
     setupUpdates();
+    startPerfLog();
 
 
 

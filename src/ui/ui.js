@@ -437,7 +437,31 @@ function raiseOverlay(mode) {
   if (S) S.overlay = mode;
   document.body.classList.add('over-palette');
   applyHole();
-  requestAnimationFrame(() => requestAnimationFrame(() => send('overlay', mode)));
+  // Only if it's still wanted: closing within these two frames (a mouse brushing past the
+  // rail) must not raise an invisible layer over the page afterwards.
+  const req = pendingOverlay;
+  requestAnimationFrame(() => requestAnimationFrame(() => { if (pendingOverlay === req) send('overlay', mode); }));
+}
+// Safety net: if Drift ever has an overlay up that isn't actually showing, the sidebar layer
+// would sit over the page and swallow every click and scroll. Put the page back on top.
+function overlayVisible(mode) {
+  switch (mode) {
+    case 'railpeek': return document.body.classList.contains('rail-open');
+    case 'extmenu': return !$('#extmenu-wrap').hidden;
+    case 'siteinfo': return !$('#siteinfo-wrap').hidden;
+    case 'dlmenu': return !$('#dlmenu-wrap').hidden;
+    case 'bmpop': return !$('#bmpop-wrap').hidden;
+    default: return true;   // palette, modal and peek are drawn straight from the state
+  }
+}
+let staleCheck = 0;
+function checkStaleOverlay() {
+  clearTimeout(staleCheck);
+  staleCheck = setTimeout(() => {
+    if (!S || !S.overlay || pendingOverlay || overlayVisible(S.overlay)) return;
+    pendingOverlay = null;
+    send('overlay', null, S.overlay === 'railpeek');
+  }, 120);
 }
 function openPalette(newTab, anchored) {
   preparePalette(newTab, anchored);
@@ -1318,7 +1342,7 @@ window.drift.on('state', (s) => {
     if (s.overlay === pendingOverlay.mode || Date.now() - pendingOverlay.at > 1000) pendingOverlay = null;
     else s.overlay = pendingOverlay.mode;
   }
-  S = s; render();
+  S = s; render(); checkStaleOverlay();
   if (S.overlay === 'railpeek' && railWant && document.body.classList.contains('rail-open') && !document.body.classList.contains('rail-in')) startRailSweep();
 });
 window.drift.on('extensions', (list) => { EXT = list; render(); });
