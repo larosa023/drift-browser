@@ -126,7 +126,7 @@ function render() {
   if (S.overlay !== 'extmenu') $('#extmenu-wrap').hidden = true;
   if (S.overlay !== 'siteinfo') $('#siteinfo-wrap').hidden = true;
   if (S.overlay !== 'dlmenu') $('#dlmenu-wrap').hidden = true; else renderDlMenu();
-  if (S.overlay !== 'railpeek' && document.body.classList.contains('rail-open') && !(pendingOverlay && pendingOverlay.mode === 'railpeek')) instantRail(() => document.body.classList.remove('rail-open', 'rail-in'));
+  if (S.overlay !== 'railpeek' && document.body.classList.contains('rail-open') && !(pendingOverlay && pendingOverlay.mode === 'railpeek')) instantRail(() => document.body.classList.remove('rail-open', 'rail-in', 'rail-closing'));
   if (S.overlay !== 'bmpop') closeBmPopups(true);
   if (panel === 'passwords') renderPasswords();
   placeActions();
@@ -1464,7 +1464,7 @@ function instantRail(fn) {
 }
 function startRailSweep() {
   requestAnimationFrame(() => {
-    if (railWant && document.body.classList.contains('rail-open')) document.body.classList.add('rail-in');
+    if (railWant && document.body.classList.contains('rail-open')) { document.body.classList.add('rail-in'); document.body.classList.remove('rail-closing'); }
   });
 }
 // Closing: slide back, then return to the icon layout and drop below the page.
@@ -1473,12 +1473,13 @@ function closeRail() {
   railWant = false;
   if (!b.classList.contains('rail-open')) return;
   const wasIn = b.classList.contains('rail-in');
+  if (wasIn) b.classList.add('rail-closing');   // keep the panel solid while it slides shut
   b.classList.remove('rail-in');
   clearTimeout(railEndTimer);
   railEndTimer = setTimeout(() => {
     railEndTimer = 0;
     if (b.classList.contains('rail-in') || railWant) return;
-    instantRail(() => b.classList.remove('rail-open'));
+    instantRail(() => b.classList.remove('rail-open', 'rail-closing'));
     if (pendingOverlay && pendingOverlay.mode === 'railpeek') pendingOverlay = null;
     if (S && S.overlay === 'railpeek') send('overlay', null, true);
   }, wasIn ? 260 : 0);
@@ -1487,6 +1488,7 @@ $('#sidebar').addEventListener('mouseenter', () => {
   clearTimeout(railTimer);
   if (!railMode()) return;
   if (document.body.classList.contains('rail-in')) { railWant = true; clearTimeout(railEndTimer); railEndTimer = 0; return; }
+  if (document.body.classList.contains('rail-closing')) { railWant = true; clearTimeout(railEndTimer); railEndTimer = 0; document.body.classList.add('rail-in'); document.body.classList.remove('rail-closing'); return; }   // back in while it was closing
   prepRail();
   railTimer = setTimeout(openRail, 150);
 });

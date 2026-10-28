@@ -733,7 +733,8 @@ body.rail.rail-open #sidebar > * {
   transition: transform .24s cubic-bezier(.4, 0, .6, 1);
   will-change: transform;
 }
-body.rail.rail-open.rail-in #sidebar {
+/* Solid while open and while sliding shut (rail-closing), so nothing shows without it. */
+body.rail.rail-open.rail-in #sidebar, body.rail.rail-open.rail-closing #sidebar {
   background: var(--bg); box-shadow: 1px 0 0 var(--border), 8px 0 22px rgba(0,0,0,.22);
 }
 /* Preparing (and tearing down) happens instantly, never animated. */

@@ -454,6 +454,15 @@ function restack() {
   const have = win.contentView.children;
   if (have.length === want.length && have.every((v, i) => v === want[i])) return;
   for (const c of have) if (!want.includes(c)) win.contentView.removeChildView(c);
+  // Raising the UI over the page (opening an overlay) only needs the UI moved to the top.
+  // Re-adding the page view too makes it repaint from blank for a few frames (a flash).
+  const pagesOf = (list) => list.filter(v => v !== ui && v !== toastView);
+  const curPages = pagesOf(win.contentView.children), wantPages = pagesOf(want);
+  if (uiOnTop && curPages.length === wantPages.length && curPages.every((v, i) => v === wantPages[i])) {
+    win.contentView.addChildView(ui);
+    if (toastView && toastShown) win.contentView.addChildView(toastView);
+    return;
+  }
   // Only touch views from the first one out of place: adding a view that's already attached
   // moves it to the top without detaching it. Detaching the sidebar UI would drop its focus
   // and cancel anything in progress there (like dragging a tab).
