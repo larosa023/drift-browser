@@ -71,6 +71,7 @@ function render() {
   if (!b.classList.contains('platform-' + S.platform)) { [...b.classList].filter(c => c.startsWith('platform-')).forEach(c => b.classList.remove(c)); b.classList.add('platform-' + S.platform); }
   setVar('--accent', S.settings.accent);
   setVar('--sw', S.settings.sidebarWidth + 'px');
+  setVar('--fw', Math.round(Math.min(S.settings.sidebarWidth, 260) * 0.88) + 'px');   // slide-out width
   applyHole();
   applyWallpaper();
   const inSplit = (S.splits || []).find(sp => sp.a === S.activeId || sp.b === S.activeId);
@@ -1318,7 +1319,7 @@ window.drift.on('state', (s) => {
     else s.overlay = pendingOverlay.mode;
   }
   S = s; render();
-  if (S.overlay === 'railpeek' && document.body.classList.contains('rail-open') && !document.body.classList.contains('rail-in') && !railEndTimer) startRailSweep();
+  if (S.overlay === 'railpeek' && railWant && document.body.classList.contains('rail-open') && !document.body.classList.contains('rail-in')) startRailSweep();
 });
 window.drift.on('extensions', (list) => { EXT = list; render(); });
 window.drift.on('bookmarks', (list) => { BM = list; renderBookmarks(); });
@@ -1437,44 +1438,55 @@ $('#siteinfo').addEventListener('click', async (e) => {
 // page; moving off collapses it again. (Not while another menu or the command bar is open.)
 let railTimer = 0, railCloseAfterDrag = false, railEndTimer = 0;
 const railMode = () => S && S.settings.sidebarRail && !S.settings.sidebarHidden;
-// Opening: lay out the full sidebar (still clipped to icon width, so nothing visibly changes),
-// bring it above the page, then start the sweep once it's actually on top.
-function openRail() {
-  if (!railMode() || (S.overlay && S.overlay !== 'railpeek')) return;
+// Step 1, as soon as the pointer arrives: lay out the panel (still looks like the icon strip)
+// and bring the sidebar above the page, so nothing heavy happens once the slide starts.
+function prepRail() {
+  if (!railMode() || (S.overlay && S.overlay !== 'railpeek')) return false;
   clearTimeout(railEndTimer); railEndTimer = 0;
-  const b = document.body;
-  $('#rail-shade').style.top = $('#sidebar').getBoundingClientRect().top + 'px';
-  if (b.classList.contains('rail-open')) { b.classList.add('rail-in'); return; }   // reopened mid-close
-  b.classList.add('rail-open');
-  if (S.overlay !== 'railpeek') raiseOverlay('railpeek'); else startRailSweep();
+  document.body.classList.add('rail-open');
+  if (S.overlay !== 'railpeek') raiseOverlay('railpeek');
+  return true;
 }
+// Step 2, after the hover pause: slide out (once the sidebar is actually above the page).
+function openRail() {
+  if (!prepRail()) return;
+  railWant = true;
+  if (S.overlay === 'railpeek') startRailSweep();
+}
+let railWant = false;
 function startRailSweep() {
-  requestAnimationFrame(() => requestAnimationFrame(() => {
-    if (document.body.classList.contains('rail-open')) document.body.classList.add('rail-in');
-  }));
+  requestAnimationFrame(() => {
+    if (railWant && document.body.classList.contains('rail-open')) document.body.classList.add('rail-in');
+  });
 }
-// Closing: sweep back to icon width, then switch to the icon layout and drop below the page.
+// Closing: slide back, then return to the icon layout and drop below the page.
 function closeRail() {
   const b = document.body;
+  railWant = false;
   if (!b.classList.contains('rail-open')) return;
+  const wasIn = b.classList.contains('rail-in');
   b.classList.remove('rail-in');
   clearTimeout(railEndTimer);
   railEndTimer = setTimeout(() => {
     railEndTimer = 0;
-    if (b.classList.contains('rail-in')) return;
+    if (b.classList.contains('rail-in') || railWant) return;
     b.classList.remove('rail-open');
     if (pendingOverlay && pendingOverlay.mode === 'railpeek') pendingOverlay = null;
     if (S && S.overlay === 'railpeek') send('overlay', null, true);
-  }, 250);
+  }, wasIn ? 260 : 0);
 }
 $('#sidebar').addEventListener('mouseenter', () => {
   clearTimeout(railTimer);
-  if (railMode() && !document.body.classList.contains('rail-open')) railTimer = setTimeout(openRail, 160);
+  if (!railMode()) return;
+  if (document.body.classList.contains('rail-in')) { railWant = true; clearTimeout(railEndTimer); railEndTimer = 0; return; }
+  prepRail();
+  railTimer = setTimeout(openRail, 150);
 });
 $('#sidebar').addEventListener('mouseleave', () => {
   clearTimeout(railTimer);
   if (!document.body.classList.contains('rail-open')) return;
   if (dragId != null || bmDrag != null) { railCloseAfterDrag = true; return; }
+  if (!document.body.classList.contains('rail-in')) { closeRail(); return; }   // left before it opened
   railTimer = setTimeout(closeRail, 140);
 });
 document.addEventListener('dragend', () => {
