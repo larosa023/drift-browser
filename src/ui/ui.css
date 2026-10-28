@@ -706,3 +706,11 @@ body.rail .tab .audio svg { width: 13px; height: 13px; }
 /* Download toast actions */
 #toast .t-act { margin-left: 4px; padding: 3px 9px; border-radius: 6px; border: 1px solid var(--border); background: var(--card); color: var(--fg); font: inherit; font-size: 12px; cursor: pointer; }
 #toast .t-act:hover { border-color: var(--accent); }
+
+/* Download progress inside a notice */
+#toast .t-dl { display: flex; flex-direction: column; gap: 5px; min-width: 200px; overflow: visible; }
+#toast .t-dl .t-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+#toast .t-bar { display: block; height: 4px; border-radius: 2px; background: color-mix(in srgb, var(--accent) 20%, transparent); overflow: hidden; }
+#toast .t-bar b { display: block; height: 100%; background: var(--accent); border-radius: 2px; transition: width .25s; }
+#toast .t-bar.busy b { animation: tbusy 1.1s ease-in-out infinite; }
+@keyframes tbusy { 0% { margin-left: -30%; } 100% { margin-left: 100%; } }

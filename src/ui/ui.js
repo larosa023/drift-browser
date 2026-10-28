@@ -722,7 +722,8 @@ function renderDownloadIndicators() {
   const known = active.filter(d => d.total > 0);
   const pct = known.length ? Math.round(known.reduce((a, d) => a + d.received, 0) / known.reduce((a, d) => a + d.total, 0) * 100) : 0;
   const tb = $('#tb-dl');
-  const show = active.length > 0 || unseen || (S && S.overlay === 'dlmenu');
+  // Stays in the toolbar once anything has been downloaded this session.
+  const show = ds.length > 0 || (S && S.overlay === 'dlmenu');
   if (show && tb.hidden) { tb.classList.remove('dl-new'); void tb.offsetWidth; tb.classList.add('dl-new'); }
   tb.hidden = !show;
   for (const [btn, dot] of [[tb, $('#tb-dl-dot')], [$('#btn-downloads'), $('#dl-dot')]]) {
@@ -736,7 +737,16 @@ function renderDownloadIndicators() {
   const title = active.length ? `Downloading ${active.length === 1 ? active[0].name : active.length + ' files'}${known.length ? ` · ${pct}%` : ''}` : unseen ? 'Download finished' : 'Downloads';
   tb.title = title; $('#btn-downloads').title = title;
   if (ds.length !== dlLastCount) { dlLastCount = ds.length; }
+  // Live progress notice over the page while anything downloads.
+  if (active.length) {
+    const name = active.length === 1 ? active[0].name : `${active.length} files`;
+    const sizes = known.length ? ` · ${pct}%` : '';
+    const html = `${icon('download')}<span class="t-dl"><span class="t-name">Downloading ${esc(name)}${sizes}</span>`
+      + `<i class="t-bar ${known.length ? '' : 'busy'}"><b style="width:${known.length ? pct : 30}%"></b></i></span>`;
+    if (html !== dlToastHtml) { dlToastHtml = html; toast(html, 20000, [{ label: 'Show', run: () => openDlMenu() }]); }
+  } else dlToastHtml = '';
 }
+let dlToastHtml = '';
 function dlRows(ds) {
   return ds.map(d => {
       const pct = d.total ? Math.round(d.received / d.total * 100) : 0;
@@ -1305,7 +1315,7 @@ window.drift.on('find-result', ({ active, matches }) => {
   $('#find-count').textContent = q ? `${active}/${matches}` : '';
   $('#findbar').classList.toggle('nomatch', !!q && matches === 0);
 });
-window.drift.on('download-started', (name) => toast(`${icon('download')}<span>Downloading ${esc(name)}</span>`));
+// (Download start and progress are shown by renderDownloadIndicators.)
 window.drift.on('download-done', ({ id, name, state }) => {
   if (state !== 'completed') { toast(`${icon('x')}<span>${state === 'cancelled' ? 'Cancelled' : 'Download failed'}: ${esc(name)}</span>`); return; }
   toast(`${icon('check')}<span>Downloaded ${esc(name)}</span>`, 6000, [

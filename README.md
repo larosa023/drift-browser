@@ -44,7 +44,7 @@ To build the Windows installer locally: `npm run dist` (output goes to `dist/`).
 - **Passwords** (Settings → Passwords): encrypted with your Windows account, offers to save when you sign in, and suggests saved logins when you click a sign-in field. Import a CSV export from Chrome, Edge, Brave, Opera, Firefox, Bitwarden, 1Password, LastPass and others; export to CSV.
 - **New tab page** with your most-visited sites (hover a tile and click × to remove it)
 - **Taskbar menu**: right-click Drift's taskbar icon → *New tab*
-- **Downloads**: a download button appears in the toolbar with a progress ring while files download, and a green dot until you've seen the finished file; click it for recent downloads (open, show in folder, cancel). A notice confirms each finished download with *Open* and *Show in folder*.
+- **Downloads**: a notice over the page shows each download's progress live, then confirms it finished. A toolbar button (shown once you've downloaded something) has a progress ring while files download and a green dot until you've seen the finished file; click it for recent downloads (open, show in folder, cancel). A notice confirms each finished download with *Open* and *Show in folder*.
 - **Session restore**, downloads panel, find on page, zoom, dark/light themes, 10 accent colors
 - Site permissions (camera, mic, location, notifications) prompt you instead of being granted automatically
 

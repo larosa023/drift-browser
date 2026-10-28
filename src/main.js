@@ -2534,6 +2534,7 @@ if (!app.requestSingleInstanceLock()) {
 
 
 
+
     // Taskbar right-click menu (Windows jump list).
     if (process.platform === 'win32') {
       try { app.setUserTasks([{ program: process.execPath, arguments: '--new-tab', iconPath: process.execPath, iconIndex: 0, title: 'New tab', description: 'Open a new tab in Drift' }]); } catch {}
