@@ -198,14 +198,58 @@ function chromeUA() {
 
 let settings;
 let history;            // Map url -> {url,title,visits,last}
+// Per-window state. Drift can have several windows; the variables below always describe the
+// window being handled right now (the "current" window). Every entry point — a message from a
+// window's sidebar UI, an event from one of its tabs, a window event — switches to the right
+// window first with useWin(). Everything else (settings, history, bookmarks, downloads,
+// extensions) is shared by all windows.
 let win, ui;
-let tabs = [];
+let tabs = [];          // this window's tabs, in sidebar order
 let activeId = null;
-let nextTabId = 1;
-let closedTabs = [];    // for Ctrl+Shift+T
-let overlay = null;     // null | 'palette' | 'peek'
+let overlay = null;     // null | 'palette' | 'peek' | menus…
 let findOpen = false;
 let htmlFullscreen = false;
+let nextTabId = 1;
+let nextWinId = 1;
+let closedTabs = [];    // for Ctrl+Shift+T
+const windows = [];     // window contexts
+let cur = null;         // the current window's context
+let lastFocused = null; // the window the user used last (for actions with no window of their own)
+const zOrder = [];      // windows, most recently created or focused first (≈ which is on top)
+let quitting = false;   // quitting with windows open: the session was saved once, with all of them
+const WIN_KEYS = ['win', 'ui', 'tabs', 'activeId', 'overlay', 'findOpen', 'htmlFullscreen', 'splits', 'toastView', 'toastShown', 'toastTimer', 'toastToken', 'toastSize'];
+function saveCtx() {
+  if (!cur) return;
+  cur.win = win; cur.ui = ui; cur.tabs = tabs; cur.activeId = activeId; cur.overlay = overlay; cur.findOpen = findOpen;
+  cur.htmlFullscreen = htmlFullscreen; cur.splits = splits; cur.toastView = toastView; cur.toastShown = toastShown;
+  cur.toastTimer = toastTimer; cur.toastToken = toastToken; cur.toastSize = toastSize;
+}
+function useWin(ctx) {
+  if (!ctx || ctx === cur) return cur;
+  saveCtx();
+  const prev = cur;
+  cur = ctx;
+  ({ win, ui, tabs, activeId, overlay, findOpen, htmlFullscreen, splits, toastView, toastShown, toastTimer, toastToken, toastSize } = ctx);
+  return prev;
+}
+function newWinCtx() {
+  return { id: nextWinId++, win: null, ui: null, tabs: [], activeId: null, overlay: null, findOpen: false, htmlFullscreen: false,
+    splits: [], toastView: null, toastShown: false, toastTimer: null, toastToken: 0, toastSize: { w: 360, h: 64 }, ready: false };
+}
+// Run fn for each window (as the current window), then switch back.
+function forEachWin(fn) {
+  saveCtx();
+  const prev = cur;
+  for (const ctx of [...windows]) { useWin(ctx); try { fn(ctx); } catch (e) { console.error(e); } }
+  if (prev && windows.includes(prev)) useWin(prev);
+}
+const ctxOfTab = (tab) => windows.find(c => c.id === tab.wid) || null;
+const ctxOfUi = (wc) => windows.find(c => c.ui && c.ui.webContents === wc) || null;
+const ctxOfWin = (w) => windows.find(c => c.win === w) || null;
+function useTab(tab) { const c = tab && ctxOfTab(tab); if (c) useWin(c); return c; }
+// Every tab in every window.
+function allTabs() { saveCtx(); return windows.flatMap(c => c.tabs); }
+function findTab(id) { return allTabs().find(t => t.id === id) || null; }
 let blocker = null;
 let uboId = null;          // extension id of the bundled uBlock Origin while it's loaded
 let extensions = null;     // ElectronChromeExtensions instance
@@ -221,30 +265,59 @@ const saveHistory = debounce(() => {
   const arr = [...history.values()].sort((a, b) => b.last - a.last).slice(0, 4000);
   writeJSON('history.json', arr);
 }, 2000);
-const saveSession = debounce(() => writeJSON('session.json', sessionSnapshot()), 800);
+const saveSession = debounce(() => { if (windows.length) writeJSON('session.json', sessionSnapshot()); }, 800);
 
-function sessionSnapshot() {
-  const kept = tabs.filter(t => !isInternal(t.url) || t.pinned);
+// Session: every open window with its tabs. The first window's tabs are also stored at the top
+// level, the format older versions of Drift read.
+function windowSnapshot(c) {
+  const kept = c.tabs.filter(t => !isInternal(t.url) || t.pinned);
   const idx = (id) => kept.findIndex(t => t.id === id);
+  let bounds = null;
+  try { if (c.win && !c.win.isDestroyed()) bounds = c.win.isMaximized() || c.win.isFullScreen() ? c.win.getNormalBounds() : c.win.getBounds(); } catch {}
   return {
     tabs: kept.map(t => ({ url: t.url, title: t.title, favicon: (t.favicon || '').length < 12000 ? t.favicon : '', pinned: t.pinned })),
-    active: Math.max(0, idx(activeId)),
-    splits: splits.map(sp => [idx(sp.a), idx(sp.b), sp.ratio, sp.dir]).filter(x => x[0] >= 0 && x[1] >= 0),
+    active: Math.max(0, idx(c.activeId)),
+    splits: c.splits.map(sp => [idx(sp.a), idx(sp.b), sp.ratio, sp.dir]).filter(x => x[0] >= 0 && x[1] >= 0),
+    bounds, maximized: !!(c.win && !c.win.isDestroyed() && c.win.isMaximized()),
   };
+}
+function sessionSnapshot() {
+  saveCtx();
+  const ws = windows.map(windowSnapshot);
+  return { ...(ws[0] || { tabs: [], active: 0, splits: [] }), windows: ws };
 }
 
 function activeTab() { return tabs.find(t => t.id === activeId) || null; }
+
+// Show a context menu in the current window. Clicks run later, so they switch back to this
+// window first.
+function popupMenu(template, opts = {}) {
+  const ctx = cur;
+  const wrap = (items) => items.map(it => {
+    const out = { ...it };
+    if (typeof it.click === 'function') out.click = (...a) => { useWin(ctx); return it.click(...a); };
+    if (Array.isArray(it.submenu)) out.submenu = wrap(it.submenu);
+    return out;
+  });
+  Menu.buildFromTemplate(wrap(template)).popup({ window: win, ...opts });
+}
 
 // ---------------------------------------------------------------------------
 // Pushing state to the sidebar UI (coalesced)
 // ---------------------------------------------------------------------------
 
+// push() refreshes every window's sidebar (coalesced); each gets its own tabs and active page.
 let pushQueued = false;
 function push() {
   if (pushQueued) return;
   pushQueued = true;
   setImmediate(() => {
     pushQueued = false;
+    forEachWin(() => pushOne());
+  });
+}
+function pushOne() {
+  {
     if (!ui || ui.webContents.isDestroyed()) return;
     const t = activeTab();
     const wc = t && t.view ? t.view.webContents : null;
@@ -287,8 +360,14 @@ function push() {
       platform: process.platform,
       chrome: process.versions.chrome,
       dark: isDark(),
+      windowCount: windows.length, windowId: cur ? cur.id : 0,
     });
-  });
+  }
+}
+// Send the same message to every window's sidebar UI.
+function sendAll(ch, ...args) {
+  saveCtx();
+  for (const c of windows) if (c.ui && !c.ui.webContents.isDestroyed()) c.ui.webContents.send(ch, ...args);
 }
 
 function isDark() {
@@ -422,7 +501,7 @@ function focusPage() {
 
 function createTab(url = NEWTAB, opts = {}) {
   const tab = {
-    id: nextTabId++, url, title: opts.title || '', favicon: opts.favicon || (faviconStore[hostOf(url)] || ''),
+    id: nextTabId++, wid: cur.id, url, title: opts.title || '', favicon: opts.favicon || (faviconStore[hostOf(url)] || ''),
     pinned: !!opts.pinned, view: null, loading: false, audible: false, muted: false,
     volume: 1, hadAudio: false,
     blocked: 0, lastActive: Date.now(), crashed: false,
@@ -452,6 +531,21 @@ function wantsDark(url) {
 // Background behind a tab's page before it draws: the theme's page colour (matches the new tab page).
 function pageBase() { return isDark() ? '#1b1b20' : '#fafafb'; }
 function baseFor(url) { return isInternal(url) || /^(chrome-extension|devtools):/.test(url || '') ? pageBase() : '#ffffff'; }
+// Everything a tab's page reports (title, loading, audio, popups…) is handled as the tab's
+// window — looked up when the event fires, since a tab can move to another window.
+function bindToTab(wc, tab) {
+  const wrapped = new WeakMap();
+  const wrap = (fn) => {
+    if (typeof fn !== 'function') return fn;
+    let w = wrapped.get(fn);
+    if (!w) { w = function (...a) { useTab(tab); return fn.apply(this, a); }; wrapped.set(fn, w); }
+    return w;
+  };
+  for (const m of ['on', 'once', 'addListener', 'prependListener', 'prependOnceListener']) { const orig = wc[m].bind(wc); wc[m] = (ev, fn) => orig(ev, wrap(fn)); }
+  for (const m of ['off', 'removeListener']) { const orig = wc[m].bind(wc); wc[m] = (ev, fn) => orig(ev, wrapped.get(fn) || fn); }
+  const swoh = wc.setWindowOpenHandler.bind(wc);
+  wc.setWindowOpenHandler = (fn) => swoh(wrap(fn));
+}
 function ensureView(tab, restore) {
   if (tab.view) return tab.view;
   tab.dark = wantsDark(tab.url);
@@ -469,6 +563,7 @@ function ensureView(tab, restore) {
   // switch to white once their document is ready (pages without a background expect white,
   // like Chrome); Drift's own pages keep the theme colour.
   view.setBackgroundColor(pageBase());
+  bindToTab(view.webContents, tab);
   view.webContents.on('dom-ready', () => { if (!view.webContents.isDestroyed()) view.setBackgroundColor(baseFor(view.webContents.getURL())); });
   view.webContents.on('did-start-navigation', (e) => {
     // Going from a web page to Drift's new tab page (or back): use the right colour from the start.
@@ -480,7 +575,7 @@ function ensureView(tab, restore) {
   const wc = view.webContents;
   wcToTab.set(wc.id, tab);
   wireTab(tab, wc);
-  if (extensions) extensions.addTab(wc, win);
+  if (extensions) extensions.addTab(wc, (ctxOfTab(tab) || cur).win);
   setMode(wc, tab.url);
   if (restore && restore.entries.length) wc.navigationHistory.restore(restore).catch(() => loadIn(wc, tab.url));
   else loadIn(wc, tab.url);
@@ -592,7 +687,7 @@ function showErrorPage(wc, url, code, desc) {
 function escapeHtml(s) { return String(s).replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c])); }
 
 function refreshNewTabs() {
-  for (const t of tabs) if (t.view && t.url.startsWith(NEWTAB)) t.view.webContents.reload();
+  for (const t of allTabs()) if (t.view && t.url.startsWith(NEWTAB)) t.view.webContents.reload();
 }
 
 function activate(id, opts = {}) {
@@ -631,6 +726,7 @@ function closeTab(id) {
     const unpinned = tabs.filter(t => !t.pinned);
     const next = tabs[i] && !tabs[i].pinned ? tabs[i] : (tabs[i - 1] || unpinned[unpinned.length - 1] || tabs[0]);
     if (next) activate(next.id);
+    else if (windows.length > 1) { activeId = null; const w = win; setImmediate(() => { if (w && !w.isDestroyed()) w.close(); }); }   // its last tab: close this window
     else { activeId = null; createTab(NEWTAB); }
   }
   layout(); push(); saveSession();
@@ -645,7 +741,8 @@ function destroyView(tab) {
     for (const [id, t] of wcToTab) if (t === tab) wcToTab.delete(id);
     if (extensions && !wc.isDestroyed()) { try { extensions.removeTab(wc); } catch {} }
   }
-  try { win.contentView.removeChildView(view); } catch {}
+  const owner = ctxOfTab(tab) || cur;
+  try { (owner && owner.win || win).contentView.removeChildView(view); } catch {}
   if (wc && !wc.isDestroyed()) wc.close();
   tab.loading = false; tab.audible = false;
 }
@@ -686,13 +783,15 @@ setInterval(() => {
   if (!settings || !settings.sleepTabs) return;
   const cutoff = Date.now() - settings.sleepMinutes * 60000;
   let slept = false;
-  for (const t of tabs) {
-    const sp = splitOf(t.id);
-    if (sp && sp === splitOf(activeId)) continue;
-    if (t.id !== activeId && t.view && !t.audible && t.lastActive < cutoff) {
-      destroyView(t); slept = true;
+  forEachWin(() => {
+    for (const t of tabs) {
+      const sp = splitOf(t.id);
+      if (sp && sp === splitOf(activeId)) continue;
+      if (t.id !== activeId && t.view && !t.audible && t.lastActive < cutoff) {
+        destroyView(t); slept = true;
+      }
     }
-  }
+  });
   if (slept) push();
 }, 60000);
 
@@ -748,7 +847,7 @@ function splitMenu(x, y) {
       ...others.map(o => ({ label: (o.title || hostOf(o.url) || 'New Tab').slice(0, 60), click: () => splitWith(o.id) })),
     ];
   }
-  Menu.buildFromTemplate(items).popup({ window: win, x: Math.round(x), y: Math.round(y) });
+  popupMenu(items, { x: Math.round(x), y: Math.round(y) });
 }
 
 // ---------------------------------------------------------------------------
@@ -898,7 +997,7 @@ const originOf = (u) => { try { return new URL(u).origin; } catch { return ''; }
 
 const frameTab = new Map();   // Chromium frame-tree node id -> tab webContents id (ids are never reused)
 function tabIdForRequest(d) {
-  const live = tabs.filter(t => t.view && !t.view.webContents.isDestroyed());
+  const live = allTabs().filter(t => t.view && !t.view.webContents.isDestroyed());
   // A page load: match the navigation the tab just started.
   if (d.type === 'main_frame') {
     const p = pendingNavs.get(d.url);
@@ -969,7 +1068,7 @@ function closeFind() {
 function toggleSidebar() {
   settings.sidebarHidden = !settings.sidebarHidden;
   overlay = null;
-  saveSettings(); layout(); push();
+  saveSettings(); forEachWin(() => layout()); push();
 }
 
 // ---------------------------------------------------------------------------
@@ -985,7 +1084,8 @@ function handleShortcut(input) {
 
   if (mod && !input.shift && !input.alt) {
     switch (k) {
-      case 't': case 'n': ui.webContents.send('palette', { newTab: true }); return true;
+      case 't': ui.webContents.send('palette', { newTab: true }); return true;
+      case 'n': newWindow(); return true;
       case 'l': ui.webContents.send('palette', { newTab: false }); return true;
       case 'w': if (t) closeTab(t.id); return true;
       case 'r': if (wc) wc.reload(); return true;
@@ -1050,6 +1150,7 @@ function pageContextMenu(tab, wc, p) {
   }
   if (p.linkURL) {
     m.push({ label: 'Open link in new tab', click: () => createTab(p.linkURL, { activate: false, openerId: tab.id }) });
+    m.push({ label: 'Open link in new window', click: () => newWindow([p.linkURL]) });
     m.push({ label: 'Open link here', click: () => wc.loadURL(p.linkURL) });
     m.push({ label: 'Copy link address', click: () => clipboard.writeText(p.linkURL) });
     sep();
@@ -1088,13 +1189,13 @@ function pageContextMenu(tab, wc, p) {
     if (extItems.length) { sep(); m.push(...extItems); sep(); }
   }
   m.push({ label: 'Inspect', click: () => wc.inspectElement(p.x, p.y) });
-  Menu.buildFromTemplate(m).popup({ window: win });
+  popupMenu(m);
 }
 
 function tabContextMenu(id) {
   const tab = tabs.find(t => t.id === id); if (!tab) return;
   const wc = tab.view ? tab.view.webContents : null;
-  Menu.buildFromTemplate([
+  popupMenu([
     { label: 'Reload', enabled: !!wc, click: () => wc && wc.reload() },
     { label: 'Duplicate', click: () => createTab(tab.url, { openerId: tab.id }) },
     { label: tab.pinned ? 'Unpin tab' : 'Pin tab', click: () => togglePin(id) },
@@ -1106,10 +1207,16 @@ function tabContextMenu(id) {
     splitOf(id) ? { label: 'Close split view', click: () => unsplit(id) }
       : { label: 'Open in split view with current tab', enabled: id !== activeId, click: () => splitWith(id) },
     { type: 'separator' },
+    { label: 'Move to new window', enabled: tabs.length > 1, click: () => tabToNewWindow(tab) },
+    ...(windows.length > 1 ? [{ label: 'Move to window', submenu: windows.filter(c => c !== cur).map((c, n) => {
+      const t = c.tabs.find(x => x.id === c.activeId) || c.tabs[0];
+      return { label: `${(t && (t.title || hostOf(t.url))) || 'Window'} (${c.tabs.length} tab${c.tabs.length === 1 ? '' : 's'})`.slice(0, 60), click: () => moveTabToWindow(tab, c) };
+    }) }] : []),
+    { type: 'separator' },
     { label: 'Close tab', click: () => closeTab(id) },
     { label: 'Close other tabs', click: () => tabs.filter(t => t.id !== id && !t.pinned).forEach(t => closeTab(t.id)) },
     { label: 'Close tabs below', click: () => { const i = tabs.indexOf(tab); tabs.slice(i + 1).filter(t => !t.pinned).forEach(t => closeTab(t.id)); } },
-  ]).popup({ window: win });
+  ]);
 }
 
 // ---------------------------------------------------------------------------
@@ -1169,7 +1276,7 @@ async function suggest(q) {
     return { items: [...history.values()].sort((a, b) => frecency(b) - frecency(a)).slice(0, 6)
       .map(h => ({ kind: 'history', url: h.url, title: h.title || hostOf(h.url) })) };
   }
-  for (const t of tabs) {
+  for (const t of allTabs()) {
     if (t.id !== activeId && ((t.title || '').toLowerCase().includes(q) || t.url.toLowerCase().includes(q)))
       out.push({ kind: 'tab', id: t.id, url: t.url, title: t.title || t.url, favicon: t.favicon });
   }
@@ -1304,7 +1411,10 @@ function applyIdentity(wc) {
   dbg.sendCommand('Emulation.setUserAgentOverride', { userAgent: chromeUA(), userAgentMetadata: uaMeta }).catch(() => {});
 }
 // Reads the engine's real platform details once, from Drift's own UI page.
+// Any window's sidebar UI (for small jobs like reading the engine's details or drawing an icon).
+function anyUi() { saveCtx(); const c = (cur && cur.ui && !cur.ui.webContents.isDestroyed()) ? cur : windows.find(w => w.ui && !w.ui.webContents.isDestroyed()); return c ? c.ui : null; }
 async function initIdentity() {
+  const ui = anyUi(); if (!ui) return;
   const real = await ui.webContents.executeJavaScript(`(async () => {
     const d = navigator.userAgentData;
     const h = await d.getHighEntropyValues(['architecture','bitness','fullVersionList','model','platformVersion','wow64']);
@@ -1437,7 +1547,7 @@ async function setShieldsEngine(engine) {
     if (blocker) { if (settings.shields) blocker.enableBlockingInSession(session.defaultSession); session.defaultSession.webRequest.onBeforeSendHeaders(addHintHeaders); }
     else await initShields();
   }
-  for (const t of tabs) if (t.view && !isInternal(t.url)) t.view.webContents.reload();
+  for (const t of allTabs()) if (t.view && !isInternal(t.url)) t.view.webContents.reload();
   push();
 }
 
@@ -1511,9 +1621,8 @@ function listExtensions() {
     };
   }).sort((a, b) => a.name.localeCompare(b.name));
 }
-const sendExtensions = debounce(() => {
-  if (ui && !ui.webContents.isDestroyed()) ui.webContents.send('extensions', listExtensions());
-}, 100);
+const sendExtensions = debounce(() => sendAll('extensions', listExtensions()), 100);
+function sendExtensionsTo(c) { if (c.ui && !c.ui.webContents.isDestroyed()) c.ui.webContents.send('extensions', listExtensions()); }
 
 async function startWorker(ext) {
   if (ext && ext.manifest.manifest_version === 3 && ext.manifest.background && ext.manifest.background.service_worker) {
@@ -1584,23 +1693,28 @@ async function setupExtensions(ses) {
     session: ses,
     // chrome.tabs.create → a Drift tab
     async createTab(details) {
+      // In the window the extension asked for, else the one in use.
+      const target = (details.windowId && windows.find(c => c.win && !c.win.isDestroyed() && c.win.id === details.windowId)) || lastFocused || windows[0];
+      if (target) useWin(target);
       const tab = createTab(details.url || NEWTAB, { activate: details.active !== false });
+      if (!tab.view) ensureView(tab);
       return [tab.view.webContents, win];
     },
     // (Drift's own activate() tells the library too, which calls back here; skip that echo.)
-    selectTab(wc) { const t = wcToTab.get(wc.id); if (t && t.id !== activeId) activate(t.id); },
+    selectTab(wc) { const t = wcToTab.get(wc.id); if (t) { useTab(t); if (t.id !== activeId) activate(t.id); } },
     // chrome.tabs.remove, and also called when a page closes itself (window.close()).
     removeTab(wc) {
       try {
         const t = wcToTab.get(wc.id);
-        if (t && tabs.includes(t)) setImmediate(() => { if (tabs.includes(t)) closeTab(t.id); });
+        if (t) setImmediate(() => { if (useTab(t) && tabs.includes(t)) closeTab(t.id); });
       } catch (e) { console.error('[tabs] removeTab', e); }
     },
-    // chrome.windows.create → open the URL(s) as tabs (Drift is single-window)
+    // chrome.windows.create → a new Drift window
     async createWindow(details) {
-      [].concat(details.url || NEWTAB).forEach(u => createTab(u));
-      return win;
+      const ctx = createWindow({ urls: [].concat(details.url || []).filter(Boolean) });
+      return ctx.win;
     },
+    removeWindow(w) { const c = ctxOfWin(w); if (c && c.win && !c.win.isDestroyed()) c.win.close(); },
     async requestPermissions(ext, perms) {
       const r = await dialog.showMessageBox(win, {
         type: 'question', buttons: ['Allow', 'Deny'], defaultId: 0, cancelId: 1,
@@ -1682,7 +1796,8 @@ const ASK = {
 
 function setupPermissions(ses) {
   ses.setPermissionRequestHandler(async (wc, perm, cb, details) => {
-    if (ui && wc === ui.webContents) return cb(false);
+    if (ctxOfUi(wc)) return cb(false);
+    const from = wcToTab.get(wc.id); if (from) useTab(from);
     if (AUTO_ALLOW.has(perm)) return cb(true);
     if (!ASK[perm]) return cb(false);
     let origin = '';
@@ -1766,7 +1881,11 @@ async function clearSiteData(origin) {
 // ---------------------------------------------------------------------------
 
 function setupDownloads(ses) {
-  ses.on('will-download', (_e, item) => {
+  ses.on('will-download', (_e, item, fromWc) => {
+    // Belongs to the window whose page started it.
+    const from = fromWc && wcToTab.get(fromWc.id);
+    if (!(from && useTab(from)) && lastFocused) useWin(lastFocused);
+    const dctx = cur;
     const dir = app.getPath('downloads');
     const ext = path.extname(item.getFilename());
     const base = path.basename(item.getFilename(), ext);
@@ -1774,10 +1893,9 @@ function setupDownloads(ses) {
     while (fs.existsSync(target)) target = path.join(dir, `${base} (${n++})${ext}`);
     item.setSavePath(target);
     const d = { id: Date.now() + Math.random(), name: path.basename(target), path: target,
-      received: 0, total: item.getTotalBytes(), state: 'progressing', seen: false, item };
+      received: 0, total: item.getTotalBytes(), state: 'progressing', seen: false, wid: dctx ? dctx.id : 0, item };
     downloads.unshift(d);
     if (downloads.length > 30) downloads.pop();
-    ui.webContents.send('download-started', d.name);
     let lastPush = 0;
     item.on('updated', (_ev, state) => {
       d.received = item.getReceivedBytes(); d.total = item.getTotalBytes(); d.state = state === 'interrupted' ? 'interrupted' : 'progressing';
@@ -1785,7 +1903,8 @@ function setupDownloads(ses) {
     });
     item.once('done', (_ev, state) => {
       d.state = state; d.received = item.getReceivedBytes(); delete d.item; push();
-      if (ui && !ui.webContents.isDestroyed()) ui.webContents.send('download-done', { id: d.id, name: d.name, state });
+      const c = windows.includes(dctx) ? dctx : (lastFocused || windows[0]);
+      if (c && c.ui && !c.ui.webContents.isDestroyed()) c.ui.webContents.send('download-done', { id: d.id, name: d.name, state });
     });
     push();
   });
@@ -1846,11 +1965,11 @@ function setupProtocol() {
 
 function setSetting(key, value) {
   settings[key] = value; saveSettings();
-  if (['titleBar', 'bookmarksBar', 'sidebarRail'].includes(key)) layout();
+  if (['titleBar', 'bookmarksBar', 'sidebarRail'].includes(key)) forEachWin(() => layout());
   if (key === 'theme') nativeTheme.themeSource = value;
   if (['theme', 'accent', 'searchEngine', 'wallpaper', 'wallpaperDim', 'wallpaperBlur', 'wallpaperNewTab'].includes(key)) refreshNewTabs();
   if (key === 'forceDark') {
-    for (const t of tabs) if (t.view && !isInternal(t.url) && wantsDark(t.url) !== !!t.dark) rebuildView(t);
+    for (const t of allTabs()) if (t.view && !isInternal(t.url) && wantsDark(t.url) !== !!t.dark) { useTab(t); rebuildView(t); }
   }
   push();
 }
@@ -1862,7 +1981,7 @@ function toggleForceDarkSite() {
   if (settings.forceDarkOff.includes(h)) settings.forceDarkOff = settings.forceDarkOff.filter(x => x !== h);
   else settings.forceDarkOff.push(h);
   saveSettings();
-  for (const x of tabs) if (x.view && hostOf(x.url) === h && wantsDark(x.url) !== !!x.dark) rebuildView(x);
+  for (const x of allTabs()) if (x.view && hostOf(x.url) === h && wantsDark(x.url) !== !!x.dark) { useTab(x); rebuildView(x); }
   push();
 }
 
@@ -1910,7 +2029,7 @@ async function chooseWallpaper() {
 const sendBookmarks = debounce(() => {
   const withIcons = (items) => items.map(it => it.type === 'folder' ? { ...it, children: withIcons(it.children) }
     : { ...it, icon: (it.icon && it.icon.startsWith('data:')) ? it.icon : (faviconStore[hostOf(it.url)] || '') });
-  if (ui && !ui.webContents.isDestroyed() && bookmarks) ui.webContents.send('bookmarks', withIcons(bookmarks.bar));
+  if (bookmarks) sendAll('bookmarks', withIcons(bookmarks.bar));
   push();
   setTimeout(() => prefetchBookmarkIcons().catch(() => {}), 1500);
   setTimeout(prepareBookmarkMenuIcons, 500);
@@ -1971,7 +2090,8 @@ function openBookmark(item, newTab, background) {
 // only take PNG/JPEG, so other formats (SVG, ICO) are drawn to a PNG once by the UI page.
 const menuIconCache = new Map();   // icon data URL -> 16px nativeImage (null while unusable)
 function toPngInUi(dataUrl, size = 32) {
-  if (!ui || ui.webContents.isDestroyed()) return Promise.resolve(null);
+  const ui = anyUi();
+  if (!ui) return Promise.resolve(null);
   return ui.webContents.executeJavaScript(`(async () => {
     const img = new Image(); img.src = ${JSON.stringify(dataUrl)}; await img.decode();
     const c = document.createElement('canvas'); c.width = c.height = ${size};
@@ -2018,7 +2138,7 @@ function bookmarkContextMenu(id) {
   const hit = bookmarks.find(id); if (!hit) return;
   const it = hit.item;
   const t = activeTab();
-  Menu.buildFromTemplate([
+  popupMenu([
     ...(it.type === 'link' ? [
       { label: 'Open', click: () => openBookmark(it, false) },
       { label: 'Open in new tab', click: () => openBookmark(it, true, false) },
@@ -2031,7 +2151,7 @@ function bookmarkContextMenu(id) {
     { label: 'Add current page', enabled: !!t && !isInternal(t.url), click: () => toggleBookmarkActive() },
     { label: 'Add folder…', click: () => ui.webContents.send('bm-edit', { id: null, type: 'folder', title: '', url: '' }) },
     { label: 'Hide bookmarks bar', click: () => setSetting('bookmarksBar', false) },
-  ]).popup({ window: win });
+  ]);
 }
 
 async function importBookmarksFrom(source) {
@@ -2075,7 +2195,7 @@ function listPasswords() {
   return passwords.entries.map(e => ({ id: e.id, url: e.url, host: hostOf(e.url), username: e.username, updated: e.updated }))
     .sort((a, b) => a.host.localeCompare(b.host) || a.username.localeCompare(b.username));
 }
-const sendPasswords = () => { if (ui && !ui.webContents.isDestroyed()) ui.webContents.send('passwords', listPasswords()); push(); };
+const sendPasswords = () => { sendAll('passwords', listPasswords()); push(); };
 
 async function offerSavePassword() {
   const p = pendingLogin; pendingLogin = null;
@@ -2085,6 +2205,7 @@ async function offerSavePassword() {
   const same = passwords.forUrl(p.url).find(e => e.username === p.username);
   if (same && same.password === p.password) return;
   const host = hostOf(p.url);
+  const from = wcToTab.get(p.wcId); if (from) useTab(from);
   const r = await dialog.showMessageBox(win, {
     type: 'question', title: 'Save password',
     message: same ? `Update your saved password for ${host}?` : `Save password for ${host}?`,
@@ -2184,18 +2305,18 @@ function setupUpdates() {
   });
   autoUpdater.on('update-downloaded', (i) => {
     set('ready', i.version);
-    if (ui) ui.webContents.send('toast', { text: `Drift ${i.version} is ready — it installs when you restart`, icon: 'download', action: { label: 'Restart', update: true } });
+    sendAll('toast', { text: `Drift ${i.version} is ready — it installs when you restart`, icon: 'download', action: { label: 'Restart', update: true } });
   });
   const check = () => autoUpdater.checkForUpdates().catch(() => {});
   setTimeout(check, 8000);
   setInterval(check, 4 * 3600 * 1000);
   ipcMain.on('update-check', (e) => {
-    if (!ui || e.sender !== ui.webContents || ['checking', 'downloading', 'ready'].includes(updateState.status)) return;
+    if (!ctxOfUi(e.sender) || ['checking', 'downloading', 'ready'].includes(updateState.status)) return;
     check();
   });
   // Restart to update: installs silently and reopens Drift with the same tabs.
   ipcMain.on('update-install', (e) => {
-    if (!ui || e.sender !== ui.webContents || updateState.status !== 'ready') return;
+    if (!ctxOfUi(e.sender) || updateState.status !== 'ready') return;
     writeJSON('session.json', sessionSnapshot()); writeJSON('settings.json', settings);
     setImmediate(() => autoUpdater.quitAndInstall(true, true));
   });
@@ -2206,7 +2327,8 @@ function setupUpdates() {
 // ---------------------------------------------------------------------------
 
 function setupIPC() {
-  const on = (ch, fn) => ipcMain.on(ch, (e, ...a) => { if (ui && e.sender === ui.webContents) fn(...a); });
+  // Messages from a window's sidebar UI run as that window.
+  const on = (ch, fn) => ipcMain.on(ch, (e, ...a) => { const c = ctxOfUi(e.sender); if (!c) return; useWin(c); fn(...a); });
   // Warm up a connection to a suggestion or bookmark under the pointer (once per site per 10s).
   const warmed = new Map();
   on('preconnect', (target) => {
@@ -2215,7 +2337,7 @@ function setupIPC() {
     warmed.set(origin, now); if (warmed.size > 200) warmed.clear();
     try { session.defaultSession.preconnect({ url: origin, numSockets: 1 }); } catch {}
   });
-  const handle = (ch, fn) => ipcMain.handle(ch, (e, ...a) => (ui && e.sender === ui.webContents) ? fn(...a) : null);
+  const handle = (ch, fn) => ipcMain.handle(ch, (e, ...a) => { const c = ctxOfUi(e.sender); if (!c) return null; useWin(c); return fn(...a); });
 
   on('ready', () => { push(); layout(); sendBookmarks(); });
   on('activate', (id, noFocus) => activate(id, { noFocus: !!noFocus }));
@@ -2224,11 +2346,19 @@ function setupIPC() {
   on('new-tab', () => { ui.webContents.send('palette', { newTab: true }); });
   on('tab-menu', (id) => tabContextMenu(id));
   on('move-tab', (id, idx, pinned) => moveTab(id, idx, pinned));
+  on('tab-adopt', (id, idx) => { const t = findTab(Number(id)); if (t && ctxOfTab(t) !== cur) moveTabToWindow(t, cur, idx); });
+  on('tab-drop-out', (id, x, y) => { const t = findTab(Number(id)); if (t) tabDroppedOutside(t, Number(x), Number(y)); });
+  on('new-window', () => newWindow());
   on('toggle-pin', (id) => togglePin(id));
   on('toggle-mute', (id) => toggleMute(id));
   on('tab-volume', (id, v) => setTabVolume(id, v));
   on('navigate', (text, newTab) => { setOverlay(null); navigate(text, newTab); });
-  on('switch-to', (id) => { setOverlay(null); activate(id); });
+  on('switch-to', (id) => {
+    setOverlay(null);
+    const t = findTab(id); if (!t) return;
+    useTab(t); activate(id);
+    if (win && !win.isDestroyed()) { if (win.isMinimized()) win.restore(); win.focus(); }
+  });
   on('back', () => { const t = activeTab(); t?.view?.webContents.navigationHistory.canGoBack() && t.view.webContents.navigationHistory.goBack(); });
   on('forward', () => { const t = activeTab(); t?.view?.webContents.navigationHistory.canGoForward() && t.view.webContents.navigationHistory.goForward(); });
   on('reload', () => { const t = activeTab(); if (t?.view) t.loading ? t.view.webContents.stop() : t.view.webContents.reload(); });
@@ -2245,7 +2375,7 @@ function setupIPC() {
     // Dragging the edge in far enough collapses to the icon-only rail; dragging out expands again.
     if (w < 140) { if (!settings.sidebarRail) setSetting('sidebarRail', true); return; }
     settings.sidebarWidth = Math.round(Math.max(200, Math.min(420, w)));
-    if (settings.sidebarRail) setSetting('sidebarRail', false); else { layout(); saveSettings(); push(); }
+    if (settings.sidebarRail) setSetting('sidebarRail', false); else { forEachWin(() => layout()); saveSettings(); push(); }
   });
   on('site-shields', () => toggleSiteShields());
   on('zoom', (d) => zoom(d));
@@ -2275,14 +2405,15 @@ function setupIPC() {
   on('show-download', (id) => { const d = downloads.find(x => x.id === id); if (d) shell.showItemInFolder(d.path); });
   on('toast-float', (t) => { if (t && typeof t.html === 'string') showFloatingToast(t); });
   on('toast-hide', () => hideFloatingToast());
+  const ctxOfToast = (wc) => { saveCtx(); return windows.find(c => c.toastView && c.toastView.webContents === wc) || null; };
   ipcMain.on('toast-size', (e, w, h) => {
-    if (!toastView || e.sender !== toastView.webContents) return;
+    const c = ctxOfToast(e.sender); if (!c) return; useWin(c);
     toastSize = { w: Math.round(Math.max(120, Math.min(560, w))), h: Math.round(Math.max(40, Math.min(200, h))) };
     placeToast();
     if (!toastShown) { toastShown = true; win.contentView.addChildView(toastView); }
   });
   ipcMain.on('toast-act', (e, i) => {
-    if (!toastView || e.sender !== toastView.webContents) return;
+    const c = ctxOfToast(e.sender); if (!c) return; useWin(c);
     if (ui && !ui.webContents.isDestroyed()) ui.webContents.send('toast-action', { token: toastToken, index: Number(i) });
     hideFloatingToast();
   });
@@ -2310,7 +2441,7 @@ function setupIPC() {
   on('wp-desktop', () => { const p = desktopWallpaperPath(); if (p) { try { useWallpaperFile(p, '.jpg'); } catch (e) { console.error(e.message); } } });
   on('undark', (host) => {
     settings.forceDarkOff = settings.forceDarkOff.filter(h => h !== host); saveSettings();
-    for (const x of tabs) if (x.view && hostOf(x.url) === host && wantsDark(x.url) !== !!x.dark) rebuildView(x);
+    for (const x of allTabs()) if (x.view && hostOf(x.url) === host && wantsDark(x.url) !== !!x.dark) { useTab(x); rebuildView(x); }
     push();
   });
   // bookmarks
@@ -2331,20 +2462,20 @@ function setupIPC() {
   on('bm-menu', (id) => bookmarkContextMenu(id));
   on('bm-bar-menu', () => {
     const t = activeTab();
-    Menu.buildFromTemplate([
+    popupMenu([
       { label: 'Add current page', enabled: !!t && !isInternal(t.url), click: () => toggleBookmarkActive() },
       { label: 'Add folder…', click: () => ui.webContents.send('bm-edit', { id: null, type: 'folder', title: '', url: '' }) },
       { type: 'separator' },
       { label: 'Hide bookmarks bar', click: () => setSetting('bookmarksBar', false) },
-    ]).popup({ window: win });
+    ]);
   });
   on('bm-folder', (id, x, y) => {
     const h = bookmarks.find(id); if (!h) return;
-    Menu.buildFromTemplate(bookmarkMenuItems([h.item])[0].submenu).popup({ window: win, x: Math.round(x), y: Math.round(y) });
+    popupMenu(bookmarkMenuItems([h.item])[0].submenu, { x: Math.round(x), y: Math.round(y) });
   });
   on('bm-overflow', (ids, x, y) => {
     const items = ids.map(id => bookmarks.find(id)).filter(Boolean).map(h => h.item);
-    if (items.length) Menu.buildFromTemplate(bookmarkMenuItems(items)).popup({ window: win, x: Math.round(x), y: Math.round(y) });
+    if (items.length) popupMenu(bookmarkMenuItems(items), { x: Math.round(x), y: Math.round(y) });
   });
   on('bm-move', (id, idx) => { bookmarks.move(id, idx); sendBookmarks(); });
   on('bm-move-into', (id, folderId) => { if (bookmarks.moveInto(id, folderId)) sendBookmarks(); });
@@ -2394,67 +2525,176 @@ function setupIPC() {
 // Window
 // ---------------------------------------------------------------------------
 
-function createWindow() {
-  const b = settings.bounds || { width: 1280, height: 820 };
+// Create a Drift window. opts:
+//   snapshot  a saved window (tabs, active tab, splits, bounds) to restore
+//   urls      addresses to open
+//   bounds    where to put it (defaults: the saved size, offset from the last window)
+//   empty     start with no tabs (a tab is about to be moved in)
+//   gate      wait for this before loading the first page (startup)
+//   onReady   called once its sidebar has loaded
+function createWindow(opts = {}) {
+  const ctx = newWinCtx();
+  windows.push(ctx);
+  zOrder.unshift(ctx);
+  useWin(ctx);
+  lastFocused = ctx;
+  const W = (fn) => (...a) => { if (!windows.includes(ctx)) return; useWin(ctx); return fn(...a); };   // run as this window
+
+  const base = settings.bounds || { width: 1280, height: 820 };
+  let b = opts.bounds || (opts.snapshot && opts.snapshot.bounds) || base;
+  if (!opts.bounds && !(opts.snapshot && opts.snapshot.bounds) && windows.length > 1) {
+    // Cascade new windows so they don't sit exactly on top of each other.
+    const n = windows.length - 1;
+    b = { ...base, x: (base.x || 80) + 28 * n, y: (base.y || 60) + 28 * n };
+  }
   win = new BaseWindow({
     ...b, minWidth: 640, minHeight: 420, frame: false, show: false,
     title: 'Drift', backgroundColor: isDark() ? '#141417' : '#ebebef',
     icon: path.join(__dirname, '..', 'build', 'icon.png'),
   });
-  if (settings.maximized) win.maximize();
+  ctx.win = win;
+  const wantMax = opts.snapshot ? opts.snapshot.maximized : (windows.length === 1 && settings.maximized && !opts.bounds);
+  if (wantMax) win.maximize();
 
   ui = new WebContentsView({
     webPreferences: { preload: path.join(UI_DIR, 'preload.js'), contextIsolation: true, sandbox: true, nodeIntegration: false },
   });
+  ctx.ui = ui;
   ui.setBackgroundColor('#00000000');
   win.contentView.addChildView(ui);
   ui.webContents.loadURL('drift://ui/index.html');
-  ui.webContents.on('before-input-event', (e, input) => {
+  ui.webContents.on('before-input-event', W((e, input) => {
     // Let normal typing go to the sidebar inputs; only intercept real shortcuts.
     if (handleShortcut(input)) e.preventDefault();
-  });
-  ui.webContents.once('did-finish-load', () => { layout(); win.show(); });
+  }));
+  ui.webContents.once('did-finish-load', W(() => {
+    ctx.ready = true; layout(); win.show(); push();
+    if (extensions) sendExtensionsTo(ctx);
+    if (bookmarks) sendBookmarks();
+    if (opts.onReady) opts.onReady(ctx);
+  }));
   ui.webContents.setWindowOpenHandler(() => ({ action: 'deny' }));
   ui.webContents.on('will-navigate', (e) => e.preventDefault());
 
-  const saveBounds = debounce(() => {
+  const saveBounds = debounce(W(() => {
     if (win.isDestroyed()) return;
     settings.maximized = win.isMaximized();
     if (!win.isMaximized() && !win.isFullScreen() && !win.isMinimized()) settings.bounds = win.getBounds();
-    saveSettings();
-  }, 500);
-  win.on('resize', () => { layout(); saveBounds(); });
+    saveSettings(); saveSession();
+  }), 500);
+  win.on('resize', W(() => { layout(); saveBounds(); }));
   win.on('move', saveBounds);
-  win.on('maximize', () => { layout(); push(); saveBounds(); });
-  win.on('unmaximize', () => { layout(); push(); saveBounds(); });
-  win.on('enter-full-screen', layout);
-  win.on('leave-full-screen', () => {
+  win.on('maximize', W(() => { layout(); push(); saveBounds(); }));
+  win.on('unmaximize', W(() => { layout(); push(); saveBounds(); }));
+  win.on('enter-full-screen', W(() => layout()));
+  win.on('leave-full-screen', W(() => {
     if (htmlFullscreen) { htmlFullscreen = false; const t = activeTab(); t?.view?.webContents.executeJavaScript('document.fullscreenElement && document.exitFullscreen()').catch(() => {}); }
     layout();
-  });
-  win.on('app-command', (_e, cmd) => {
+  }));
+  win.on('app-command', W((_e, cmd) => {
     const wc = activeTab()?.view?.webContents; if (!wc) return;
     if (cmd === 'browser-backward' && wc.navigationHistory.canGoBack()) wc.navigationHistory.goBack();
     if (cmd === 'browser-forward' && wc.navigationHistory.canGoForward()) wc.navigationHistory.goForward();
-  });
-  win.on('focus', () => { if (!overlay) focusPage(); });
-  win.on('close', () => { writeJSON('session.json', sessionSnapshot()); writeJSON('settings.json', settings); });
-  win.on('closed', () => { win = null; app.quit(); });
+  }));
+  win.on('focus', W(() => {
+    lastFocused = ctx;
+    const z = zOrder.indexOf(ctx); if (z > 0) { zOrder.splice(z, 1); zOrder.unshift(ctx); }
+    const t = activeTab();
+    if (extensions && t && t.view) { try { extensions.selectTab(t.view.webContents); } catch {} }
+    if (!overlay) focusPage();
+  }));
+  // Closing the last window quits Drift and keeps its tabs for next time; closing another
+  // window closes its tabs (like Chrome).
+  win.on('close', W(() => {
+    if (windows.length === 1 && !quitting) { writeJSON('session.json', sessionSnapshot()); writeJSON('settings.json', settings); }
+  }));
+  win.on('closed', () => closeWindowCtx(ctx));
 
-  // Restore last session or open a fresh tab.
-  const urls = process.argv.slice(1).filter(a => /^https?:\/\//.test(a));
-  const s = settings.restoreTabs ? readJSON('session.json', null) : null;
-  if (s && s.tabs && s.tabs.length) {
-    s.tabs.forEach((t) => createTab(t.url, { title: t.title, favicon: t.favicon, pinned: t.pinned, lazy: true, activate: false }));
-    for (const [i, j, ratio, dir] of s.splits || []) {
+  // First pages.
+  const snap = opts.snapshot;
+  if (snap && snap.tabs && snap.tabs.length) {
+    snap.tabs.forEach((t) => createTab(t.url, { title: t.title, favicon: t.favicon, pinned: t.pinned, lazy: true, activate: false }));
+    for (const [i, j, ratio, dir] of snap.splits || []) {
       if (tabs[i] && tabs[j] && !splitOf(tabs[i].id) && !splitOf(tabs[j].id)) splits.push({ a: tabs[i].id, b: tabs[j].id, ratio: ratio || 0.5, dir: dir === 'col' ? 'col' : 'row' });
     }
   }
-  startupGate.then(() => {
-    if (s && s.tabs && s.tabs.length && tabs.length) activate(tabs[Math.min(s.active, tabs.length - 1)].id);
+  const urls = opts.urls || [];
+  (opts.gate || Promise.resolve()).then(W(() => {
+    if (snap && snap.tabs && snap.tabs.length && tabs.length) activate(tabs[Math.min(snap.active || 0, tabs.length - 1)].id);
     for (const u of urls) createTab(u);
-    if (!tabs.length || (process.argv.includes('--new-tab') && !urls.length)) createTab(NEWTAB);
-  });
+    if (!tabs.length && !opts.empty) createTab(NEWTAB);
+  }));
+  return ctx;
+}
+
+// A window was closed: close its tabs and forget it. Quit when it was the last one.
+function closeWindowCtx(ctx) {
+  const i = windows.indexOf(ctx); if (i < 0) return;
+  useWin(ctx);
+  for (const t of [...tabs]) { try { destroyView(t); } catch {} }
+  splits = []; tabs = [];
+  try { if (toastView) toastView.webContents.close(); } catch {}
+  try { if (ui && !ui.webContents.isDestroyed()) ui.webContents.close(); } catch {}
+  windows.splice(i, 1);
+  const z = zOrder.indexOf(ctx); if (z >= 0) zOrder.splice(z, 1);
+  cur = null;
+  win = ui = toastView = null; tabs = []; activeId = null; overlay = null;
+  if (lastFocused === ctx) lastFocused = windows[windows.length - 1] || null;
+  if (!windows.length) { app.quit(); return; }
+  useWin(lastFocused || windows[0]);
+  if (!quitting) { saveSession(); push(); }
+}
+
+// Open a new window (Ctrl+N, the taskbar menu, "Open link in new window").
+function newWindow(urls = []) {
+  const ctx = createWindow({ urls });
+  return ctx;
+}
+
+// Move a tab (its page keeps running) into another window, at `index` or the end.
+function moveTabToWindow(tab, target, index) {
+  const src = ctxOfTab(tab);
+  if (!src || !target || src === target || !windows.includes(target)) return;
+  useWin(src);
+  const wasActive = activeId === tab.id;
+  const sp = splitOf(tab.id); if (sp) splits = splits.filter(x => x !== sp);
+  const i = tabs.indexOf(tab); if (i >= 0) tabs.splice(i, 1);
+  if (tab.view) { try { win.contentView.removeChildView(tab.view); } catch {} }
+  if (!tabs.length) setImmediate(() => { if (src.win && !src.win.isDestroyed()) src.win.close(); });
+  else { if (wasActive) activate((tabs[i] || tabs[i - 1] || tabs[0]).id); else layout(); }
+  useWin(target);
+  tab.wid = target.id;
+  const pinnedCount = tabs.filter(t => t.pinned).length;
+  const at = index == null ? tabs.length : Math.max(tab.pinned ? 0 : pinnedCount, Math.min(index, tabs.length));
+  tabs.splice(tab.pinned ? Math.min(at, pinnedCount) : at, 0, tab);
+  const st = extensions && extensions.ctx && extensions.ctx.store;
+  if (st && tab.view) { try { st.tabToWindow.set(tab.view.webContents, win); st.addWindow(win); } catch {} }
+  activate(tab.id);
+  if (win && !win.isDestroyed()) win.focus();
+  push(); saveSession();
+}
+// Put a tab in a window of its own (near `at`, a screen point, when it was dragged out).
+function tabToNewWindow(tab, at) {
+  const src = ctxOfTab(tab); if (!src) return;
+  useWin(src);
+  const b = win.getBounds();
+  if (tabs.length === 1) {   // already alone: just move its window there
+    if (at) win.setBounds({ ...b, x: Math.round(at.x - 140), y: Math.round(at.y - 20) });
+    return;
+  }
+  const bounds = at ? { x: Math.round(at.x - 140), y: Math.round(at.y - 20), width: b.width, height: b.height }
+    : { x: b.x + 32, y: b.y + 32, width: b.width, height: b.height };
+  const ctx = createWindow({ bounds, empty: true });
+  moveTabToWindow(tab, ctx);
+}
+// A tab was dragged out of a window's sidebar and dropped somewhere that isn't a tab list.
+function tabDroppedOutside(tab, x, y) {
+  const src = ctxOfTab(tab); if (!src) return;
+  const inside = (w) => { const b = w.getBounds(); return x >= b.x && x < b.x + b.width && y >= b.y && y < b.y + b.height; };
+  if (src.win && inside(src.win)) return;   // let go inside its own window: nothing to do
+  const other = zOrder.find(c => c !== src && c.win && !c.win.isDestroyed() && !c.win.isMinimized() && inside(c.win));   // the one on top there
+  if (other) moveTabToWindow(tab, other);
+  else tabToNewWindow(tab, { x, y });
 }
 
 // ---------------------------------------------------------------------------
@@ -2476,11 +2716,14 @@ app.commandLine.appendSwitch('enable-features', 'ParallelDownloading:parallel_re
 if (!app.requestSingleInstanceLock()) {
   app.quit();
 } else {
+  // Drift was launched again (taskbar menu, a link from another app): use the open window.
   app.on('second-instance', (_e, argv) => {
-    if (!win) return;
+    const urls = argv.filter(a => /^https?:\/\//.test(a));
+    if (argv.includes('--new-window') || !windows.length) { createWindow({ urls }); return; }
+    const c = lastFocused || windows[0]; useWin(c);
     if (win.isMinimized()) win.restore();
     win.focus();
-    argv.filter(a => /^https?:\/\//.test(a)).forEach(u => createTab(u));
+    urls.forEach(u => createTab(u));
     if (argv.includes('--new-tab')) createTab(NEWTAB);
   });
 
@@ -2513,7 +2756,7 @@ if (!app.requestSingleInstanceLock()) {
     setupPageIPC();
     nativeTheme.on('updated', () => {
       push(); refreshNewTabs(); folderMenuIcon = null; prepareBookmarkMenuIcons();
-      for (const t of tabs) if (t.view && !t.view.webContents.isDestroyed()) t.view.setBackgroundColor(baseFor(t.view.webContents.getURL()));
+      for (const t of allTabs()) if (t.view && !t.view.webContents.isDestroyed()) t.view.setBackgroundColor(baseFor(t.view.webContents.getURL()));
     });
     PERF('setup done');
     await setupExtensions(ses);
@@ -2523,9 +2766,17 @@ if (!app.requestSingleInstanceLock()) {
     // first request. Capped so a slow first-run filter download can't hold the window up.
     const shieldsReady = initShields().then(() => PERF('shields ready'));
     let openGate; startupGate = new Promise(r => { openGate = r; });
-    createWindow();
+    // Reopen every window from last time (older sessions hold one window at the top level).
+    const urls = process.argv.slice(1).filter(a => /^https?:\/\//.test(a));
+    const saved = settings.restoreTabs ? readJSON('session.json', null) : null;
+    const snaps = saved ? (Array.isArray(saved.windows) && saved.windows.length ? saved.windows : [saved]).filter(w => w && w.tabs && w.tabs.length) : [];
+    const first = createWindow({ snapshot: snaps[0], urls, gate: startupGate });
+    for (const w of snaps.slice(1)) createWindow({ snapshot: w, gate: startupGate });
+    if (process.argv.includes('--new-window') && snaps.length) createWindow({ gate: startupGate });
+    else if (process.argv.includes('--new-tab') && !urls.length) startupGate.then(() => { useWin(first); createTab(NEWTAB); });
+    useWin(first);
     PERF('window created');
-    const uiReady = new Promise(r => ui.webContents.once('did-finish-load', r)).then(() => { setTimeout(prepareBookmarkMenuIcons, 300); return initIdentity(); });
+    const uiReady = new Promise(r => first.ui.webContents.once('did-finish-load', r)).then(() => { setTimeout(prepareBookmarkMenuIcons, 300); return initIdentity(); });
     Promise.race([Promise.all([shieldsReady, uiReady]), new Promise(r => setTimeout(r, 2000))]).then(() => { PERF('gate open'); openGate(); });
     setupUpdates();
 
@@ -2537,13 +2788,23 @@ if (!app.requestSingleInstanceLock()) {
 
 
 
+
     // Taskbar right-click menu (Windows jump list).
     if (process.platform === 'win32') {
-      try { app.setUserTasks([{ program: process.execPath, arguments: '--new-tab', iconPath: process.execPath, iconIndex: 0, title: 'New tab', description: 'Open a new tab in Drift' }]); } catch {}
+      try {
+        app.setUserTasks([
+          { program: process.execPath, arguments: '--new-window', iconPath: process.execPath, iconIndex: 0, title: 'New window', description: 'Open a new Drift window' },
+          { program: process.execPath, arguments: '--new-tab', iconPath: process.execPath, iconIndex: 0, title: 'New tab', description: 'Open a new tab in Drift' },
+        ]);
+      } catch {}
     }
   });
 
   app.on('window-all-closed', () => app.quit());
+  app.on('before-quit', () => {
+    if (windows.length && !quitting) { writeJSON('session.json', sessionSnapshot()); writeJSON('settings.json', settings); }
+    quitting = true;
+  });
   app.on('web-contents-created', (_e, wc) => {
     // Block navigation into the sidebar UI and harden every webContents.
     wc.on('will-attach-webview', (e) => e.preventDefault());

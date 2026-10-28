@@ -27,6 +27,7 @@ To build the Windows installer locally: `npm run dist` (output goes to `dist/`).
 
 ## Features
 
+- **Multiple windows**: Ctrl+N or the taskbar menu opens a new window. Right-click a link → *Open link in new window*; right-click a tab → *Move to new window* (or *Move to window*). Drag a tab out of the sidebar and drop it outside Drift for a window of its own, or onto another Drift window's tabs to move it there. All open windows are restored next time.
 - **Vertical tabs** in a resizable sidebar; drag a tab up or down to reorder. Drag the sidebar's edge all the way in (or click the sidebar icon at the top left) for an **icon-only sidebar**; rest the pointer on it to slide out the full sidebar, and it collapses again when you move off.
 - **Pinned tabs** shown as tiles at the top (drag a tab up there, or right-click → Pin)
 - **Command bar** (Ctrl+T / Ctrl+L): search, open sites, jump to open tabs and history. Sites you've visited autocomplete as you type ("tw" → twitch.tv); Esc clears the completion.
@@ -43,7 +44,7 @@ To build the Windows installer locally: `npm run dist` (output goes to `dist/`).
 - **Force dark pages** (Settings → Appearance), the same Chromium feature Opera uses. The moon in the address bar turns it off for one site.
 - **Passwords** (Settings → Passwords): encrypted with your Windows account, offers to save when you sign in, and suggests saved logins when you click a sign-in field. Import a CSV export from Chrome, Edge, Brave, Opera, Firefox, Bitwarden, 1Password, LastPass and others; export to CSV.
 - **New tab page** with your most-visited sites (hover a tile and click × to remove it)
-- **Taskbar menu**: right-click Drift's taskbar icon → *New tab*
+- **Taskbar menu**: right-click Drift's taskbar icon → *New window* or *New tab*
 - **Downloads**: a notice over the page shows each download's progress live, then confirms it finished. A toolbar button (shown once you've downloaded something) has a progress ring while files download and a green dot until you've seen the finished file; click it for recent downloads (open, show in folder, cancel). A notice confirms each finished download with *Open* and *Show in folder*.
 - **Session restore**, downloads panel, find on page, zoom, dark/light themes, 10 accent colors
 - Site permissions (camera, mic, location, notifications) prompt you instead of being granted automatically
@@ -62,6 +63,7 @@ To build the Windows installer locally: `npm run dist` (output goes to `dist/`).
 | Action | Keys |
 |---|---|
 | Command bar / new tab | Ctrl+T |
+| New window | Ctrl+N |
 | Bookmark page | Ctrl+D |
 | Show/hide bookmarks bar | Ctrl+Shift+B |
 | Edit address | Ctrl+L |
@@ -80,7 +82,6 @@ To build the Windows installer locally: `npm run dist` (output goes to `dist/`).
 - **DRM video** (Netflix, Disney+, Spotify web player) won't play. Stock Electron doesn't ship Widevine. Switching to the castLabs Electron build fixes this.
 - **Extensions** work through the `electron-chrome-extensions` library, which covers most but not all of Chrome's extension APIs. uBlock Origin is built in (a separately loaded copy is removed automatically). Extensions are told they were installed normally, as Chrome does for store installs, since some refuse to keep settings otherwise. Extensions that capture tab audio (volume mixers) won't work either, since that API isn't available; use the built-in volume mixer instead.
 - **Google sign-in**: on accounts.google.com Drift shows the engine exactly as Electron ships it (no page patches); claiming to be Chrome there makes Google run Chrome-only checks an embedded engine fails. Elsewhere Drift identifies as Chrome at the engine's real version, plus the client-hint headers Electron leaves off (the `drift-hints` helper, which runs inside uBlock Origin). `extensions/drift-hints/identity.json` can report a newer version, but that's off by default: bot checks (reCAPTCHA, Cloudflare) compare the claim with the engine's real features and block sign-ins such as Letterboxd's.
-- Drift has one window (tabs, split view and the sidebar all live in it), so there's no *New window*.
 - Passwords can't be imported directly from another browser's profile (Chrome encrypts them to itself); export a CSV from that browser first and import the file. Delete the CSV afterwards.
 
 ## Where data lives

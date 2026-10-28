@@ -259,10 +259,14 @@ function tabEvents(container) {
     dragId = Number(el.dataset.id);
     e.dataTransfer.effectAllowed = 'move';
     e.dataTransfer.setData('text/plain', String(dragId));
+    e.dataTransfer.setData('application/x-drift-tab', String(dragId));   // lets other Drift windows take it
     requestAnimationFrame(() => el.classList.add('dragging'));
     $('#essentials').classList.add('drop-target');
   });
-  container.addEventListener('dragend', () => {
+  container.addEventListener('dragend', (e) => {
+    // Dropped where nothing took it (outside the window, or onto another window's page):
+    // Drift moves it to that window or opens a new one there.
+    if (dragId != null && e.dataTransfer && e.dataTransfer.dropEffect === 'none') send('tab-drop-out', dragId, e.screenX, e.screenY);
     dragId = null;
     document.querySelectorAll('.dragging').forEach(x => x.classList.remove('dragging'));
     document.querySelectorAll('.drop-line').forEach(x => x.remove());
@@ -277,7 +281,18 @@ tabEvents($('#tablist'));
 tabEvents($('#essentials'));
 
 // Drop into the tab list → reorder / unpin
+// A tab dragged from another Drift window.
+const foreignTab = (e) => dragId == null && e.dataTransfer && [...e.dataTransfer.types].includes('application/x-drift-tab');
 $('#tablist').addEventListener('dragover', (e) => {
+  if (foreignTab(e)) {
+    e.preventDefault(); e.dataTransfer.dropEffect = 'move';
+    document.querySelectorAll('.drop-line').forEach(x => x.remove());
+    const rows = [...$('#tablist').querySelectorAll('.tab')];
+    const before = rows.find(r => e.clientY < r.getBoundingClientRect().top + r.offsetHeight / 2);
+    const line = document.createElement('div'); line.className = 'drop-line';
+    before ? before.before(line) : $('#tablist').append(line);
+    return;
+  }
   if (dragId == null) return;
   e.preventDefault();
   document.querySelectorAll('.drop-line').forEach(x => x.remove());
@@ -286,7 +301,18 @@ $('#tablist').addEventListener('dragover', (e) => {
   const line = document.createElement('div'); line.className = 'drop-line';
   before ? before.before(line) : $('#tablist').append(line);
 });
+$('#tablist').addEventListener('dragleave', (e) => { if (!e.relatedTarget || !$('#tablist').contains(e.relatedTarget)) document.querySelectorAll('.drop-line').forEach(x => x.remove()); });
 $('#tablist').addEventListener('drop', (e) => {
+  if (foreignTab(e)) {
+    e.preventDefault();
+    const id = Number(e.dataTransfer.getData('application/x-drift-tab'));
+    const rows = [...$('#tablist').querySelectorAll('.tab')];
+    const before = rows.find(r => e.clientY < r.getBoundingClientRect().top + r.offsetHeight / 2);
+    const idx = before ? S.tabs.findIndex(t => t.id === Number(before.dataset.id)) : S.tabs.length;
+    document.querySelectorAll('.drop-line').forEach(x => x.remove());
+    if (id) send('tab-adopt', id, idx < 0 ? S.tabs.length : idx);
+    return;
+  }
   if (dragId == null) return;
   e.preventDefault();
   const rows = [...$('#tablist').querySelectorAll('.tab')].filter(r => Number(r.dataset.id) !== dragId);
@@ -739,8 +765,11 @@ function renderDownloadIndicators() {
   const title = active.length ? `Downloading ${active.length === 1 ? active[0].name : active.length + ' files'}${known.length ? ` · ${pct}%` : ''}` : unseen ? 'Download finished' : 'Downloads';
   tb.title = title; $('#btn-downloads').title = title;
   if (ds.length !== dlLastCount) { dlLastCount = ds.length; }
-  // Live progress notice over the page while anything downloads.
-  if (active.length) {
+  // Live progress notice over the page while anything downloads (in the window it started in).
+  const mine = active.filter(d => !d.wid || d.wid === S.windowId);
+  if (mine.length) {
+    const active = mine, known = mine.filter(d => d.total > 0);
+    const pct = known.length ? Math.round(known.reduce((a, d) => a + d.received, 0) / known.reduce((a, d) => a + d.total, 0) * 100) : 0;
     const name = active.length === 1 ? active[0].name : `${active.length} files`;
     const sizes = known.length ? ` · ${pct}%` : '';
     const html = `${icon('download')}<span class="t-dl"><span class="t-name">Downloading ${esc(name)}${sizes}</span>`
