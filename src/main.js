@@ -83,6 +83,7 @@ const DEFAULT_SETTINGS = {
   forceDark: false,          // darken every site (Chromium's auto dark mode, like Opera)
   forceDarkOff: [],          // hostnames excluded from force dark
   offerPasswords: true,
+  webgpu: false,             // offer WebGPU to sites (off: requesting it froze the window for seconds on some PCs)
   wallpaper: '',             // '' (none) | 'builtin:<id>' | 'file:<name in userData/wallpapers>'
   wallpaperDim: 0.35,        // 0..0.85 tint over the wallpaper so text stays readable
   wallpaperBlur: 0,          // px
@@ -647,11 +648,10 @@ function bindToTab(wc, tab) {
   const swoh = wc.setWindowOpenHandler.bind(wc);
   wc.setWindowOpenHandler = (fn) => swoh(wrap(fn));
 }
-// WebGPU is only offered to pages when Chromium reports it working with hardware acceleration
-// (see page-preload.js for why).
-function webgpuUsable() {
-  try { return app.getGPUFeatureStatus().webgpu === 'enabled'; } catch { return false; }
-}
+// WebGPU is offered to sites only if turned on in Settings: setting it up for a site's request
+// made Chromium's graphics process stall for seconds on some PCs (an RTX 4090 + AMD system
+// froze ~2.3 s on every Twitch load, whose anti-bot script asks for it). See page-preload.js.
+function webgpuUsable() { return !!settings.webgpu; }
 const NO_WEBGPU_CODE = `(() => { try {
   const G = window.GPU && window.GPU.prototype;
   if (!G || G.requestAdapter.__drift) return;
@@ -2531,7 +2531,8 @@ function startPerfLog() {
       tracing = false;
     });
   });
-  try { const g = app.getGPUFeatureStatus(); log('gpu features: ' + Object.entries(g).map(([k, v]) => k + '=' + v).join(' ')); } catch {}
+  // Read after startup: until the graphics process is up, Chromium reports everything as off.
+  setTimeout(() => { try { const g = app.getGPUFeatureStatus(); log('gpu features: ' + Object.entries(g).map(([k, v]) => k + '=' + v).join(' ')); } catch {} }, 10000);
   app.getGPUInfo('basic').then((g) => { try { log('gpu: ' + (g.gpuDevice || []).map(d => `${d.vendorId}:${d.deviceId}${d.active ? '(active)' : ''} ${d.driverVersion || ''}`).join(', ') + ' ' + JSON.stringify(g.auxAttributes ? { gl: g.auxAttributes.glRenderer, angle: g.auxAttributes.displayType } : {})); } catch {} }).catch(() => {});
   app.on('child-process-gone', (_e, d) => log(`PROCESS GONE ${d.type} ${d.reason} ${d.exitCode}`));
   // Chromium's own graphics report (chrome://gpu): why acceleration is on or off.

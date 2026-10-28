@@ -7,10 +7,10 @@ const { contextBridge } = require('electron');
 // own pages are left alone.
 const IS_WEB_PAGE = process.contextIsolated && /^(https?|file):$/.test(location.protocol);
 
-// WebGPU without working graphics acceleration: asking for an adapter makes Chromium's
-// graphics process probe the hardware for seconds, freezing the whole window (Twitch's
-// anti-bot script asks on every load). Answer "no adapter" at once, as Chromium does on
-// machines without WebGPU support. The wrapper still reads as a built-in function.
+// WebGPU (unless turned on in Settings): asking for an adapter can make Chromium's graphics
+// process stall for seconds, freezing the whole window (Twitch's anti-bot script asks on
+// every load). Answer "no adapter" at once, as Chromium does on machines without WebGPU
+// support. The wrapper still reads as a built-in function.
 const NO_WEBGPU_FN = () => {
   try {
     const G = window.GPU && window.GPU.prototype;
