@@ -14,12 +14,12 @@
     font: 14px/1.4 "Segoe UI Variable Text", "Segoe UI", system-ui, sans-serif; color: var(--fg); background: var(--bg);
     display: flex; flex-direction: column; align-items: center; justify-content: center; overflow: hidden;
   }
-  body::before {
-    content: ""; position: fixed; inset: -20%; z-index: -1;
+  /* The accent glow is painted straight onto the page background: no extra layer or blur. */
+  body:not(.has-wp) {
     background:
-      radial-gradient(40% 35% at 30% 30%, color-mix(in srgb, var(--accent) 22%, transparent), transparent 70%),
-      radial-gradient(35% 30% at 75% 70%, color-mix(in srgb, var(--accent) 12%, transparent), transparent 70%);
-    filter: blur(20px);
+      radial-gradient(56% 49% at 22% 22%, color-mix(in srgb, var(--accent) 22%, transparent), transparent 70%),
+      radial-gradient(49% 42% at 85% 78%, color-mix(in srgb, var(--accent) 12%, transparent), transparent 70%),
+      var(--bg);
   }
   .wrap { width: min(620px, 88vw); margin-top: -8vh; }
   .clock { font-size: 64px; font-weight: 300; letter-spacing: -2px; text-align: center; font-variant-numeric: tabular-nums; }
@@ -57,7 +57,6 @@
   /* wallpaper */
   #wp, #wp-tint { position: fixed; inset: 0; z-index: -2; display: none; background-size: cover; background-position: center; }
   #wp-tint { z-index: -1; }
-  body.has-wp::before { display: none; }
   body.has-wp #wp, body.has-wp #wp-tint { display: block; }
   body.has-wp.dark #wp-tint { background: rgba(10,10,14,var(--dim)); }
   body.has-wp.light #wp-tint { background: rgba(250,250,252,var(--dim)); }

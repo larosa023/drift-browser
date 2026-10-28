@@ -7,7 +7,7 @@ global.PERF = PERF_ON ? (l) => console.log(`[perf] ${String(Date.now() - __T0).p
 
 const {
   app, BaseWindow, WebContentsView, ipcMain, session, Menu, shell, dialog,
-  protocol, net, clipboard, nativeTheme, webContents, nativeImage, screen,
+  protocol, net, clipboard, nativeTheme, webContents, webFrameMain, nativeImage, screen,
 } = require('electron');
 const path = require('path');
 const fs = require('fs');
@@ -33,6 +33,31 @@ const UI_DIR = path.join(__dirname, 'ui');
 const PAGES_DIR = path.join(__dirname, 'pages');
 const NEWTAB = 'drift://newtab/';
 const AUDIO_HOOK = fs.readFileSync(path.join(__dirname, 'audio-hook.js'), 'utf8');
+// The part of it every page gets up front (same as page-preload.js): Web Audio goes through a
+// per-page gain node, so a later volume change reaches sounds that are already playing.
+const AUDIO_CONNECT_HOOK = `(() => {
+  if (AudioNode.prototype.connect.__drift) return;
+  const origConnect = AudioNode.prototype.connect;
+  const masters = window.__driftMasters = window.__driftMasters || new Set();
+  const patched = function (dest, ...rest) {
+    if (dest instanceof AudioDestinationNode) {
+      const c = dest.context;
+      let m = c.__driftMaster;
+      if (!m) {
+        m = c.createGain();
+        origConnect.call(m, dest);
+        Object.defineProperty(c, '__driftMaster', { value: m });
+        masters.add(new WeakRef(m));
+        if (window.__driftAudio) m.gain.value = window.__driftAudio.gain;
+      }
+      origConnect.call(this, m, ...rest);
+      return dest;
+    }
+    return origConnect.call(this, dest, ...rest);
+  };
+  patched.__drift = origConnect;
+  AudioNode.prototype.connect = patched;
+})();`;
 
 const SEARCH_ENGINES = {
   brave:      { name: 'Brave Search', url: 'https://search.brave.com/search?q=%s' },
@@ -80,7 +105,27 @@ const file = (n) => path.join(userData(), n);
 function readJSON(name, fallback) {
   try { return JSON.parse(fs.readFileSync(file(name), 'utf8')); } catch { return fallback; }
 }
+// Saves while browsing are written in the background, so a slow disk (or a virus scanner
+// checking each write on Windows) never stalls the browser. Each save goes to its own temp
+// file and only replaces the real one if nothing newer was saved meanwhile.
+const saveGen = new Map();   // file name -> number of the latest save
+const pendingWrites = new Map();   // file name -> latest contents not yet on disk
+let tmpSeq = 0;
 function writeJSON(name, data) {
+  let json;
+  try { json = JSON.stringify(data); } catch (e) { console.error('save failed', name, e.message); return; }
+  const gen = (saveGen.get(name) || 0) + 1; saveGen.set(name, gen);
+  pendingWrites.set(name, json);
+  const tmp = file(`${name}.${process.pid}-${++tmpSeq}.tmp`);
+  fs.promises.mkdir(userData(), { recursive: true })
+    .then(() => fs.promises.writeFile(tmp, json))
+    .then(() => saveGen.get(name) === gen ? fs.promises.rename(tmp, file(name)).then(() => { if (saveGen.get(name) === gen) pendingWrites.delete(name); }) : fs.promises.unlink(tmp))
+    .catch((e) => { console.error('save failed', name, e.message); fs.promises.unlink(tmp).catch(() => {}); });
+}
+// For saves that must be on disk before Drift exits (quitting, closing the last window).
+function writeJSONSync(name, data) {
+  saveGen.set(name, (saveGen.get(name) || 0) + 1);   // any background save still running is older
+  pendingWrites.delete(name);
   try {
     fs.mkdirSync(userData(), { recursive: true });
     const tmp = file(name + '.tmp');
@@ -90,6 +135,20 @@ function writeJSON(name, data) {
 }
 function debounce(fn, ms) {
   let t; return (...a) => { clearTimeout(t); t = setTimeout(() => fn(...a), ms); };
+}
+// Like debounce, for saves: anything still waiting is written when Drift quits (flushSaves).
+const pendingFlush = new Set();
+function debounceSave(fn, ms) {
+  let t = null;
+  const run = () => { clearTimeout(t); t = null; pendingFlush.delete(run); fn(); };
+  return () => { clearTimeout(t); t = setTimeout(run, ms); pendingFlush.add(run); };
+}
+function flushSaves() {
+  for (const run of [...pendingFlush]) { try { run(); } catch (e) { console.error('flush', e.message); } }
+  for (const [name, json] of pendingWrites) {
+    try { fs.writeFileSync(file(name + '.tmp'), json); fs.renameSync(file(name + '.tmp'), file(name)); } catch (e) { console.error('save failed', name, e.message); }
+  }
+  pendingWrites.clear();
 }
 function hostOf(u) { try { return new URL(u).hostname.replace(/^www\./, ''); } catch { return ''; } }
 function isInternal(u) { return !u || u.startsWith('drift:') || u === 'about:blank'; }
@@ -260,12 +319,12 @@ let passwords = null;      // Passwords store
 const downloads = [];
 const wcToTab = new Map();
 
-const saveSettings = debounce(() => writeJSON('settings.json', settings), 400);
-const saveHistory = debounce(() => {
+const saveSettings = debounceSave(() => writeJSON('settings.json', settings), 400);
+const saveHistory = debounceSave(() => {
   const arr = [...history.values()].sort((a, b) => b.last - a.last).slice(0, 4000);
   writeJSON('history.json', arr);
 }, 2000);
-const saveSession = debounce(() => { if (windows.length) writeJSON('session.json', sessionSnapshot()); }, 800);
+const saveSession = debounceSave(() => { if (windows.length) writeJSON('session.json', sessionSnapshot()); }, 800);
 
 // Session: every open window with its tabs. The first window's tabs are also stored at the top
 // level, the format older versions of Drift read.
@@ -559,13 +618,15 @@ function bindToTab(wc, tab) {
 function ensureView(tab, restore) {
   if (tab.view) return tab.view;
   tab.dark = wantsDark(tab.url);
+  const extPage = /^chrome-extension:/.test(tab.url);
   const view = new WebContentsView({
     webPreferences: {
       sandbox: true, contextIsolation: true, nodeIntegration: false,
       spellcheck: true, scrollBounce: true,
-      // Run preload scripts in iframes too (not Node): extension pages that live in frames,
-      // like uBlock Origin's dashboard panes, need the extension APIs there.
-      nodeIntegrationInSubFrames: true,
+      // Preload scripts in iframes (not Node) only for extension pages, whose panes (like
+      // uBlock Origin's dashboard) need the extension APIs there. On web pages it would set up
+      // a script context in every ad and embed frame: memory and time for nothing.
+      nodeIntegrationInSubFrames: extPage,
       additionalArguments: tab.dark ? ['--blink-settings=forceDarkModeEnabled=true'] : [],
     },
   });
@@ -597,6 +658,18 @@ function ensureView(tab, restore) {
   view.webContents.on('did-start-navigation', (e) => {
     // Going from a web page to Drift's new tab page (or back): use the right colour from the start.
     if (e.isMainFrame && !e.isSameDocument && !view.webContents.isDestroyed()) view.setBackgroundColor(isInternal(e.url) ? pageBase() : baseFor(view.webContents.getURL()));
+  });
+  view.webContents.on('did-navigate', (_e, url) => {
+    // A web tab that moved to an extension page: recreate it with iframe support (keeps history).
+    if (!extPage && /^chrome-extension:/.test(url) && tab.view === view) { tab.url = url; setImmediate(() => { if (tab.view === view) rebuildView(tab); }); }
+  });
+  // Per-tab volume for Web Audio in iframes (embedded games, players): the top page gets the
+  // hook from page-preload.js, web iframes as soon as they load (in the page's own script
+  // context, so nothing extra is set up per frame).
+  if (!extPage) view.webContents.on('did-frame-navigate', (_e, url, _code, _status, isMain, pid, rid) => {
+    if (isMain || !/^https?:/.test(url)) return;
+    const code = tab.volume !== 1 ? `${AUDIO_HOOK};window.__driftAudio.set(${tab.volume});` : AUDIO_CONNECT_HOOK;
+    try { const f = webFrameMain.fromId(pid, rid); if (f && !f.isDestroyed()) f.executeJavaScript(code).catch(() => {}); } catch {}
   });
   view.setBorderRadius(RADIUS);
   tab.view = view;
@@ -886,7 +959,7 @@ function splitMenu(x, y) {
 
 let faviconStore = {};      // host -> data URL
 const faviconMem = new Map(); // icon URL -> data URL | null
-const saveFavicons = debounce(() => {
+const saveFavicons = debounceSave(() => {
   const entries = Object.entries(faviconStore);
   if (entries.length > 800) faviconStore = Object.fromEntries(entries.slice(-800));
   writeJSON('favicons.json', faviconStore);
@@ -907,13 +980,21 @@ function compactIcon(buf, type) {
 }
 
 // Small rolling diagnostic log for icon problems: %APPDATA%\Drift\logs\favicons.log
+// Lines are collected and written in the background, never on the browser's main path.
+let iconLogBuf = '', iconLogTimer = null;
 function iconLog(line) {
-  try {
-    const dir = file('logs'); fs.mkdirSync(dir, { recursive: true });
-    const f = path.join(dir, 'favicons.log');
-    try { if (fs.statSync(f).size > 200000) fs.renameSync(f, f + '.old'); } catch {}
-    fs.appendFileSync(f, `${new Date().toISOString()} ${line}\n`);
-  } catch {}
+  iconLogBuf += `${new Date().toISOString()} ${line}\n`;
+  if (iconLogTimer) return;
+  iconLogTimer = setTimeout(async () => {
+    iconLogTimer = null;
+    const text = iconLogBuf; iconLogBuf = '';
+    try {
+      const dir = file('logs'); await fs.promises.mkdir(dir, { recursive: true });
+      const f = path.join(dir, 'favicons.log');
+      try { if ((await fs.promises.stat(f)).size > 200000) await fs.promises.rename(f, f + '.old'); } catch {}
+      await fs.promises.appendFile(f, text);
+    } catch {}
+  }, 2000);
 }
 
 function withTimeout(promise, ms, what) {
@@ -1290,7 +1371,7 @@ function addHistory(url, title) {
   if (isInternal(url) || !/^https?:/.test(url)) return;
   const h = history.get(url) || { url, title: '', visits: 0, last: 0 };
   h.visits++; h.last = Date.now(); if (title) h.title = title;
-  history.set(url, h);
+  history.set(url, h); histVer++;
   saveHistory();
 }
 
@@ -1362,18 +1443,24 @@ function inlineCompletion(q) {
   return best;
 }
 
+// Worked out again only after history or the hidden list changes (not on every new tab).
+let histVer = 0, topCache = null;
 function topSites() {
-  const m = [...history.values()]
-    .reduce((acc, h) => {
-      const host = hostOf(h.url); if (!host) return acc;
-      const e = acc.get(host) || { host, url: new URL(h.url).origin, title: '', score: 0 };
-      e.score += frecency(h); if (!e.title && h.title) e.title = h.title;
-      acc.set(host, e); return acc;
-    }, new Map())
-  ;
+  const key = histVer + '|' + settings.hiddenSites.join() + '|' + Object.keys(faviconStore).length;
+  if (topCache && topCache.key === key) return topCache.list;
+  const m = new Map();
+  for (const h of history.values()) {
+    let u; try { u = new URL(h.url); } catch { continue; }
+    const host = u.hostname.replace(/^www\./, ''); if (!host) continue;
+    let e = m.get(host);
+    if (!e) { e = { host, url: u.origin, title: '', score: 0 }; m.set(host, e); }
+    e.score += frecency(h); if (!e.title && h.title) e.title = h.title;
+  }
   const hidden = new Set(settings.hiddenSites);
-  return [...m.values()].filter(e => !hidden.has(e.host)).sort((a, b) => b.score - a.score).slice(0, 8)
+  const list = [...m.values()].filter(e => !hidden.has(e.host)).sort((a, b) => b.score - a.score).slice(0, 8)
     .map(e => ({ ...e, icon: faviconStore[e.host] || faviconStore[e.host.replace(/^www\./, '')] || '' }));
+  topCache = { key, list };
+  return list;
 }
 
 // ---------------------------------------------------------------------------
@@ -1945,6 +2032,7 @@ function setupDownloads(ses) {
 // ---------------------------------------------------------------------------
 
 function setupProtocol() {
+  let newtabHtml = null;
   protocol.handle('drift', async (req) => {
     const u = new URL(req.url);
     // Remove a tile from the new tab page. Needs a custom header, so other sites can't send it
@@ -1956,7 +2044,7 @@ function setupProtocol() {
       return new Response(JSON.stringify(topSites()), { headers: { 'content-type': 'application/json' } });
     }
     if (u.hostname === 'newtab') {
-      let html = fs.readFileSync(path.join(PAGES_DIR, 'newtab.html'), 'utf8');
+      let html = newtabHtml || (newtabHtml = fs.readFileSync(path.join(PAGES_DIR, 'newtab.html'), 'utf8'));
       const data = {
         sites: topSites(), accent: settings.accent, dark: isDark(),
         engine: SEARCH_ENGINES[settings.searchEngine].name,
@@ -1973,9 +2061,10 @@ function setupProtocol() {
     if (u.hostname === 'wallpaper') {
       const name = path.basename(decodeURIComponent(u.pathname));
       const fp = path.join(wallpaperDir(), name);
-      if (!name || !fs.existsSync(fp)) return new Response('Not found', { status: 404 });
+      let body; try { body = await fs.promises.readFile(fp); } catch { body = null; }
+      if (!name || !body) return new Response('Not found', { status: 404 });
       const types = { '.jpg': 'image/jpeg', '.jpeg': 'image/jpeg', '.png': 'image/png', '.webp': 'image/webp', '.gif': 'image/gif', '.avif': 'image/avif', '.bmp': 'image/bmp' };
-      return new Response(fs.readFileSync(fp), { headers: { 'content-type': types[path.extname(fp).toLowerCase()] || 'application/octet-stream', 'cache-control': 'max-age=31536000' } });
+      return new Response(body, { headers: { 'content-type': types[path.extname(fp).toLowerCase()] || 'application/octet-stream', 'cache-control': 'max-age=31536000' } });
     }
     if (u.hostname === 'ui') {
       const name = path.basename(decodeURIComponent(u.pathname)) || 'index.html';
@@ -2031,9 +2120,14 @@ function wallpaperCss() {
 // Windows keeps a copy of the current desktop background here.
 function desktopWallpaperPath() {
   if (process.platform !== 'win32') return '';
+  // Checked at most every 30 s: the sidebar state is sent many times a second while pages load.
+  if (desktopWpCache && Date.now() - desktopWpCache.at < 30000) return desktopWpCache.p;
   const p = path.join(process.env.APPDATA || '', 'Microsoft', 'Windows', 'Themes', 'TranscodedWallpaper');
-  try { return fs.statSync(p).size > 0 ? p : ''; } catch { return ''; }
+  let out = ''; try { out = fs.statSync(p).size > 0 ? p : ''; } catch {}
+  desktopWpCache = { p: out, at: Date.now() };
+  return out;
 }
+let desktopWpCache = null;
 
 function useWallpaperFile(src, ext) {
   fs.mkdirSync(wallpaperDir(), { recursive: true });
@@ -2069,12 +2163,18 @@ const sendBookmarks = debounce(() => {
 // have no cached icon. Fetch one in the background for each such host.
 const bmIconTried = new Set();
 let bmIconRunning = false;
+// Hosts with no icon anywhere aren't asked again for a week (they used to be retried at every start).
+let iconMisses = null;
+const saveIconMisses = debounceSave(() => writeJSON('icon-misses.json', iconMisses), 3000);
 async function prefetchBookmarkIcons() {
   if (bmIconRunning || !bookmarks) return;
   bmIconRunning = true;
   try {
     const hosts = [...new Set(bookmarks.all().map(b => b.url && /^https?:/.test(b.url) ? hostOf(b.url) : '').filter(Boolean))]
       .filter(h => !faviconStore[h] && !bmIconTried.has(h));
+    if (!iconMisses) iconMisses = readJSON('icon-misses.json', {});
+    const WEEK = 7 * 864e5;
+    for (let i = hosts.length - 1; i >= 0; i--) if (Date.now() - (iconMisses[hosts[i]] || 0) < WEEK) hosts.splice(i, 1);
     let got = 0;
     const work = async (host) => {
       bmIconTried.add(host);
@@ -2089,6 +2189,7 @@ async function prefetchBookmarkIcons() {
         if (data && data.length < 60000) { faviconStore[host] = data; got++; return; }
       }
       iconLog(`NO ICON for bookmark host ${host}`);
+      iconMisses[host] = Date.now(); saveIconMisses();
     };
     for (let i = 0; i < hosts.length; i += 4) {
       await Promise.all(hosts.slice(i, i + 4).map(h => work(h).catch(() => {})));
@@ -2351,7 +2452,7 @@ function setupUpdates() {
   // Restart to update: installs silently and reopens Drift with the same tabs.
   ipcMain.on('update-install', (e) => {
     if (!ctxOfUi(e.sender) || updateState.status !== 'ready') return;
-    writeJSON('session.json', sessionSnapshot()); writeJSON('settings.json', settings);
+    writeJSONSync('session.json', sessionSnapshot()); writeJSONSync('settings.json', settings);
     setImmediate(() => autoUpdater.quitAndInstall(true, true));
   });
 }
@@ -2436,7 +2537,7 @@ function setupIPC() {
     const r = await dialog.showMessageBox(win, { type: 'warning', buttons: ['Clear', 'Cancel'], defaultId: 1, cancelId: 1,
       message: 'Clear browsing data?', detail: 'This removes history, cookies, site data, cache and saved site permissions. You will be signed out of websites.' });
     if (r.response !== 0) return;
-    history.clear(); writeJSON('history.json', []);
+    history.clear(); histVer++; writeJSON('history.json', []);
     settings.permissions = {}; saveSettings();
     await session.defaultSession.clearStorageData();
     await session.defaultSession.clearCache();
@@ -2652,7 +2753,7 @@ function createWindow(opts = {}) {
   // Closing the last window quits Drift and keeps its tabs for next time; closing another
   // window closes its tabs (like Chrome).
   win.on('close', W(() => {
-    if (windows.length === 1 && !quitting) { writeJSON('session.json', sessionSnapshot()); writeJSON('settings.json', settings); }
+    if (windows.length === 1 && !quitting) { writeJSONSync('session.json', sessionSnapshot()); writeJSONSync('settings.json', settings); }
   }));
   win.on('closed', () => closeWindowCtx(ctx));
 
@@ -2810,6 +2911,8 @@ if (!app.requestSingleInstanceLock()) {
       push(); refreshNewTabs(); folderMenuIcon = null; prepareBookmarkMenuIcons();
       for (const t of allTabs()) if (t.view && !t.view.webContents.isDestroyed()) t.view.setBackgroundColor(baseFor(t.view.webContents.getURL()));
     });
+    // Temp files from background saves cut off by a crash.
+    fs.promises.readdir(userData()).then(fs_ => { for (const f of fs_) if (/\.\d+-\d+\.tmp$/.test(f)) fs.promises.unlink(file(f)).catch(() => {}); }).catch(() => {});
     PERF('setup done');
     await setupExtensions(ses);
     PERF('extensions loaded');
@@ -2855,7 +2958,8 @@ if (!app.requestSingleInstanceLock()) {
 
   app.on('window-all-closed', () => app.quit());
   app.on('before-quit', () => {
-    if (windows.length && !quitting) { writeJSON('session.json', sessionSnapshot()); writeJSON('settings.json', settings); }
+    if (!quitting) flushSaves();
+    if (windows.length && !quitting) { writeJSONSync('session.json', sessionSnapshot()); writeJSONSync('settings.json', settings); }
     quitting = true;
   });
   app.on('web-contents-created', (_e, wc) => {
