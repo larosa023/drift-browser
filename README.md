@@ -27,7 +27,7 @@ To build the Windows installer locally: `npm run dist` (output goes to `dist/`).
 
 ## Features
 
-- **Multiple windows**: Ctrl+N or the taskbar menu opens a new window. Right-click a link → *Open link in new window*; right-click a tab → *Move to new window* (or *Move to window*). Drag a tab out of the sidebar and drop it outside Drift for a window of its own, or onto another Drift window's tabs to move it there. All open windows are restored next time.
+- **Multiple windows**: Ctrl+N or the taskbar menu opens a new window. Right-click a link or bookmark → *Open in new window* (folders: *Open all in new window*); right-click a tab → *Move to new window* (or *Move to window*). Drag a tab out of the sidebar and drop it anywhere outside the sidebar for a window of its own, or onto another Drift window to move it there. All open windows are restored next time.
 - **Vertical tabs** in a resizable sidebar; drag a tab up or down to reorder. Drag the sidebar's edge all the way in (or click the sidebar icon at the top left) for an **icon-only sidebar**; rest the pointer on it to slide out the full sidebar, and it collapses again when you move off.
 - **Pinned tabs** shown as tiles at the top (drag a tab up there, or right-click → Pin)
 - **Command bar** (Ctrl+T / Ctrl+L): search, open sites, jump to open tabs and history. Sites you've visited autocomplete as you type ("tw" → twitch.tv); Esc clears the completion.
@@ -56,6 +56,7 @@ To build the Windows installer locally: `npm run dist` (output goes to `dist/`).
 - Hovering a bookmark, or highlighting a suggestion in the address bar, opens the connection early so the page starts sooner.
 - The client-hints helper runs inside uBlock Origin's background page instead of its own process, and only sees page loads and Google's own requests.
 - uBlock Origin learns which tab a request belongs to from a per-frame cache instead of asking Drift on every request.
+- The sidebar only re-renders what changed, at most ~30 times a second; the saved-password helper reacts to clicks into fields instead of watching every page for changes (which cost CPU on busy sites like Twitch).
 - `DRIFT_PERF=1 npm start` prints a startup timeline and per-process memory.
 
 ## Shortcuts

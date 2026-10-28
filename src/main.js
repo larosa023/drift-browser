@@ -7,7 +7,7 @@ global.PERF = PERF_ON ? (l) => console.log(`[perf] ${String(Date.now() - __T0).p
 
 const {
   app, BaseWindow, WebContentsView, ipcMain, session, Menu, shell, dialog,
-  protocol, net, clipboard, nativeTheme, webContents, nativeImage,
+  protocol, net, clipboard, nativeTheme, webContents, nativeImage, screen,
 } = require('electron');
 const path = require('path');
 const fs = require('fs');
@@ -307,14 +307,15 @@ function popupMenu(template, opts = {}) {
 // ---------------------------------------------------------------------------
 
 // push() refreshes every window's sidebar (coalesced); each gets its own tabs and active page.
-let pushQueued = false;
+// At most ~30 updates a second: a busy page (Twitch, YouTube) fires loading, title, icon and
+// audio events in bursts, and each update makes every sidebar re-render.
+let pushQueued = false, lastPush = 0;
 function push() {
   if (pushQueued) return;
   pushQueued = true;
-  setImmediate(() => {
-    pushQueued = false;
-    forEachWin(() => pushOne());
-  });
+  const wait = Math.max(0, 33 - (Date.now() - lastPush));
+  const run = () => { pushQueued = false; lastPush = Date.now(); forEachWin(() => pushOne()); };
+  if (wait) setTimeout(run, wait); else setImmediate(run);
 }
 function pushOne() {
   {
@@ -1207,7 +1208,8 @@ function tabContextMenu(id) {
     splitOf(id) ? { label: 'Close split view', click: () => unsplit(id) }
       : { label: 'Open in split view with current tab', enabled: id !== activeId, click: () => splitWith(id) },
     { type: 'separator' },
-    { label: 'Move to new window', enabled: tabs.length > 1, click: () => tabToNewWindow(tab) },
+    tabs.length > 1 ? { label: 'Move to new window', click: () => tabToNewWindow(tab) }
+      : { label: 'Open in new window', enabled: !isInternal(tab.url), click: () => newWindow([tab.url]) },
     ...(windows.length > 1 ? [{ label: 'Move to window', submenu: windows.filter(c => c !== cur).map((c, n) => {
       const t = c.tabs.find(x => x.id === c.activeId) || c.tabs[0];
       return { label: `${(t && (t.title || hostOf(t.url))) || 'Window'} (${c.tabs.length} tab${c.tabs.length === 1 ? '' : 's'})`.slice(0, 60), click: () => moveTabToWindow(tab, c) };
@@ -2142,8 +2144,12 @@ function bookmarkContextMenu(id) {
     ...(it.type === 'link' ? [
       { label: 'Open', click: () => openBookmark(it, false) },
       { label: 'Open in new tab', click: () => openBookmark(it, true, false) },
+      { label: 'Open in new window', click: () => newWindow([it.url]) },
       { label: 'Copy link', click: () => clipboard.writeText(it.url) },
-    ] : [{ label: 'Open all in new tabs', click: () => openBookmark(it, true, true) }]),
+    ] : [
+      { label: 'Open all in new tabs', click: () => openBookmark(it, true, true) },
+      { label: 'Open all in new window', enabled: it.children.some(c => c.type === 'link'), click: () => newWindow(it.children.filter(c => c.type === 'link').map(c => c.url)) },
+    ]),
     { type: 'separator' },
     { label: 'Edit…', click: () => ui.webContents.send('bm-edit', { id: it.id, type: it.type, title: it.title, url: it.url || '' }) },
     { label: 'Delete', click: () => { bookmarks.remove(it.id); sendBookmarks(); } },
@@ -2347,7 +2353,19 @@ function setupIPC() {
   on('tab-menu', (id) => tabContextMenu(id));
   on('move-tab', (id, idx, pinned) => moveTab(id, idx, pinned));
   on('tab-adopt', (id, idx) => { const t = findTab(Number(id)); if (t && ctxOfTab(t) !== cur) moveTabToWindow(t, cur, idx); });
-  on('tab-drop-out', (id, x, y) => { const t = findTab(Number(id)); if (t) tabDroppedOutside(t, Number(x), Number(y)); });
+  // A tab drag ended where nothing took it. Windows doesn't report where a drag that leaves
+  // the page ended, so ask for the cursor position instead.
+  on('tab-drop-out', (id, sidebarRect) => {
+    const t = findTab(Number(id)); if (!t) return;
+    const p = screen.getCursorScreenPoint();
+    // Dropped back over this window's own sidebar (between tabs, say): nothing to do.
+    if (sidebarRect && win && !win.isDestroyed()) {
+      const cb = win.getContentBounds();
+      const x = p.x - cb.x, y = p.y - cb.y;
+      if (x >= sidebarRect.x && x < sidebarRect.x + sidebarRect.width && y >= sidebarRect.y && y < sidebarRect.y + sidebarRect.height) return;
+    }
+    tabDroppedOutside(t, p.x, p.y);
+  });
   on('new-window', () => newWindow());
   on('toggle-pin', (id) => togglePin(id));
   on('toggle-mute', (id) => toggleMute(id));
@@ -2677,7 +2695,11 @@ function moveTabToWindow(tab, target, index) {
 function tabToNewWindow(tab, at) {
   const src = ctxOfTab(tab); if (!src) return;
   useWin(src);
-  const b = win.getBounds();
+  let b = win.isMaximized() || win.isFullScreen() ? win.getNormalBounds() : win.getBounds();
+  if (win.isMaximized()) {   // a maximized window's normal size can be the whole screen too; use a comfortable size
+    const wa = screen.getDisplayNearestPoint(at || { x: b.x, y: b.y }).workArea;
+    b = { ...b, width: Math.min(b.width, Math.round(wa.width * 0.75)), height: Math.min(b.height, Math.round(wa.height * 0.8)) };
+  }
   if (tabs.length === 1) {   // already alone: just move its window there
     if (at) win.setBounds({ ...b, x: Math.round(at.x - 140), y: Math.round(at.y - 20) });
     return;
@@ -2691,7 +2713,9 @@ function tabToNewWindow(tab, at) {
 function tabDroppedOutside(tab, x, y) {
   const src = ctxOfTab(tab); if (!src) return;
   const inside = (w) => { const b = w.getBounds(); return x >= b.x && x < b.x + b.width && y >= b.y && y < b.y + b.height; };
-  if (src.win && inside(src.win)) return;   // let go inside its own window: nothing to do
+  // (Dropping onto this window's own page, outside the sidebar, detaches it too —
+  // unless it's the window's only tab.)
+  if (src.tabs.length <= 1 && src.win && inside(src.win)) return;
   const other = zOrder.find(c => c !== src && c.win && !c.win.isDestroyed() && !c.win.isMinimized() && inside(c.win));   // the one on top there
   if (other) moveTabToWindow(tab, other);
   else tabToNewWindow(tab, { x, y });

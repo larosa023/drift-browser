@@ -48,6 +48,12 @@ function tabTitle(t) {
 }
 
 // ---------------------------------------------------------------------- render
+// Only touch the page when something changed: rewriting identical markup or values still
+// makes the browser restyle and repaint, which adds up while a busy page loads.
+function setCls(el, c) { if (el && el.className !== c) el.className = c; }
+function setHTML(el, html) { if (el && el.__h !== html) { el.innerHTML = html; el.__h = html; } }
+const varCache = {};
+function setVar(name, v) { if (varCache[name] !== v) { varCache[name] = v; document.documentElement.style.setProperty(name, v); } }
 function render() {
   if (!S) return;
   const b = document.body;
@@ -62,49 +68,49 @@ function render() {
   b.classList.toggle('no-titlebar', !S.settings.titleBar);
   const act = S.tabs.find(t => t.id === S.activeId);
   document.title = act ? (tabTitle(act) + ' — Drift') : 'Drift';
-  b.className = b.className.replace(/platform-\w+/g, '') + ' platform-' + S.platform;
-  document.documentElement.style.setProperty('--accent', S.settings.accent);
-  document.documentElement.style.setProperty('--sw', S.settings.sidebarWidth + 'px');
+  if (!b.classList.contains('platform-' + S.platform)) { [...b.classList].filter(c => c.startsWith('platform-')).forEach(c => b.classList.remove(c)); b.classList.add('platform-' + S.platform); }
+  setVar('--accent', S.settings.accent);
+  setVar('--sw', S.settings.sidebarWidth + 'px');
   applyHole();
   applyWallpaper();
   const inSplit = (S.splits || []).find(sp => sp.a === S.activeId || sp.b === S.activeId);
   const spb = $('#a-split');
   spb.classList.toggle('on', !!inSplit);
-  spb.innerHTML = icon(inSplit && inSplit.dir === 'col' ? 'splitcol' : 'split');
+  setHTML(spb, icon(inSplit && inSplit.dir === 'col' ? 'splitcol' : 'split'));
   spb.title = inSplit ? 'Split view options' : 'Split view';
 
   // nav
   document.querySelectorAll('[data-nav=back]').forEach(b => b.disabled = !S.nav.canGoBack);
   document.querySelectorAll('[data-nav=fwd]').forEach(b => b.disabled = !S.nav.canGoForward);
-  document.querySelectorAll('[data-nav=reload]').forEach(b => { b.innerHTML = icon(S.nav.loading ? 'stop' : 'reload'); b.title = S.nav.loading ? 'Stop' : 'Reload (Ctrl+R)'; });
+  document.querySelectorAll('[data-nav=reload]').forEach(b => { setHTML(b, icon(S.nav.loading ? 'stop' : 'reload')); b.title = S.nav.loading ? 'Stop' : 'Reload (Ctrl+R)'; });
   const railTitle = S.settings.sidebarRail ? 'Expand sidebar' : 'Collapse sidebar to icons';
   $('#tb-sidebar').title = railTitle; $('#btn-collapse').title = railTitle;
   renderAddr();
-  document.querySelectorAll('[data-win=max]').forEach(b => { b.innerHTML = icon(S.maximized ? 'restore' : 'max', 14); b.title = S.maximized ? 'Restore' : 'Maximize'; });
+  document.querySelectorAll('[data-win=max]').forEach(b => { setHTML(b, icon(S.maximized ? 'restore' : 'max', 14)); b.title = S.maximized ? 'Restore' : 'Maximize'; });
 
   // url pill
   const url = S.nav.url;
   const ut = $('#u-text'), ui = $('#u-icon');
   if (isInternal(url)) {
-    ut.textContent = 'Search or enter address'; ut.className = 'u-text placeholder';
-    ui.innerHTML = icon('search'); ui.className = 'u-icon';
+    if (ut.textContent !== 'Search or enter address' || ut.__h) { ut.textContent = 'Search or enter address'; ut.__h = null; } setCls(ut, 'u-text placeholder');
+    setHTML(ui, icon('search')); setCls(ui, 'u-icon');
   } else {
     let host = url, rest = '';
     try { const u = new URL(url); host = u.hostname.replace(/^www\./, ''); rest = (u.pathname === '/' ? '' : u.pathname) + u.search; } catch {}
-    ut.innerHTML = `${esc(host)}<span class="path">${esc(rest)}</span>`; ut.className = 'u-text';
-    ui.innerHTML = icon(S.nav.secure ? 'lock' : 'info', 15); ui.className = 'u-icon' + (S.nav.secure ? ' secure' : '');
+    setHTML(ut, `${esc(host)}<span class="path">${esc(rest)}</span>`); setCls(ut, 'u-text');
+    setHTML(ui, icon(S.nav.secure ? 'lock' : 'info', 15)); setCls(ui, 'u-icon' + (S.nav.secure ? ' secure' : ''));
     ui.title = S.nav.secure ? 'Connection is secure' : 'Connection is not secure';
   }
   const sh = $('#btn-shield');
   sh.classList.toggle('off', !S.nav.shieldsOn);
-  sh.querySelector('span').innerHTML = icon(S.nav.shieldsOn ? 'shield' : 'shieldoff');
+  setHTML(sh.querySelector('span'), icon(S.nav.shieldsOn ? 'shield' : 'shieldoff'));
   $('#shield-count').textContent = S.nav.shieldsOn && S.nav.blocked ? S.nav.blocked : '';
   sh.title = isInternal(url) ? 'Shields' : S.nav.shieldsOn
     ? `Shields are up on ${hostOf(url)} — ${S.nav.blocked} blocked. Click to turn off for this site.`
     : `Shields are down on ${hostOf(url)}. Click to turn on.`;
   sh.hidden = isInternal(url);
 
-  $('#blocked-total').innerHTML = S.blockedTotal ? `${icon('shield', 12)}${S.blockedTotal.toLocaleString()} blocked` : '';
+  setHTML($('#blocked-total'), S.blockedTotal ? `${icon('shield', 12)}${S.blockedTotal.toLocaleString()} blocked` : '');
   renderDownloadIndicators();
 
   renderTabs();
@@ -131,35 +137,34 @@ function renderAddr() {
   const url = S.nav.url;
   const at = $('#a-text'), ai = $('#a-icon');
   if (isInternal(url)) {
-    at.textContent = 'Search or enter address'; at.className = 'a-text placeholder';
-    ai.innerHTML = icon('search', 15); ai.className = 'a-icon'; ai.title = '';
+    if (at.textContent !== 'Search or enter address' || at.__h) { at.textContent = 'Search or enter address'; at.__h = null; } setCls(at, 'a-text placeholder');
+    setHTML(ai, icon('search', 15)); setCls(ai, 'a-icon'); ai.title = '';
   } else {
     let host = url, rest = '';
     try { const u = new URL(url); host = u.hostname.replace(/^www\./, ''); rest = (u.pathname === '/' ? '' : u.pathname) + u.search; } catch {}
-    at.innerHTML = `${esc(host)}<span class="path">${esc(rest)}</span>`; at.className = 'a-text';
-    ai.innerHTML = icon(S.nav.secure ? 'lock' : 'info', 14); ai.className = 'a-icon' + (S.nav.secure ? ' secure' : '');
+    setHTML(at, `${esc(host)}<span class="path">${esc(rest)}</span>`); setCls(at, 'a-text');
+    setHTML(ai, icon(S.nav.secure ? 'lock' : 'info', 14)); setCls(ai, 'a-icon' + (S.nav.secure ? ' secure' : '') + ' clickable');
     ai.title = (S.nav.secure ? 'Connection is secure' : 'Connection is not secure') + ' · click for site info';
-    ai.classList.add('clickable');
   }
   const internal = isInternal(url);
   const star = $('#a-star');
   star.hidden = internal;
-  star.innerHTML = icon(S.nav.bookmarked ? 'starfill' : 'star', 15);
+  setHTML(star, icon(S.nav.bookmarked ? 'starfill' : 'star', 15));
   star.classList.toggle('on', S.nav.bookmarked);
   star.title = S.nav.bookmarked ? 'Remove bookmark (Ctrl+D)' : 'Bookmark this page (Ctrl+D)';
   const dk = $('#a-dark');
   dk.hidden = internal || !S.settings.forceDark;
-  dk.innerHTML = icon(S.nav.dark ? 'moonfill' : 'moon', 14);
+  setHTML(dk, icon(S.nav.dark ? 'moonfill' : 'moon', 14));
   dk.classList.toggle('on', S.nav.dark);
   dk.title = S.nav.darkSite ? `Force dark is on for ${hostOf(url)} — click to turn it off for this site` : `Force dark is off for ${hostOf(url)} — click to turn it on`;
   const sh = $('#a-shield');
   sh.hidden = internal;
   sh.classList.toggle('off', !S.nav.shieldsOn);
-  sh.querySelector('span').innerHTML = icon(S.nav.shieldsOn ? 'shield' : 'shieldoff', 15);
+  setHTML(sh.querySelector('span'), icon(S.nav.shieldsOn ? 'shield' : 'shieldoff', 15));
   const blockedNow = uboBlocked();
   $('#a-shield-count').textContent = S.uboId ? blockedNow : (S.nav.shieldsOn && S.nav.blocked ? S.nav.blocked : '');
   sh.title = S.uboId ? `uBlock Origin${blockedNow ? ` — ${blockedNow} blocked on this page` : ''}. Click for options, or to turn it off for this site.` : $('#btn-shield').title;
-  if (S.uboId) { sh.classList.remove('off'); sh.querySelector('span').innerHTML = icon('shield', 15); }
+  if (S.uboId) { sh.classList.remove('off'); setHTML(sh.querySelector('span'), icon('shield', 15)); }
 }
 
 function applyWallpaper() {
@@ -266,7 +271,10 @@ function tabEvents(container) {
   container.addEventListener('dragend', (e) => {
     // Dropped where nothing took it (outside the window, or onto another window's page):
     // Drift moves it to that window or opens a new one there.
-    if (dragId != null && e.dataTransfer && e.dataTransfer.dropEffect === 'none') send('tab-drop-out', dragId, e.screenX, e.screenY);
+    if (dragId != null && e.dataTransfer && e.dataTransfer.dropEffect === 'none') {
+      const r = $('#sidebar').getBoundingClientRect();
+      send('tab-drop-out', dragId, { x: r.left, y: r.top, width: r.width, height: r.height });
+    }
     dragId = null;
     document.querySelectorAll('.dragging').forEach(x => x.classList.remove('dragging'));
     document.querySelectorAll('.drop-line').forEach(x => x.remove());

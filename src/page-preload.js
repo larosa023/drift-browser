@@ -153,11 +153,12 @@ if (IS_WEB_PAGE && /^https?:$/.test(location.protocol)) {
     if (b) { const pw = activePassword(b.form || b.closest('form')) || activePassword(); if (pw) capture(pw); }
   }, true);
 
+  // Event-driven: look for sign-in fields once the page has loaded and whenever a text field
+  // gets focus. (Watching the whole page for changes cost real CPU on busy sites like Twitch,
+  // whose chat and player change the page many times a second.)
   const start = () => {
     scan();
-    let t;
-    new MutationObserver(() => { clearTimeout(t); t = setTimeout(scan, 300); })
-      .observe(document.documentElement, { childList: true, subtree: true, attributes: true, attributeFilter: ['type', 'style', 'class'] });
+    document.addEventListener('focusin', (e) => { if (e.target instanceof HTMLInputElement) scan(); }, true);
     window.addEventListener('scroll', closePicker, true);
   };
   if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', start); else start();
