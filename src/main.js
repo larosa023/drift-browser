@@ -2497,6 +2497,30 @@ function startPerfLog() {
   const labelOf = (wc) => () => { try { if (ui && wc === ui.webContents) return 'Drift sidebar'; const t = wcToTab.get(wc.id); return `tab:${hostOf(wc.getURL()) || wc.getURL().slice(0, 40)}${t && t.dark ? ' (force dark)' : ''}`; } catch { return '?'; } };
   app.on('web-contents-created', (_e, wc) => { if (wc.getType() === 'window' || wc.getType() === 'browserView') instrument(wc, labelOf(wc)); });
   for (const wc of webContents.getAllWebContents()) if (wc.getType() === 'window' || wc.getType() === 'browserView') { instrument(wc, labelOf(wc)); try { wc.executeJavaScriptInIsolatedWorld(1997, [{ code: LOAF }]).catch(() => {}); } catch {} }
+  // A one-off Chromium trace (graphics, video, page) when a chosen site starts loading: put the
+  // site's name in a file named "perf-trace" next to "perf-log". Saved to logs\trace-*.json.
+  let traceHost = '';
+  try { traceHost = fs.readFileSync(file('perf-trace'), 'utf8').trim().toLowerCase(); } catch {}
+  let tracing = false, traced = 0;
+  if (traceHost) app.on('web-contents-created', (_e, wc) => {
+    wc.on('did-start-navigation', async (d) => {
+      if (tracing || traced >= 2 || !d.isMainFrame || d.isSameDocument || !hostOf(d.url).endsWith(traceHost)) return;
+      tracing = true; traced++;
+      const { contentTracing } = require('electron');
+      try {
+        await contentTracing.startRecording({ included_categories: ['toplevel', 'gpu', 'gpu.angle', 'gpu.service', 'gpu.capture', 'viz', 'cc', 'media', 'blink', 'v8', 'navigation', 'loading', 'devtools.timeline', 'disabled-by-default-devtools.timeline', 'disabled-by-default-gpu.service', 'disabled-by-default-gpu.decoder', 'disabled-by-default-viz.gpu_composite_time', 'skia', 'webgl'], excluded_categories: ['*'] });
+        log(`TRACE started for ${hostOf(d.url)}`); flush();
+        await new Promise(r => setTimeout(r, 9000));
+        const outFile = path.join(file('logs'), `trace-${Date.now()}.json`);
+        await contentTracing.stopRecording(outFile);
+        log(`TRACE saved ${outFile}`); flush();
+      } catch (e) { log('TRACE failed ' + e.message); }
+      tracing = false;
+    });
+  });
+  try { const g = app.getGPUFeatureStatus(); log('gpu features: ' + Object.entries(g).map(([k, v]) => k + '=' + v).join(' ')); } catch {}
+  app.getGPUInfo('basic').then((g) => { try { log('gpu: ' + (g.gpuDevice || []).map(d => `${d.vendorId}:${d.deviceId}${d.active ? '(active)' : ''} ${d.driverVersion || ''}`).join(', ') + ' ' + JSON.stringify(g.auxAttributes ? { gl: g.auxAttributes.glRenderer, angle: g.auxAttributes.displayType } : {})); } catch {} }).catch(() => {});
+  app.on('child-process-gone', (_e, d) => log(`PROCESS GONE ${d.type} ${d.reason} ${d.exitCode}`));
   // Which extension service workers are running (they have no page of their own).
   setTimeout(() => { try { log('service workers: ' + Object.values(session.defaultSession.serviceWorkers.getAllRunning()).map(w => w.scope).join(', ')); } catch {} }, 8000);
 }
