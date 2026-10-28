@@ -203,7 +203,7 @@ function syncKeyed(container, items) {
   const have = new Map([...container.children].filter(el => el.dataset.id).map(el => [el.dataset.id, el]));
   items.forEach((it, i) => {
     let el = have.get(String(it.id));
-    if (!el) { el = document.createElement('div'); el.dataset.id = String(it.id); el.draggable = true; }
+    if (!el) { el = document.createElement('div'); el.dataset.id = String(it.id); }
     else have.delete(String(it.id));
     if (el.className !== it.cls) el.className = it.cls;
     if (el.title !== it.title) el.title = it.title;
@@ -260,90 +260,107 @@ function tabEvents(container) {
     const el = e.target.closest('[data-id]'); if (!el) return;
     e.preventDefault(); send('tab-menu', Number(el.dataset.id));
   });
-  container.addEventListener('dragstart', (e) => {
-    const el = e.target.closest('[data-id]'); if (!el) return;
-    dragId = Number(el.dataset.id);
-    e.dataTransfer.effectAllowed = 'move';
-    // Only Drift's own type: as plain text, other programs (or the desktop) could accept the
-    // drop, and Drift would think the tab had landed somewhere.
-    e.dataTransfer.setData('application/x-drift-tab', String(dragId));   // lets other Drift windows take it
-    send('tab-drag-start', dragId);
-    requestAnimationFrame(() => el.classList.add('dragging'));
-    $('#essentials').classList.add('drop-target');
+  // Dragging is done here with the pointer, not the browser's drag-and-drop: on Windows that
+  // was cancelled the moment it started (see startTabDrag).
+  container.addEventListener('pointerdown', (e) => {
+    if (e.button !== 0) return;
+    const el = e.target.closest('[data-id]'); if (!el || e.target.closest('[data-act]')) return;
+    tabPtr = { id: Number(el.dataset.id), el, x: e.clientX, y: e.clientY, pid: e.pointerId, container, dragging: false };
+    try { container.setPointerCapture(e.pointerId); } catch {}
   });
-  container.addEventListener('dragend', (e) => {
-    // Dropped where nothing took it (outside the window, or onto another window's page):
-    // Drift moves it to that window or opens a new one there.
-    if (dragId != null) {
-      const r = $('#sidebar').getBoundingClientRect();
-      send('tab-drag-end', dragId, e.dataTransfer ? e.dataTransfer.dropEffect : 'none', { x: r.left, y: r.top, width: r.width, height: r.height });
-    }
-    dragId = null;
-    document.querySelectorAll('.dragging').forEach(x => x.classList.remove('dragging'));
-    document.querySelectorAll('.drop-line').forEach(x => x.remove());
-    $('#essentials').classList.remove('drop-target');
-    clearBmDrop();
-    send('focus-page');
-    if (tabsPending && S) renderTabs();
-    if (bmPending) renderBookmarks();
-  });
+  container.addEventListener('dragstart', (e) => e.preventDefault());
 }
 tabEvents($('#tablist'));
 tabEvents($('#essentials'));
 
-// Drop into the tab list → reorder / unpin
-// A tab dragged from another Drift window.
-const foreignTab = (e) => dragId == null && e.dataTransfer && [...e.dataTransfer.types].includes('application/x-drift-tab');
-$('#tablist').addEventListener('dragover', (e) => {
-  if (foreignTab(e)) {
-    e.preventDefault(); e.dataTransfer.dropEffect = 'move';
-    document.querySelectorAll('.drop-line').forEach(x => x.remove());
+// ---------------------------------------------------------------------- tab dragging
+// Press a tab and move: reorder it in the list, drop it on the pinned area to pin, on the
+// bookmarks bar (or a folder there) to bookmark it, or anywhere else (the page, outside the
+// window, another Drift window) to move it out: Drift decides from where the cursor ends up.
+let tabPtr = null;
+function tabDropAt(x, y) {
+  const inView = x >= 0 && y >= 0 && x < window.innerWidth && y < window.innerHeight;
+  const el = inView ? document.elementFromPoint(x, y) : null;
+  if (!el) return { kind: 'out' };                        // outside the window
+  if (el.closest('#essentials')) return { kind: 'pin' };
+  if (el.closest('#tablist, .tabs-head')) return { kind: 'list' };
+  if (el.closest('#bmbar')) return { kind: 'bm', el };
+  // Over the page area: out into its own window. Anywhere else (toolbar, sidebar header): leave it.
+  const c = content;
+  if (x >= c.x && x < c.x + c.width && y >= c.y && y < c.y + c.height) return { kind: 'out' };
+  return { kind: 'none' };
+}
+function showTabDrop(e) {
+  document.querySelectorAll('.drop-line').forEach(x => x.remove());
+  clearBmDrop();
+  $('#essentials').classList.toggle('drop-target', true);
+  const d = tabDropAt(e.clientX, e.clientY);
+  document.body.classList.toggle('tab-out', d.kind === 'out');
+  if (d.kind === 'list') {
     const rows = [...$('#tablist').querySelectorAll('.tab')];
     const before = rows.find(r => e.clientY < r.getBoundingClientRect().top + r.offsetHeight / 2);
     const line = document.createElement('div'); line.className = 'drop-line';
     before ? before.before(line) : $('#tablist').append(line);
-    return;
+  } else if (d.kind === 'bm') {
+    $('#bmbar').classList.add('drop-target');
+    const folder = bmFolderUnder({ target: d.el, clientX: e.clientX });
+    if (folder) folder.classList.add('drop-into');
+    else { const { before } = bmDropIndex(e.clientX); const line = document.createElement('i'); line.className = 'bm-drop'; before ? before.before(line) : $('#bm-items').append(line); }
   }
-  if (dragId == null) return;
-  e.preventDefault();
+}
+function endTabDrag(e, cancelled) {
+  const p = tabPtr; tabPtr = null;
+  if (!p) return;
+  try { p.container.releasePointerCapture(p.pid); } catch {}
+  if (!p.dragging) return;
+  const id = p.id;
+  if (!cancelled) {
+    const d = tabDropAt(e.clientX, e.clientY);
+    if (d.kind === 'list') {
+      const rows = [...$('#tablist').querySelectorAll('.tab')].filter(r => Number(r.dataset.id) !== id);
+      const before = rows.find(r => e.clientY < r.getBoundingClientRect().top + r.offsetHeight / 2);
+      const pinnedCount = S.tabs.filter(t => t.pinned && t.id !== id).length;
+      const idx = before ? S.tabs.filter(t => t.id !== id).findIndex(t => t.id === Number(before.dataset.id)) : S.tabs.length;
+      send('move-tab', id, Math.max(idx, pinnedCount), false);
+    } else if (d.kind === 'pin') {
+      const tiles = [...$('#essentials').querySelectorAll('.ess')].filter(r => Number(r.dataset.id) !== id);
+      const before = tiles.find(r => { const b = r.getBoundingClientRect(); return e.clientY < b.bottom && e.clientX < b.left + b.width / 2; });
+      const idx = before ? S.tabs.filter(t => t.id !== id).findIndex(t => t.id === Number(before.dataset.id)) : tiles.length;
+      send('move-tab', id, idx, true);
+    } else if (d.kind === 'bm') {
+      const folder = bmFolderUnder({ target: d.el, clientX: e.clientX });
+      if (folder) send('bm-add-tab-into', id, folder.dataset.bm);
+      else { const { before } = bmDropIndex(e.clientX); const idx = before ? BM.findIndex(b => b.id === before.dataset.bm) : BM.length; send('bm-add-tab', id, idx < 0 ? BM.length : idx); }
+    } else if (d.kind === 'out') {
+      const r = $('#sidebar').getBoundingClientRect();
+      send('tab-drag-end', id, 'none', { x: r.left, y: r.top, width: r.width, height: r.height });
+    }
+  }
+  dragId = null;
+  document.body.classList.remove('tab-dragging', 'tab-out');
+  document.querySelectorAll('.tab.dragging, .ess.dragging').forEach(x => x.classList.remove('dragging'));
   document.querySelectorAll('.drop-line').forEach(x => x.remove());
-  const rows = [...$('#tablist').querySelectorAll('.tab')];
-  const before = rows.find(r => e.clientY < r.getBoundingClientRect().top + r.offsetHeight / 2);
-  const line = document.createElement('div'); line.className = 'drop-line';
-  before ? before.before(line) : $('#tablist').append(line);
-});
-$('#tablist').addEventListener('dragleave', (e) => { if (!e.relatedTarget || !$('#tablist').contains(e.relatedTarget)) document.querySelectorAll('.drop-line').forEach(x => x.remove()); });
-$('#tablist').addEventListener('drop', (e) => {
-  if (foreignTab(e)) {
-    e.preventDefault();
-    const id = Number(e.dataTransfer.getData('application/x-drift-tab'));
-    const rows = [...$('#tablist').querySelectorAll('.tab')];
-    const before = rows.find(r => e.clientY < r.getBoundingClientRect().top + r.offsetHeight / 2);
-    const idx = before ? S.tabs.findIndex(t => t.id === Number(before.dataset.id)) : S.tabs.length;
-    document.querySelectorAll('.drop-line').forEach(x => x.remove());
-    if (id) send('tab-adopt', id, idx < 0 ? S.tabs.length : idx);
-    return;
+  $('#essentials').classList.remove('drop-target');
+  clearBmDrop();
+  send('focus-page');
+  railAfterDrag();
+  if (tabsPending && S) renderTabs();
+  if (bmPending) renderBookmarks();
+}
+document.addEventListener('pointermove', (e) => {
+  const p = tabPtr; if (!p || e.pointerId !== p.pid) return;
+  if (!p.dragging) {
+    if (Math.hypot(e.clientX - p.x, e.clientY - p.y) < 6) return;
+    p.dragging = true; dragId = p.id;
+    p.el.classList.add('dragging');
+    document.body.classList.add('tab-dragging');
+    send('tab-drag-start', p.id);
   }
-  if (dragId == null) return;
-  e.preventDefault();
-  const rows = [...$('#tablist').querySelectorAll('.tab')].filter(r => Number(r.dataset.id) !== dragId);
-  const before = rows.find(r => e.clientY < r.getBoundingClientRect().top + r.offsetHeight / 2);
-  const pinnedCount = S.tabs.filter(t => t.pinned && t.id !== dragId).length;
-  let idx;
-  if (before) idx = S.tabs.filter(t => t.id !== dragId).findIndex(t => t.id === Number(before.dataset.id));
-  else idx = S.tabs.length;
-  send('move-tab', dragId, Math.max(idx, pinnedCount), false);
+  showTabDrop(e);
 });
-// Drop onto pinned area → pin
-$('#essentials').addEventListener('dragover', (e) => { if (dragId != null) e.preventDefault(); });
-$('#essentials').addEventListener('drop', (e) => {
-  if (dragId == null) return;
-  e.preventDefault();
-  const tiles = [...$('#essentials').querySelectorAll('.ess')].filter(r => Number(r.dataset.id) !== dragId);
-  const before = tiles.find(r => { const b = r.getBoundingClientRect(); return e.clientY < b.bottom && e.clientX < b.left + b.width / 2; });
-  const idx = before ? S.tabs.filter(t => t.id !== dragId).findIndex(t => t.id === Number(before.dataset.id)) : tiles.length;
-  send('move-tab', dragId, idx, true);
-});
+document.addEventListener('pointerup', (e) => { if (tabPtr && e.pointerId === tabPtr.pid) endTabDrag(e, false); });
+document.addEventListener('pointercancel', (e) => { if (tabPtr && e.pointerId === tabPtr.pid) endTabDrag(e, true); });
+document.addEventListener('keydown', (e) => { if (e.key === 'Escape' && tabPtr && tabPtr.dragging) endTabDrag(e, true); });
 
 // ---------------------------------------------------------------------- top controls
 document.querySelectorAll('[data-nav=back]').forEach(b => b.onclick = () => send('back'));
@@ -1526,11 +1543,12 @@ $('#sidebar').addEventListener('mouseleave', () => {
   if (!document.body.classList.contains('rail-in')) { closeRail(); return; }   // left before it opened
   railTimer = setTimeout(closeRail, 140);
 });
-document.addEventListener('dragend', () => {
+function railAfterDrag() {
   if (!railCloseAfterDrag) return;
   railCloseAfterDrag = false;
   setTimeout(() => { if (!$('#sidebar').matches(':hover')) closeRail(); }, 50);
-});
+}
+document.addEventListener('dragend', railAfterDrag);   // bookmark drags
 
 
 // ---------------------------------------------------------------------- bookmark folder dropdowns
