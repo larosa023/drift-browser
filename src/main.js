@@ -406,7 +406,7 @@ function layout() {
 function setOverlay(mode, keepFocus) {
   overlay = mode;
   layout();
-  if (['palette', 'modal', 'extmenu', 'siteinfo', 'dlmenu'].includes(mode)) ui.webContents.focus();
+  if (['palette', 'modal', 'extmenu', 'siteinfo', 'dlmenu', 'bmpop'].includes(mode)) ui.webContents.focus();
   else if (!keepFocus) focusPage();   // keepFocus: an extension popup just opened and must keep focus
   push();
 }
@@ -2528,6 +2528,7 @@ if (!app.requestSingleInstanceLock()) {
     const uiReady = new Promise(r => ui.webContents.once('did-finish-load', r)).then(() => { setTimeout(prepareBookmarkMenuIcons, 300); return initIdentity(); });
     Promise.race([Promise.all([shieldsReady, uiReady]), new Promise(r => setTimeout(r, 2000))]).then(() => { PERF('gate open'); openGate(); });
     setupUpdates();
+
 
 
 

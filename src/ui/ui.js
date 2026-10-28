@@ -55,7 +55,7 @@ function render() {
   b.classList.toggle('light', !S.dark);
   b.classList.toggle('hidden-bar', S.settings.sidebarHidden);
   b.classList.toggle('docked', !S.settings.sidebarHidden);
-  b.classList.toggle('over-palette', ['palette', 'modal', 'extmenu', 'siteinfo', 'dlmenu'].includes(S.overlay));
+  b.classList.toggle('over-palette', ['palette', 'modal', 'extmenu', 'siteinfo', 'dlmenu', 'railpeek', 'bmpop'].includes(S.overlay));
   b.classList.toggle('rail', !!S.settings.sidebarRail && !S.settings.sidebarHidden);
   b.classList.toggle('bm-on', !!S.settings.titleBar && !!S.settings.bookmarksBar);
   b.classList.toggle('over-peek', S.overlay === 'peek');
@@ -119,6 +119,8 @@ function render() {
   if (S.overlay !== 'extmenu') $('#extmenu-wrap').hidden = true;
   if (S.overlay !== 'siteinfo') $('#siteinfo-wrap').hidden = true;
   if (S.overlay !== 'dlmenu') $('#dlmenu-wrap').hidden = true; else renderDlMenu();
+  if (S.overlay !== 'railpeek' && document.body.classList.contains('rail-open')) document.body.classList.remove('rail-open');
+  if (S.overlay !== 'bmpop') closeBmPopups(true);
   if (panel === 'passwords') renderPasswords();
   placeActions();
   $('#findbar').hidden = !S.findOpen;
@@ -181,7 +183,7 @@ function placeActions() {
 
 function applyHole() {
   const w = $('#wash');
-  if (S && ['palette', 'modal', 'extmenu', 'siteinfo', 'dlmenu'].includes(S.overlay)) {
+  if (S && ['palette', 'modal', 'extmenu', 'siteinfo', 'dlmenu', 'railpeek', 'bmpop'].includes(S.overlay)) {
     const { x, y, width: cw, height: ch } = content;
     w.style.clipPath = `polygon(evenodd, 0 0, 100% 0, 100% 100%, 0 100%, 0 0, ${x}px ${y}px, ${x + cw}px ${y}px, ${x + cw}px ${y + ch}px, ${x}px ${y + ch}px, ${x}px ${y}px)`;
   } else w.style.clipPath = '';
@@ -1041,7 +1043,8 @@ function layoutBookmarks() {
 window.addEventListener('resize', () => layoutBookmarks());
 $('#bm-more').onclick = (e) => {
   const r = e.currentTarget.getBoundingClientRect();
-  send('bm-overflow', JSON.parse(e.currentTarget.dataset.ids || '[]'), r.left, r.bottom + 2);
+  const items = JSON.parse(e.currentTarget.dataset.ids || '[]').map(id => findBm(id)).filter(Boolean);
+  openBmPopup(items, r.right - 260, r.bottom + 4, null);
 };
 $('#bm-items').addEventListener('mouseover', (e) => {
   const b = e.target.closest('[data-bm]'); if (!b) return;
@@ -1050,7 +1053,7 @@ $('#bm-items').addEventListener('mouseover', (e) => {
 $('#bm-items').addEventListener('click', (e) => {
   const b = e.target.closest('[data-bm]'); if (!b) return;
   const it = findBm(b.dataset.bm); if (!it) return;
-  if (it.type === 'folder') { const r = b.getBoundingClientRect(); send('bm-folder', it.id, r.left, r.bottom + 2); }
+  if (it.type === 'folder') { const r = b.getBoundingClientRect(); openBmPopup(it.children, r.left, r.bottom + 4, it); }
   else send('bm-open', it.id, e.ctrlKey || e.metaKey || e.shiftKey);
 });
 // Middle-click (scroll-wheel click) opens a bookmark in a background tab, or a folder's
@@ -1389,3 +1392,115 @@ $('#siteinfo').addEventListener('click', async (e) => {
   b.textContent = ok ? 'Cleared — page reloaded' : "Couldn't clear site data";
   if (ok) { siteData.cookies = 0; const n = [...$('#siteinfo').querySelectorAll('.si-row')].find(r => r.textContent.includes('Cookies')); if (n) n.querySelector('.n').textContent = '0 stored by this site'; }
 });
+
+
+// ---------------------------------------------------------------------- sidebar hover (icon mode)
+// With the sidebar collapsed to icons, resting the pointer on it opens the full sidebar over the
+// page; moving off collapses it again. (Not while another menu or the command bar is open.)
+let railTimer = 0, railCloseAfterDrag = false;
+const railMode = () => S && S.settings.sidebarRail && !S.settings.sidebarHidden;
+function openRail() {
+  if (!railMode() || (S.overlay && S.overlay !== 'railpeek')) return;
+  document.body.classList.add('rail-open');
+  if (S.overlay !== 'railpeek') raiseOverlay('railpeek');
+}
+function closeRail() {
+  if (!document.body.classList.contains('rail-open')) return;
+  document.body.classList.remove('rail-open');
+  if (pendingOverlay && pendingOverlay.mode === 'railpeek') pendingOverlay = null;
+  if (S && S.overlay === 'railpeek') send('overlay', null, true);
+}
+$('#sidebar').addEventListener('mouseenter', () => {
+  clearTimeout(railTimer);
+  if (railMode() && !document.body.classList.contains('rail-open')) railTimer = setTimeout(openRail, 160);
+});
+$('#sidebar').addEventListener('mouseleave', () => {
+  clearTimeout(railTimer);
+  if (!document.body.classList.contains('rail-open')) return;
+  if (dragId != null || bmDrag != null) { railCloseAfterDrag = true; return; }
+  railTimer = setTimeout(closeRail, 200);
+});
+document.addEventListener('dragend', () => {
+  if (!railCloseAfterDrag) return;
+  railCloseAfterDrag = false;
+  setTimeout(() => { if (!$('#sidebar').matches(':hover')) closeRail(); }, 50);
+});
+
+
+// ---------------------------------------------------------------------- bookmark folder dropdowns
+// Drift's own menus (not native ones) so middle-click works: click opens, middle-click opens in
+// a background tab (the menu stays open to pick more), Ctrl/Shift+click opens a new tab.
+// Subfolders open to the side on hover.
+const bmPops = [];   // open panels, one per folder level
+function bmPopHtml(items, folder) {
+  const links = items.filter(c => c.type === 'link');
+  const rows = items.map(it => `<div class="bp-row ${it.type === 'folder' ? 'folder' : ''}" data-bp="${esc(it.id)}" title="${esc(it.type === 'folder' ? it.title : (it.title ? it.title + '\n' : '') + it.url)}">
+      <span class="bp-ic">${bmIcon(it)}</span><span class="bp-t">${esc(it.title || it.url || 'Folder')}</span>${it.type === 'folder' ? `<span class="bp-more">${icon('more', 12)}</span>` : ''}</div>`).join('');
+  return (rows || `<div class="bp-empty">(empty)</div>`)
+    + (folder && links.length ? `<div class="bp-sep"></div><div class="bp-row bp-all" data-bp-all="${esc(folder.id)}"><span class="bp-ic">${icon('ext', 14)}</span><span class="bp-t">Open all (${links.length})</span></div>` : '');
+}
+function openBmPopup(items, x, y, folder, level = 0) {
+  closeBmPopups(false, level);
+  const wrap = $('#bmpop-wrap');
+  const el = document.createElement('div');
+  el.className = 'bmpop'; el.tabIndex = -1; el.dataset.level = String(level);
+  el.innerHTML = bmPopHtml(items, folder);
+  wrap.append(el); wrap.hidden = false;
+  const w = 260, maxH = window.innerHeight - y - 12;
+  el.style.maxHeight = Math.max(160, maxH) + 'px';
+  el.style.left = Math.max(6, Math.min(window.innerWidth - w - 6, x)) + 'px';
+  el.style.top = y + 'px';
+  bmPops[level] = el;
+  if (level === 0) { raiseOverlay('bmpop'); setTimeout(() => el.focus({ preventScroll: true }), 0); }
+}
+function closeBmPopups(fromRender, fromLevel = 0) {
+  while (bmPops.length > fromLevel) { const p = bmPops.pop(); if (p) p.remove(); }
+  if (fromLevel === 0) {
+    $('#bmpop-wrap').hidden = true;
+    if (!fromRender) { if (pendingOverlay && pendingOverlay.mode === 'bmpop') pendingOverlay = null; if (S && S.overlay === 'bmpop') send('overlay', null); }
+  }
+}
+let bpHoverTimer = 0;
+$('#bmpop-wrap').addEventListener('mousedown', (e) => {
+  if (e.target.id === 'bmpop-wrap') { closeBmPopups(false); return; }
+  if (e.button === 1 && e.target.closest('[data-bp]')) e.preventDefault();   // no autoscroll
+});
+$('#bmpop-wrap').addEventListener('click', (e) => {
+  const all = e.target.closest('[data-bp-all]');
+  if (all) { send('bm-open-background', all.dataset.bpAll); closeBmPopups(false); return; }
+  const row = e.target.closest('[data-bp]'); if (!row) return;
+  const it = findBm(row.dataset.bp); if (!it) return;
+  if (it.type === 'folder') { openSub(row, it); return; }
+  send('bm-open', it.id, e.ctrlKey || e.metaKey || e.shiftKey);
+  closeBmPopups(false);
+});
+$('#bmpop-wrap').addEventListener('auxclick', (e) => {
+  if (e.button !== 1) return;
+  const row = e.target.closest('[data-bp]'); if (!row) return;
+  e.preventDefault();
+  send('bm-open-background', row.dataset.bp);
+  row.classList.add('opened'); setTimeout(() => row.classList.remove('opened'), 600);
+});
+$('#bmpop-wrap').addEventListener('contextmenu', (e) => {
+  const row = e.target.closest('[data-bp]'); if (!row) return;
+  e.preventDefault(); send('bm-menu', row.dataset.bp);
+});
+function openSub(row, it) {
+  const level = Number(row.closest('.bmpop').dataset.level) + 1;
+  const r = row.getBoundingClientRect();
+  const x = r.right + 262 > window.innerWidth ? r.left - 262 : r.right + 2;
+  openBmPopup(it.children, x, r.top - 5, it, level);
+  row.closest('.bmpop').querySelectorAll('.bp-row.open').forEach(x => x.classList.remove('open'));
+  row.classList.add('open');
+}
+$('#bmpop-wrap').addEventListener('mouseover', (e) => {
+  const row = e.target.closest('.bp-row'); if (!row) return;
+  clearTimeout(bpHoverTimer);
+  const pop = row.closest('.bmpop'), level = Number(pop.dataset.level);
+  bpHoverTimer = setTimeout(() => {
+    const it = row.dataset.bp && findBm(row.dataset.bp);
+    if (it && it.type === 'folder') { if (!row.classList.contains('open')) openSub(row, it); }
+    else if (bmPops.length > level + 1) { closeBmPopups(false, level + 1); pop.querySelectorAll('.bp-row.open').forEach(x => x.classList.remove('open')); }
+  }, 220);
+});
+document.addEventListener('keydown', (e) => { if (e.key === 'Escape' && S && S.overlay === 'bmpop') closeBmPopups(false); });
