@@ -198,8 +198,40 @@ function setMode(wc, url) {
 }
 // Load a URL with the right identity for where it's going.
 function loadIn(wc, url) {
+  const tab = wcToTab.get(wc.id);
+  if (tab && darkSwitchNeeded(tab, url)) { openInFreshView(tab, url); return Promise.resolve(); }
   setMode(wc, url);
   return wc.loadURL(url).catch(() => {});
+}
+// Force dark is fixed when a tab's page process starts, so a tab going from a page without it
+// (like the new tab page) to a site with it needs a new page. Decide that before the site
+// starts loading, not after: otherwise the site loads twice (a visible stall on heavy sites).
+function darkSwitchNeeded(tab, url) {
+  return !!(tab.view && /^(https?|file):/i.test(url || '') && wantsDark(url) !== !!tab.dark);
+}
+function openInFreshView(tab, url) {
+  const wc = tab.view.webContents;
+  let restore = null;
+  try {
+    // The history so far plus the new site as the current entry: the site loads once, and
+    // Back still leads where it did.
+    const entries = wc.navigationHistory.getAllEntries().slice(0, wc.navigationHistory.getActiveIndex() + 1)
+      .map(e => ({ url: e.url, title: e.title || '' }));
+    entries.push({ url, title: '' });
+    restore = { entries, index: entries.length - 1 };
+  } catch {}
+  const muted = tab.muted;
+  destroyView(tab);
+  tab.url = url;
+  ensureView(tab, restore);
+  const nwc = tab.view.webContents;
+  if (muted) nwc.setAudioMuted(true);
+  if (tab.volume !== 1) nwc.once('did-finish-load', () => applyVolume(tab));
+  if (tab.id === activeId) {
+    if (extensions) { try { extensions.selectTab(nwc); } catch {} }
+    layout(); focusPage();
+  }
+  push();
 }
 // Switch identity when a page navigates or redirects into Google sign-in. The first request
 // to Google has to carry the honest identity, so restart that navigation after switching.
@@ -717,6 +749,11 @@ function wireTab(tab, wc) {
   wc.on('page-favicon-updated', (_e, icons) => resolveTabIcon(tab, wc, icons));
   // Sites that never announce an icon (or announce it late) are handled after load.
   wc.on('did-finish-load', () => setTimeout(() => resolveTabIcon(tab, wc, []), 400));
+  wc.on('will-navigate', (e) => {
+    // A link or the new tab page's search box leading to a site that needs force dark switched.
+    if (e.defaultPrevented || e.isMainFrame === false || tab.view !== null && tab.view.webContents !== wc) return;
+    if (darkSwitchNeeded(tab, e.url)) { e.preventDefault(); setImmediate(() => { if (tab.view && tab.view.webContents === wc) openInFreshView(tab, e.url); }); }
+  });
   wc.on('did-start-navigation', (d) => {
     if (d.isMainFrame && !d.isSameDocument) { tab.blocked = 0; notePendingNav(d.url, wc.id); }
   });
