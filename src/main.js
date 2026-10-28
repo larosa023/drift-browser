@@ -647,6 +647,18 @@ function bindToTab(wc, tab) {
   const swoh = wc.setWindowOpenHandler.bind(wc);
   wc.setWindowOpenHandler = (fn) => swoh(wrap(fn));
 }
+// WebGPU is only offered to pages when Chromium reports it working with hardware acceleration
+// (see page-preload.js for why).
+function webgpuUsable() {
+  try { return app.getGPUFeatureStatus().webgpu === 'enabled'; } catch { return false; }
+}
+const NO_WEBGPU_CODE = `(() => { try {
+  const G = window.GPU && window.GPU.prototype;
+  if (!G || G.requestAdapter.__drift) return;
+  const p = new Proxy(G.requestAdapter, { apply: () => Promise.resolve(null) });
+  Object.defineProperty(p, '__drift', { value: true });
+  Object.defineProperty(G, 'requestAdapter', { ...Object.getOwnPropertyDescriptor(G, 'requestAdapter'), value: p });
+} catch {} })();`;
 function ensureView(tab, restore) {
   if (tab.view) return tab.view;
   tab.dark = wantsDark(tab.url);
@@ -660,6 +672,7 @@ function ensureView(tab, restore) {
       // a script context in every ad and embed frame: memory and time for nothing.
       nodeIntegrationInSubFrames: extPage,
       additionalArguments: tab.dark ? ['--blink-settings=forceDarkModeEnabled=true'] : [],
+
     },
   });
   // Until a page has drawn, show the theme's page colour instead of a white flash. Web pages
@@ -700,7 +713,7 @@ function ensureView(tab, restore) {
   // context, so nothing extra is set up per frame).
   if (!extPage) view.webContents.on('did-frame-navigate', (_e, url, _code, _status, isMain, pid, rid) => {
     if (isMain || !/^https?:/.test(url)) return;
-    const code = tab.volume !== 1 ? `${AUDIO_HOOK};window.__driftAudio.set(${tab.volume});` : AUDIO_CONNECT_HOOK;
+    const code = (tab.volume !== 1 ? `${AUDIO_HOOK};window.__driftAudio.set(${tab.volume});` : AUDIO_CONNECT_HOOK) + (webgpuUsable() ? '' : NO_WEBGPU_CODE);
     try { const f = webFrameMain.fromId(pid, rid); if (f && !f.isDestroyed()) f.executeJavaScript(code).catch(() => {}); } catch {}
   });
   view.setBorderRadius(RADIUS);
@@ -2521,11 +2534,30 @@ function startPerfLog() {
   try { const g = app.getGPUFeatureStatus(); log('gpu features: ' + Object.entries(g).map(([k, v]) => k + '=' + v).join(' ')); } catch {}
   app.getGPUInfo('basic').then((g) => { try { log('gpu: ' + (g.gpuDevice || []).map(d => `${d.vendorId}:${d.deviceId}${d.active ? '(active)' : ''} ${d.driverVersion || ''}`).join(', ') + ' ' + JSON.stringify(g.auxAttributes ? { gl: g.auxAttributes.glRenderer, angle: g.auxAttributes.displayType } : {})); } catch {} }).catch(() => {});
   app.on('child-process-gone', (_e, d) => log(`PROCESS GONE ${d.type} ${d.reason} ${d.exitCode}`));
+  // Chromium's own graphics report (chrome://gpu): why acceleration is on or off.
+  setTimeout(async () => {
+    const v = new WebContentsView({ webPreferences: { sandbox: true, contextIsolation: true } });
+    try {
+      await v.webContents.loadURL('chrome://gpu');
+      await new Promise(r => setTimeout(r, 4000));
+      const text = await v.webContents.executeJavaScript(`(() => {
+        const walk = (n) => { let t = ''; if (n.shadowRoot) t += walk(n.shadowRoot);
+          for (const c of n.childNodes) t += c.nodeType === 3 ? (c.parentNode && c.parentNode.nodeName === 'STYLE' ? '' : c.textContent) : (c.nodeType === 1 || c.nodeType === 11 ? walk(c) : '');
+          if (n.nodeType === 1 && /^(P|DIV|LI|TR|H\\d|TD|SPAN)$/.test(n.tagName)) t += n.tagName === 'TD' || n.tagName === 'SPAN' ? ' ' : '\\n';
+          return t; };
+        return walk(document.body).replace(/\\n\\s*\\n+/g, '\\n');
+      })()`);
+      await fs.promises.writeFile(path.join(file('logs'), 'gpu.txt'), text);
+      log('gpu report saved to logs\\gpu.txt'); flush();
+    } catch (e) { log('gpu report failed ' + e.message); }
+    try { v.webContents.close(); } catch {}
+  }, 6000);
   // Which extension service workers are running (they have no page of their own).
   setTimeout(() => { try { log('service workers: ' + Object.values(session.defaultSession.serviceWorkers.getAllRunning()).map(w => w.scope).join(', ')); } catch {} }, 8000);
 }
 
 function setupPageIPC() {
+  ipcMain.on('drift-no-webgpu', (e) => { e.returnValue = !webgpuUsable(); });
   // Synchronous tab lookup for extension background pages only.
   ipcMain.on('drift-tab-for', (e, d) => {
     let out = -1;

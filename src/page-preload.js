@@ -7,6 +7,24 @@ const { contextBridge } = require('electron');
 // own pages are left alone.
 const IS_WEB_PAGE = process.contextIsolated && /^(https?|file):$/.test(location.protocol);
 
+// WebGPU without working graphics acceleration: asking for an adapter makes Chromium's
+// graphics process probe the hardware for seconds, freezing the whole window (Twitch's
+// anti-bot script asks on every load). Answer "no adapter" at once, as Chromium does on
+// machines without WebGPU support. The wrapper still reads as a built-in function.
+const NO_WEBGPU_FN = () => {
+  try {
+    const G = window.GPU && window.GPU.prototype;
+    if (!G || G.requestAdapter.__drift) return;
+    const orig = G.requestAdapter;
+    const p = new Proxy(orig, { apply: () => Promise.resolve(null) });
+    Object.defineProperty(p, '__drift', { value: true });
+    Object.defineProperty(G, 'requestAdapter', { ...Object.getOwnPropertyDescriptor(G, 'requestAdapter'), value: p });
+  } catch {}
+};
+let noWebGPU = false;
+if (IS_WEB_PAGE) { try { noWebGPU = require('electron').ipcRenderer.sendSync('drift-no-webgpu') === true; } catch {} }
+if (noWebGPU && !/^accounts\.google\./i.test(location.hostname)) contextBridge.executeInMainWorld({ func: NO_WEBGPU_FN });
+
 // Not on Google's sign-in pages, which check that built-in browser functions are untouched.
 if (IS_WEB_PAGE && !/^accounts\.google\./i.test(location.hostname)) contextBridge.executeInMainWorld({
   func: () => {
