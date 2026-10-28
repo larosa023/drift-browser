@@ -55,7 +55,7 @@ function render() {
   b.classList.toggle('light', !S.dark);
   b.classList.toggle('hidden-bar', S.settings.sidebarHidden);
   b.classList.toggle('docked', !S.settings.sidebarHidden);
-  b.classList.toggle('over-palette', ['palette', 'modal', 'extmenu', 'siteinfo'].includes(S.overlay));
+  b.classList.toggle('over-palette', ['palette', 'modal', 'extmenu', 'siteinfo', 'dlmenu'].includes(S.overlay));
   b.classList.toggle('rail', !!S.settings.sidebarRail && !S.settings.sidebarHidden);
   b.classList.toggle('bm-on', !!S.settings.titleBar && !!S.settings.bookmarksBar);
   b.classList.toggle('over-peek', S.overlay === 'peek');
@@ -105,7 +105,7 @@ function render() {
   sh.hidden = isInternal(url);
 
   $('#blocked-total').innerHTML = S.blockedTotal ? `${icon('shield', 12)}${S.blockedTotal.toLocaleString()} blocked` : '';
-  $('#dl-dot').hidden = !S.downloads.some(d => d.state === 'progressing');
+  renderDownloadIndicators();
 
   renderTabs();
   syncActions();
@@ -118,6 +118,7 @@ function render() {
   $('#modal-wrap').hidden = S.overlay !== 'modal';
   if (S.overlay !== 'extmenu') $('#extmenu-wrap').hidden = true;
   if (S.overlay !== 'siteinfo') $('#siteinfo-wrap').hidden = true;
+  if (S.overlay !== 'dlmenu') $('#dlmenu-wrap').hidden = true; else renderDlMenu();
   if (panel === 'passwords') renderPasswords();
   placeActions();
   $('#findbar').hidden = !S.findOpen;
@@ -180,7 +181,7 @@ function placeActions() {
 
 function applyHole() {
   const w = $('#wash');
-  if (S && ['palette', 'modal', 'extmenu', 'siteinfo'].includes(S.overlay)) {
+  if (S && ['palette', 'modal', 'extmenu', 'siteinfo', 'dlmenu'].includes(S.overlay)) {
     const { x, y, width: cw, height: ch } = content;
     w.style.clipPath = `polygon(evenodd, 0 0, 100% 0, 100% 100%, 0 100%, 0 0, ${x}px ${y}px, ${x + cw}px ${y}px, ${x + cw}px ${y + ch}px, ${x}px ${y + ch}px, ${x}px ${y}px)`;
   } else w.style.clipPath = '';
@@ -348,7 +349,7 @@ $('#btn-settings').onclick = async () => {
   togglePanel('settings');
   if (bmSources === null) { bmSources = await window.drift.invoke('bm-sources') || []; if (panel === 'settings') renderSettings(); }
 };
-$('#btn-downloads').onclick = () => togglePanel('downloads');
+$('#btn-downloads').onclick = () => { togglePanel('downloads'); if (panel === 'downloads') send('downloads-seen'); };
 $('#btn-extensions').onclick = () => togglePanel('extensions');
 $('#btn-volume').onclick = () => togglePanel('volume');
 $('#vol-reset').onclick = () => S.tabs.filter(t => t.volume !== 1).forEach(t => send('tab-volume', t.id, 1));
@@ -711,6 +712,72 @@ function fmtBytes(n) {
   while (n >= 1024 && i < 3) { n /= 1024; i++; }
   return `${n.toFixed(n >= 10 || i === 0 ? 0 : 1)} ${u[i]}`;
 }
+// The toolbar button (shown while downloading, and until you've seen a finished download) and
+// the sidebar button both get a progress ring and a dot: pulsing while downloading, green when done.
+let dlLastCount = 0;
+function renderDownloadIndicators() {
+  const ds = S.downloads || [];
+  const active = ds.filter(d => d.state === 'progressing');
+  const unseen = ds.some(d => !d.seen && d.state === 'completed');
+  const known = active.filter(d => d.total > 0);
+  const pct = known.length ? Math.round(known.reduce((a, d) => a + d.received, 0) / known.reduce((a, d) => a + d.total, 0) * 100) : 0;
+  const tb = $('#tb-dl');
+  const show = active.length > 0 || unseen || (S && S.overlay === 'dlmenu');
+  if (show && tb.hidden) { tb.classList.remove('dl-new'); void tb.offsetWidth; tb.classList.add('dl-new'); }
+  tb.hidden = !show;
+  for (const [btn, dot] of [[tb, $('#tb-dl-dot')], [$('#btn-downloads'), $('#dl-dot')]]) {
+    btn.classList.toggle('dl-active', active.length > 0);
+    btn.classList.toggle('dl-unknown', active.length > 0 && !known.length);
+    btn.style.setProperty('--p', String(pct));
+    // Toolbar: the ring shows progress, the dot means "finished, not looked at yet".
+    dot.hidden = btn === tb ? !(unseen && !active.length) : !(active.length || unseen);
+    dot.className = 'dot ' + (active.length ? 'active' : 'done');
+  }
+  const title = active.length ? `Downloading ${active.length === 1 ? active[0].name : active.length + ' files'}${known.length ? ` · ${pct}%` : ''}` : unseen ? 'Download finished' : 'Downloads';
+  tb.title = title; $('#btn-downloads').title = title;
+  if (ds.length !== dlLastCount) { dlLastCount = ds.length; }
+}
+function dlRows(ds) {
+  return ds.map(d => {
+      const pct = d.total ? Math.round(d.received / d.total * 100) : 0;
+      const sub = d.state === 'progressing' ? `${fmtBytes(d.received)}${d.total ? ' of ' + fmtBytes(d.total) + ` · ${pct}%` : ''}`
+        : d.state === 'completed' ? fmtBytes(d.received) : d.state === 'cancelled' ? 'Cancelled' : 'Failed';
+      return `<div class="dl ${d.state === 'completed' ? 'done' : ''}" data-dl="${d.id}">
+        <span class="ic">${icon('file', 18)}</span>
+        <div class="meta"><div class="name" data-open title="${d.state === 'completed' ? 'Open' : ''}">${esc(d.name)}</div><div class="sub">${sub}</div>
+          ${d.state === 'progressing' ? `<div class="bar"><i style="width:${pct}%"></i></div>` : ''}</div>
+        ${d.state === 'progressing' ? `<button class="ib" data-cancel title="Cancel">${icon('x', 14)}</button>`
+          : d.state === 'completed' ? `<button class="ib" data-show title="Show in folder">${icon('folder', 15)}</button>` : ''}
+      </div>`;
+  }).join('');
+}
+function renderDlMenu() {
+  const ds = (S.downloads || []).slice(0, 6);
+  $('#dlmenu-list').innerHTML = ds.length ? dlRows(ds) : `<div class="empty">No downloads yet</div>`;
+}
+function openDlMenu() {
+  const r = $('#tb-dl').getBoundingClientRect(), m = $('#dlmenu');
+  renderDlMenu();
+  m.style.left = Math.max(8, Math.min(window.innerWidth - 338, r.right - 330)) + 'px';
+  m.style.top = (r.bottom + 6) + 'px';
+  $('#dlmenu-wrap').hidden = false;
+  raiseOverlay('dlmenu');
+  send('downloads-seen');
+  setTimeout(() => m.focus({ preventScroll: true }), 0);
+}
+function closeDlMenu() { pendingOverlay = null; $('#dlmenu-wrap').hidden = true; if (S && S.overlay === 'dlmenu') send('overlay', null); }
+$('#tb-dl').addEventListener('click', () => { if (S && S.overlay === 'dlmenu') closeDlMenu(); else openDlMenu(); });
+$('#dlmenu-wrap').addEventListener('mousedown', (e) => { if (e.target.id === 'dlmenu-wrap') closeDlMenu(); });
+document.addEventListener('keydown', (e) => { if (e.key === 'Escape' && S && S.overlay === 'dlmenu') closeDlMenu(); });
+$('#dlmenu-all').addEventListener('click', () => { closeDlMenu(); if (panel !== 'downloads') togglePanel('downloads'); });
+$('#dlmenu-list').addEventListener('click', (e) => {
+  const row = e.target.closest('[data-dl]'); if (!row) return;
+  const id = Number(row.dataset.dl);
+  if (e.target.closest('[data-cancel]')) send('cancel-download', id);
+  else if (e.target.closest('[data-show]')) { send('show-download', id); closeDlMenu(); }
+  else if (row.classList.contains('done')) { send('open-download', id); closeDlMenu(); }
+});
+
 function renderDownloads() {
   const ds = S.downloads;
   $('#downloads-body').innerHTML = !ds.length ? `<div class="empty">${icon('download', 22)}<br>Files you download appear here.</div>` :
@@ -1173,10 +1240,24 @@ $('#split-divider').addEventListener('dblclick', () => send('split-ratio', 0.5))
 
 // ---------------------------------------------------------------------- toast
 let toastTimer;
-function toast(html) {
-  const t = $('#toast'); t.innerHTML = html; t.hidden = false;
-  clearTimeout(toastTimer); toastTimer = setTimeout(() => (t.hidden = true), 3200);
+// toast(html, ms, actions): actions are [{ label, run }] buttons. Notices float above the bottom
+// of the page (the sidebar is narrow, and in icon mode anything wider sits under the page);
+// Drift sends button clicks back here. The sidebar corner is only a fallback before startup.
+let toastActions = [], toastSeq = 0;
+function toast(html, ms = 3200, actions = []) {
+  toastActions = actions; const token = ++toastSeq;
+  const full = html + actions.map((a, i) => `<button class="t-act" data-tact="${i}">${esc(a.label)}</button>`).join('');
+  const t = $('#toast');
+  if (S) {   // normally: float above the page (the sidebar is too narrow, and hidden in icon mode)
+    t.hidden = true; clearTimeout(toastTimer);
+    send('toast-float', { html: full, ms: ms + (actions.length ? 2000 : 0), token });
+    return;
+  }
+  t.innerHTML = full; t.hidden = false;
+  t.querySelectorAll('[data-tact]').forEach(b => b.onclick = () => { const a = toastActions[Number(b.dataset.tact)]; t.hidden = true; if (a) a.run(); });
+  clearTimeout(toastTimer); toastTimer = setTimeout(() => (t.hidden = true), ms + (actions.length ? 2000 : 0));
 }
+window.drift.on('toast-action', ({ token, index }) => { if (token === toastSeq && toastActions[index]) toastActions[index].run(); });
 
 // ---------------------------------------------------------------------- messages from main
 // An overlay opened here is shown before Drift confirms it; a state update sent just before
@@ -1192,10 +1273,10 @@ window.drift.on('extensions', (list) => { EXT = list; render(); });
 window.drift.on('bookmarks', (list) => { BM = list; renderBookmarks(); });
 window.drift.on('passwords', (list) => { PW = list; if (panel === 'passwords') renderPasswords(true); });
 window.drift.on('toast', (t) => {
-  toast(`${icon(t.icon || 'info')}<span>${esc(t.text)}</span>${t.action ? `<button class="tbtn" id="toast-act">${esc(t.action.label)}</button>` : ''}`);
-  const a = $('#toast-act');
-  if (a && t.action && t.action.bm) a.onclick = () => { const b = findBm(t.action.bm); if (b) editBookmark(b); };
-  if (a && t.action && t.action.update) a.onclick = () => send('update-install');
+  const actions = [];
+  if (t.action && t.action.bm) actions.push({ label: t.action.label, run: () => { const b = findBm(t.action.bm); if (b) editBookmark(b); } });
+  if (t.action && t.action.update) actions.push({ label: t.action.label, run: () => send('update-install') });
+  toast(`${icon(t.icon || 'info')}<span>${esc(t.text)}</span>`, 3200, actions);
 });
 window.drift.on('bm-edit', (b) => editBookmark(b));
 window.drift.on('layout', (l) => {
@@ -1225,6 +1306,13 @@ window.drift.on('find-result', ({ active, matches }) => {
   $('#findbar').classList.toggle('nomatch', !!q && matches === 0);
 });
 window.drift.on('download-started', (name) => toast(`${icon('download')}<span>Downloading ${esc(name)}</span>`));
+window.drift.on('download-done', ({ id, name, state }) => {
+  if (state !== 'completed') { toast(`${icon('x')}<span>${state === 'cancelled' ? 'Cancelled' : 'Download failed'}: ${esc(name)}</span>`); return; }
+  toast(`${icon('check')}<span>Downloaded ${esc(name)}</span>`, 6000, [
+    { label: 'Open', run: () => { send('open-download', id); send('downloads-seen'); } },
+    { label: 'Show in folder', run: () => { send('show-download', id); send('downloads-seen'); } },
+  ]);
+});
 
 send('ready');
 send('ext-list');

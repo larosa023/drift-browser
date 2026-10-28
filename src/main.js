@@ -338,10 +338,39 @@ function panes() {
           { tab: B, rect: { x: r.x + w1 + GAP, y: r.y, width: r.width - w1 - GAP, height: r.height } }];
 }
 
+// With the sidebar collapsed to icons (or hidden), notifications from the sidebar would sit
+// under the page, so they're shown in a small view of their own above it, sized to fit.
+let toastView = null, toastShown = false, toastTimer = null, toastToken = 0, toastSize = { w: 360, h: 64 };
+function placeToast() {
+  if (!toastView || !win) return;
+  const r = contentRect();
+  const w = Math.min(toastSize.w, Math.max(200, r.width - 16)), h = toastSize.h;
+  toastView.setBounds({ x: r.x + 4, y: r.y + r.height - h - 4, width: w, height: h });
+}
+function showFloatingToast(t) {
+  if (!toastView) {
+    toastView = new WebContentsView({ webPreferences: { sandbox: true, contextIsolation: true, preload: path.join(__dirname, 'ui', 'toast-preload.js') } });
+    toastView.setBackgroundColor('#00000000');
+    toastView.webContents.loadURL('drift://ui/toast.html');
+  }
+  toastToken = t.token;
+  const send = () => toastView.webContents.send('show', { html: t.html, dark: isDark(), accent: settings.accent });
+  if (toastView.webContents.isLoading()) toastView.webContents.once('did-finish-load', send); else send();
+  clearTimeout(toastTimer);
+  toastTimer = setTimeout(hideFloatingToast, Math.max(1500, Math.min(15000, t.ms || 3200)));
+}
+function hideFloatingToast() {
+  clearTimeout(toastTimer);
+  if (!toastShown) return;
+  toastShown = false;
+  try { win.contentView.removeChildView(toastView); } catch {}
+}
+
 function restack() {
   const views = panes().map(p => p.tab && p.tab.view).filter(Boolean);
   const uiOnTop = overlay !== null && !htmlFullscreen;
   const want = uiOnTop ? [...views, ui] : [ui, ...views];
+  if (toastView && toastShown) want.push(toastView);   // notifications float above everything
   const have = win.contentView.children;
   if (have.length === want.length && have.every((v, i) => v === want[i])) return;
   for (const c of have) if (!want.includes(c)) win.contentView.removeChildView(c);
@@ -368,6 +397,7 @@ function layout() {
   const sp = ps.length === 2 ? splitOf(activeId) : null;
   if (overlay === 'peek') ui.setBounds({ x: 0, y: 0, width: (settings.sidebarRail ? RAIL_W : settings.sidebarWidth) + 24, height: h });
   else ui.setBounds({ x: 0, y: 0, width: w, height: h });
+  if (toastShown) placeToast();
   restack();
   ui.webContents.send('layout', { content: r, fullscreen: htmlFullscreen || win.isFullScreen(), titleH: titleHeight(), bmH: bookmarksHeight(), left: sidebarLeft(),
     panes: ps.map(p => ({ id: p.tab ? p.tab.id : 0, rect: p.rect })), split: sp ? { dir: sp.dir, ratio: sp.ratio } : null, activeId });
@@ -376,7 +406,7 @@ function layout() {
 function setOverlay(mode, keepFocus) {
   overlay = mode;
   layout();
-  if (['palette', 'modal', 'extmenu', 'siteinfo'].includes(mode)) ui.webContents.focus();
+  if (['palette', 'modal', 'extmenu', 'siteinfo', 'dlmenu'].includes(mode)) ui.webContents.focus();
   else if (!keepFocus) focusPage();   // keepFocus: an extension popup just opened and must keep focus
   push();
 }
@@ -1744,7 +1774,7 @@ function setupDownloads(ses) {
     while (fs.existsSync(target)) target = path.join(dir, `${base} (${n++})${ext}`);
     item.setSavePath(target);
     const d = { id: Date.now() + Math.random(), name: path.basename(target), path: target,
-      received: 0, total: item.getTotalBytes(), state: 'progressing', item };
+      received: 0, total: item.getTotalBytes(), state: 'progressing', seen: false, item };
     downloads.unshift(d);
     if (downloads.length > 30) downloads.pop();
     ui.webContents.send('download-started', d.name);
@@ -1753,7 +1783,10 @@ function setupDownloads(ses) {
       d.received = item.getReceivedBytes(); d.total = item.getTotalBytes(); d.state = state === 'interrupted' ? 'interrupted' : 'progressing';
       const now = Date.now(); if (now - lastPush > 250) { lastPush = now; push(); }   // progress updates at most 4×/s
     });
-    item.once('done', (_ev, state) => { d.state = state; d.received = item.getReceivedBytes(); delete d.item; push(); });
+    item.once('done', (_ev, state) => {
+      d.state = state; d.received = item.getReceivedBytes(); delete d.item; push();
+      if (ui && !ui.webContents.isDestroyed()) ui.webContents.send('download-done', { id: d.id, name: d.name, state });
+    });
     push();
   });
 }
@@ -1800,7 +1833,7 @@ function setupProtocol() {
       const fp = path.join(UI_DIR, name);
       const types = { '.html': 'text/html', '.css': 'text/css', '.js': 'text/javascript' };
       const type = types[path.extname(fp)];
-      if (!type || name === 'preload.js' || name === 'preload.src.js' || !fs.existsSync(fp)) return new Response('Not found', { status: 404 });
+      if (!type || name === 'preload.js' || name === 'preload.src.js' || name === 'toast-preload.js' || !fs.existsSync(fp)) return new Response('Not found', { status: 404 });
       return new Response(fs.readFileSync(fp), { headers: { 'content-type': type + '; charset=utf-8' } });
     }
     return new Response('Not found', { status: 404 });
@@ -2240,6 +2273,20 @@ function setupIPC() {
   });
   on('open-download', (id) => { const d = downloads.find(x => x.id === id); if (d) shell.openPath(d.path); });
   on('show-download', (id) => { const d = downloads.find(x => x.id === id); if (d) shell.showItemInFolder(d.path); });
+  on('toast-float', (t) => { if (t && typeof t.html === 'string') showFloatingToast(t); });
+  on('toast-hide', () => hideFloatingToast());
+  ipcMain.on('toast-size', (e, w, h) => {
+    if (!toastView || e.sender !== toastView.webContents) return;
+    toastSize = { w: Math.round(Math.max(120, Math.min(560, w))), h: Math.round(Math.max(40, Math.min(200, h))) };
+    placeToast();
+    if (!toastShown) { toastShown = true; win.contentView.addChildView(toastView); }
+  });
+  ipcMain.on('toast-act', (e, i) => {
+    if (!toastView || e.sender !== toastView.webContents) return;
+    if (ui && !ui.webContents.isDestroyed()) ui.webContents.send('toast-action', { token: toastToken, index: Number(i) });
+    hideFloatingToast();
+  });
+  on('downloads-seen', () => { let changed = false; for (const d of downloads) if (!d.seen && d.state !== 'progressing') { d.seen = true; changed = true; } if (changed) push(); });
   on('cancel-download', (id) => { const d = downloads.find(x => x.id === id); if (d && d.item) d.item.cancel(); });
   on('clear-downloads', () => { for (let i = downloads.length - 1; i >= 0; i--) if (downloads[i].state !== 'progressing') downloads.splice(i, 1); push(); });
   on('open-downloads-folder', () => shell.openPath(app.getPath('downloads')));
@@ -2481,6 +2528,7 @@ if (!app.requestSingleInstanceLock()) {
     const uiReady = new Promise(r => ui.webContents.once('did-finish-load', r)).then(() => { setTimeout(prepareBookmarkMenuIcons, 300); return initIdentity(); });
     Promise.race([Promise.all([shieldsReady, uiReady]), new Promise(r => setTimeout(r, 2000))]).then(() => { PERF('gate open'); openGate(); });
     setupUpdates();
+
 
 
 

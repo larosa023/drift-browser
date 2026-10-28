@@ -25,6 +25,7 @@
         <button class="shield a-shield" id="a-shield" title="Shields"><span></span><b id="a-shield-count"></b></button>
       </div>
       <div class="tb-right">
+        <button class="ib tb-dl" id="tb-dl" hidden title="Downloads"><span class="dl-ring"></span><span data-i="download"></span><i class="dot" id="tb-dl-dot" hidden></i></button>
         <div id="tb-actions"></div>
       </div>
     </div>
@@ -106,7 +107,7 @@
 
     <footer>
       <button class="ib" id="btn-settings" title="Settings" data-i="gear"></button>
-      <button class="ib" id="btn-downloads" title="Downloads" data-i="download"><i class="dot" id="dl-dot" hidden></i></button>
+      <button class="ib" id="btn-downloads" title="Downloads"><span class="dl-ring"></span><span data-i="download"></span><i class="dot" id="dl-dot" hidden></i></button>
       <button class="ib" id="btn-extensions" title="Extensions" data-i="puzzle"></button>
       <button class="ib" id="btn-volume" title="Volume mixer" data-i="mixer"><i class="dot" id="vol-dot" hidden></i></button>
       <span class="spacer"></span>
@@ -147,6 +148,13 @@
     </div>
   </div>
 
+  <div id="dlmenu-wrap" hidden>
+    <div id="dlmenu" tabindex="-1">
+      <div class="em-head">Downloads</div>
+      <div id="dlmenu-list"></div>
+      <button class="em-manage" id="dlmenu-all">All downloads</button>
+    </div>
+  </div>
   <div id="siteinfo-wrap" hidden><div id="siteinfo" tabindex="-1"></div></div>
 
   <div id="modal-wrap" hidden><form id="modal" autocomplete="off"></form></div>

@@ -425,7 +425,7 @@ var require_browser_action = __commonJS({
 // src/ui/preload.src.js
 var { contextBridge, ipcRenderer } = require("electron");
 var { injectBrowserAction } = require_browser_action();
-var IN = ["state", "layout", "palette", "panel", "find-open", "find-result", "download-started", "extensions", "bookmarks", "passwords", "toast", "bm-edit"];
+var IN = ["state", "layout", "palette", "panel", "find-open", "find-result", "download-started", "extensions", "bookmarks", "passwords", "toast", "bm-edit", "download-done", "toast-action"];
 contextBridge.exposeInMainWorld("drift", {
   send: (ch, ...args) => ipcRenderer.send(ch, ...args),
   suggest: (q) => ipcRenderer.invoke("suggest", q),

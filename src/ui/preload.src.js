@@ -2,7 +2,7 @@
 const { contextBridge, ipcRenderer } = require('electron');
 const { injectBrowserAction } = require('electron-chrome-extensions/browser-action');
 
-const IN = ['state', 'layout', 'palette', 'panel', 'find-open', 'find-result', 'download-started', 'extensions', 'bookmarks', 'passwords', 'toast', 'bm-edit'];
+const IN = ['state', 'layout', 'palette', 'panel', 'find-open', 'find-result', 'download-started', 'extensions', 'bookmarks', 'passwords', 'toast', 'bm-edit', 'download-done', 'toast-action'];
 
 contextBridge.exposeInMainWorld('drift', {
   send: (ch, ...args) => ipcRenderer.send(ch, ...args),
