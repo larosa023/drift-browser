@@ -1,6 +1,15 @@
 // What's new in each release, shown on the What's new page (drift://whatsnew) after an update.
 // Newest first. Kinds: new, faster, fixed, changed. Written for people using Drift.
 module.exports = [
+  { version: '1.14.2', date: '2026-10-29', items: [
+    ['fixed', 'With two windows open, a notification could stay stuck on screen, show up in the wrong window, or cause an error popup.'],
+    ['fixed', 'Results of importing or exporting bookmarks and passwords, and Clear data in site info, always apply to the window you used.'],
+    ['fixed', 'A sleeping tab wakes up still muted, at its volume, with its Back and Forward history.'],
+    ['fixed', 'Switching tabs while a video is fullscreen leaves fullscreen instead of getting stuck there.'],
+    ['fixed', 'Tabs opened from a pinned tab, and tabs you unpin, land in the right place.'],
+    ['changed', 'Passwords saved on a secure (https) page are never offered on an insecure (http) one.'],
+    ['faster', 'The notification bubble closes its process when unused, saving memory.'],
+  ] },
   { version: '1.14.1', date: '2026-10-29', items: [
     ['fixed', 'No more "JavaScript error occurred in the main process" popup when Drift restarts to install an update.'],
     ['fixed', 'Restarting to update keeps all your windows, not just the last one.'],

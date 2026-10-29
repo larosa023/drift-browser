@@ -48,9 +48,12 @@ class Passwords {
   }
 
   // Entries usable on a page: same host, or saved for a parent domain.
+  // A login saved on a secure (https) page is never offered on an insecure (http) one, where
+  // anyone on the network could have put the form there (same rule as Chrome).
   forUrl(pageUrl) {
     const h = hostOf(pageUrl); if (!h) return [];
-    return this.entries.filter(e => { const eh = hostOf(e.url); return eh && (eh === h || h.endsWith('.' + eh)); })
+    const pageSecure = /^https:/i.test(pageUrl);
+    return this.entries.filter(e => { const eh = hostOf(e.url); return eh && (eh === h || h.endsWith('.' + eh)) && (pageSecure || !/^https:/i.test(e.url)); })
       .sort((a, b) => (b.used || 0) - (a.used || 0));
   }
 

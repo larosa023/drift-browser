@@ -346,6 +346,13 @@ const ctxOfTab = (tab) => windows.find(c => c.id === tab.wid) || null;
 const ctxOfUi = (wc) => windows.find(c => c.ui && c.ui.webContents === wc) || null;
 const ctxOfWin = (w) => windows.find(c => c.win === w) || null;
 function useTab(tab) { const c = tab && ctxOfTab(tab); if (c) useWin(c); return c; }
+// For work that runs later (timers, after an await): capture the window now, and run the
+// callback as that window, or not at all if it has closed meanwhile. (Events from other
+// windows' tabs change which window is current in between.)
+function inThisWin(fn) {
+  const ctx = cur;
+  return (...a) => { if (!ctx || !windows.includes(ctx)) return undefined; useWin(ctx); return fn(...a); };
+}
 // Every tab in every window.
 function allTabs() { saveCtx(); return windows.flatMap(c => c.tabs); }
 function findTab(id) { return allTabs().find(t => t.id === id) || null; }
@@ -527,22 +534,30 @@ function placeToast() {
   toastView.setBounds({ x: r.x + 4, y: r.y + r.height - h - 4, width: w, height: h });
 }
 function showFloatingToast(t) {
+  clearTimeout(cur && cur.toastIdle);
   if (!toastView) {
     toastView = new WebContentsView({ webPreferences: { sandbox: true, contextIsolation: true, preload: path.join(__dirname, 'ui', 'toast-preload.js') } });
     toastView.setBackgroundColor('#00000000');
     toastView.webContents.loadURL('drift://ui/toast.html');
   }
   toastToken = t.token;
-  const send = () => toastView.webContents.send('show', { html: t.html, dark: isDark(), accent: settings.accent });
-  if (toastView.webContents.isLoading()) toastView.webContents.once('did-finish-load', send); else send();
+  const view = toastView;   // this window's, even if another window is current when it loads
+  const send = () => { if (!view.webContents.isDestroyed()) view.webContents.send('show', { html: t.html, dark: isDark(), accent: settings.accent }); };
+  if (view.webContents.isLoading()) view.webContents.once('did-finish-load', send); else send();
   clearTimeout(toastTimer);
-  toastTimer = setTimeout(hideFloatingToast, Math.max(1500, Math.min(15000, t.ms || 3200)));
+  toastTimer = setTimeout(inThisWin(hideFloatingToast), Math.max(1500, Math.min(15000, t.ms || 3200)));
 }
 function hideFloatingToast() {
   clearTimeout(toastTimer);
   if (!toastShown) return;
   toastShown = false;
   try { win.contentView.removeChildView(toastView); } catch {}
+  // Notifications are occasional: close the view (its own page process) after a minute unused.
+  if (cur) { clearTimeout(cur.toastIdle); cur.toastIdle = setTimeout(inThisWin(() => {
+    if (toastShown || !toastView) return;
+    try { toastView.webContents.close(); } catch {}
+    toastView = null; saveCtx();
+  }), 60000); }
 }
 
 function restack() {
@@ -634,6 +649,9 @@ function createTab(url = NEWTAB, opts = {}) {
       index = i >= 0 ? i + 1 : tabs.length;
     } else index = tabs.length;
   }
+  // Pinned tabs stay grouped at the top (a tab opened from a pinned one goes after them).
+  const pinnedCount = tabs.filter(t => t.pinned).length;
+  index = tab.pinned ? Math.min(index, pinnedCount) : Math.max(index, pinnedCount);
   tabs.splice(index, 0, tab);
   if (!opts.lazy) ensureView(tab);
   if (opts.activate !== false) activate(tab.id);
@@ -690,6 +708,8 @@ const NO_WEBGPU_CODE = `(() => { try {
 } catch {} })();`;
 function ensureView(tab, restore) {
   if (tab.view) return tab.view;
+  if (!restore && tab.sleepHistory && tab.sleepHistory.entries.length) restore = tab.sleepHistory;   // waking from sleep
+  tab.sleepHistory = null;
   tab.dark = wantsDark(tab.url);
   const extPage = /^chrome-extension:/.test(tab.url);
   const view = new WebContentsView({
@@ -735,7 +755,7 @@ function ensureView(tab, restore) {
   });
   view.webContents.on('did-navigate', (_e, url) => {
     // A web tab that moved to an extension page: recreate it with iframe support (keeps history).
-    if (!extPage && /^chrome-extension:/.test(url) && tab.view === view) { tab.url = url; setImmediate(() => { if (tab.view === view) rebuildView(tab); }); }
+    if (!extPage && /^chrome-extension:/.test(url) && tab.view === view) { tab.url = url; setImmediate(() => { if (tab.view === view && useTab(tab)) rebuildView(tab); }); }
   });
   // Per-tab volume for Web Audio in iframes (embedded games, players): the top page gets the
   // hook from page-preload.js, web iframes as soon as they load (in the page's own script
@@ -753,6 +773,9 @@ function ensureView(tab, restore) {
   wireTab(tab, wc);
   if (extensions) extensions.addTab(wc, (ctxOfTab(tab) || cur).win);
   setMode(wc, tab.url);
+  // Muting and volume belong to the tab, not its page: carry them over (after sleep, too).
+  if (tab.muted) wc.setAudioMuted(true);
+  if (tab.volume !== 1) wc.once('did-finish-load', () => applyVolume(tab));
   if (restore && restore.entries.length) wc.navigationHistory.restore(restore).catch(() => loadIn(wc, tab.url));
   else loadIn(wc, tab.url);
   return view;
@@ -794,7 +817,7 @@ function wireTab(tab, wc) {
   wc.on('will-navigate', (e) => {
     // A link or the new tab page's search box leading to a site that needs force dark switched.
     if (e.defaultPrevented || e.isMainFrame === false || tab.view !== null && tab.view.webContents !== wc) return;
-    if (darkSwitchNeeded(tab, e.url)) { e.preventDefault(); setImmediate(() => { if (tab.view && tab.view.webContents === wc) openInFreshView(tab, e.url); }); }
+    if (darkSwitchNeeded(tab, e.url)) { e.preventDefault(); setImmediate(() => { if (tab.view && tab.view.webContents === wc && useTab(tab)) openInFreshView(tab, e.url); }); }
   });
   wc.on('did-start-navigation', (d) => {
     if (d.isMainFrame && !d.isSameDocument) { tab.blocked = 0; notePendingNav(d.url, wc.id); }
@@ -804,7 +827,7 @@ function wireTab(tab, wc) {
     if (hostOf(url) !== tab.iconHost) tab.iconHost = '';
     if (hostOf(url) !== hostOf(tab.url)) tab.favicon = faviconStore[hostOf(url)] || '';
     tab.url = url; addHistory(url, wc.getTitle()); upd();
-    if (wantsDark(url) !== !!tab.dark && !isInternal(url)) setImmediate(() => rebuildView(tab));
+    if (wantsDark(url) !== !!tab.dark && !isInternal(url)) setImmediate(() => { if (useTab(tab)) rebuildView(tab); });
     if (pendingLogin && pendingLogin.wcId === wc.id) offerSavePassword();
   });
   wc.on('did-navigate-in-page', (_e, url, isMain) => {
@@ -876,6 +899,13 @@ function activate(id, opts = {}) {
   if (!tab) return;
   const prev = activeTab();
   if (prev && prev !== tab && findOpen) closeFind();
+  // Leaving a tab that was showing a video (or anything) fullscreen: end its fullscreen, or
+  // the next tab would be drawn edge to edge with no way back but F11.
+  if (htmlFullscreen && prev !== tab) {
+    htmlFullscreen = false;
+    if (win && !win.isDestroyed()) win.setFullScreen(false);
+    if (prev && prev.view && !prev.view.webContents.isDestroyed()) prev.view.webContents.executeJavaScript('document.fullscreenElement && document.exitFullscreen()', true).catch(() => {});
+  }
   activeId = id;
   tab.lastActive = Date.now();
   if (!tab.view) ensureView(tab);
@@ -956,7 +986,9 @@ function moveTab(id, toIndex, pinned) {
 function togglePin(id) {
   const tab = tabs.find(t => t.id === id);
   if (!tab) return;
-  moveTab(id, tab.pinned ? tabs.filter(t => t.pinned).length : tabs.filter(t => t.pinned).length, !tab.pinned);
+  // Pinning puts it at the end of the pinned tabs; unpinning at the top of the others
+  // (moveTab keeps each kind grouped, so 0 lands right after the pinned tabs).
+  moveTab(id, tab.pinned ? 0 : tabs.filter(t => t.pinned).length, !tab.pinned);
 }
 
 // Put background tabs to sleep to save memory (like Brave/Zen tab sleeping).
@@ -969,6 +1001,8 @@ setInterval(() => {
       const sp = splitOf(t.id);
       if (sp && sp === splitOf(activeId)) continue;
       if (t.id !== activeId && t.view && !t.audible && t.lastActive < cutoff) {
+        // Keep its back/forward history for when it wakes (ensureView restores it).
+        try { const h = t.view.webContents.navigationHistory; t.sleepHistory = { entries: h.getAllEntries(), index: h.getActiveIndex() }; } catch {}
         destroyView(t); slept = true;
       }
     }
@@ -1123,6 +1157,7 @@ async function fetchFavicon(iconUrl) {
   } catch (e) { why = e.message; }
   if (!out) iconLog(`miss ${iconUrl.slice(0, 160)} — ${why}`);
   faviconMem.set(iconUrl, out);
+  if (faviconMem.size > 300) faviconMem.delete(faviconMem.keys().next().value);   // keep the cache small (oldest out)
   if (!out) setTimeout(() => faviconMem.delete(iconUrl), 10 * 60 * 1000);   // retry later
   return out;
 }
@@ -1602,7 +1637,10 @@ function applyIdentity(wc) {
   if (!wc.__driftIdentity) {
     wc.__driftIdentity = true;
     // DevTools or a crash can drop the session; put it back.
-    dbg.on('detach', () => { wc.__driftIdentity = false; if (!wc.__driftSignin) setTimeout(() => applyIdentity(wc), 500); });
+    if (!wc.__driftDetachHook) {   // once per page: sign-in round trips reset __driftIdentity
+      wc.__driftDetachHook = true;
+      dbg.on('detach', () => { wc.__driftIdentity = false; if (!wc.__driftSignin && !wc.isDestroyed()) setTimeout(() => applyIdentity(wc), 500); });
+    }
   }
   dbg.sendCommand('Emulation.setUserAgentOverride', { userAgent: chromeUA(), userAgentMetadata: uaMeta }).catch(() => {});
 }
@@ -1964,8 +2002,9 @@ async function removeExtension(id) {
 }
 
 async function loadUnpacked() {
+  const dlgCtx = cur;   // the dialog stays open while other windows' events change the current one
   const r = await dialog.showOpenDialog(win, { title: 'Choose an extension folder (with manifest.json)', properties: ['openDirectory'] });
-  if (r.canceled || !r.filePaths[0]) return;
+  if (r.canceled || !r.filePaths[0]) return; if (!windows.includes(dlgCtx)) return; useWin(dlgCtx);
   const dir = r.filePaths[0];
   try {
     const ext = await extApi().loadExtension(dir, { allowFileAccess: true });
@@ -2224,9 +2263,10 @@ function useWallpaperFile(src, ext) {
 }
 
 async function chooseWallpaper() {
+  const dlgCtx = cur;   // the dialog stays open while other windows' events change the current one
   const r = await dialog.showOpenDialog(win, { title: 'Choose a wallpaper', properties: ['openFile'],
     filters: [{ name: 'Images', extensions: ['jpg', 'jpeg', 'png', 'webp', 'gif', 'avif', 'bmp'] }] });
-  if (r.canceled || !r.filePaths[0]) return;
+  if (r.canceled || !r.filePaths[0]) return; if (!windows.includes(dlgCtx)) return; useWin(dlgCtx);
   try { useWallpaperFile(r.filePaths[0], path.extname(r.filePaths[0]).toLowerCase()); }
   catch (e) { dialog.showMessageBox(win, { type: 'error', message: "Couldn't use that image", detail: e.message }); }
 }
@@ -2378,9 +2418,10 @@ async function importBookmarksFrom(source) {
   try {
     let items, name;
     if (source === 'file') {
+      const dlgCtx = cur;   // the dialog stays open while other windows' events change the current one
       const r = await dialog.showOpenDialog(win, { title: 'Import bookmarks', properties: ['openFile'],
         filters: [{ name: 'Bookmarks file', extensions: ['html', 'htm', 'json'] }] });
-      if (r.canceled || !r.filePaths[0]) return;
+      if (r.canceled || !r.filePaths[0]) return; if (!windows.includes(dlgCtx)) return; useWin(dlgCtx);
       const text = fs.readFileSync(r.filePaths[0], 'utf8');
       items = /^\s*\{/.test(text) ? fromChromiumJSON(r.filePaths[0]) : fromNetscapeHTML(text);
       name = path.basename(r.filePaths[0]);
@@ -2398,9 +2439,10 @@ async function importBookmarksFrom(source) {
 }
 
 async function exportBookmarks() {
+  const dlgCtx = cur;   // the dialog stays open while other windows' events change the current one
   const r = await dialog.showSaveDialog(win, { title: 'Export bookmarks', defaultPath: path.join(app.getPath('documents'), 'drift-bookmarks.html'),
     filters: [{ name: 'Bookmarks file', extensions: ['html'] }] });
-  if (r.canceled || !r.filePath) return;
+  if (r.canceled || !r.filePath) return; if (!windows.includes(dlgCtx)) return; useWin(dlgCtx);
   fs.writeFileSync(r.filePath, toNetscapeHTML(bookmarks.bar));
   ui.webContents.send('toast', { text: 'Bookmarks exported', icon: 'starfill' });
 }
@@ -2437,9 +2479,10 @@ async function offerSavePassword() {
 }
 
 async function importPasswords() {
+  const dlgCtx = cur;   // the dialog stays open while other windows' events change the current one
   const r = await dialog.showOpenDialog(win, { title: 'Import passwords (CSV)', properties: ['openFile'],
     filters: [{ name: 'Password export (CSV)', extensions: ['csv'] }] });
-  if (r.canceled || !r.filePaths[0]) return;
+  if (r.canceled || !r.filePaths[0]) return; if (!windows.includes(dlgCtx)) return; useWin(dlgCtx);
   try {
     const res = passwords.importCSV(fs.readFileSync(r.filePaths[0], 'utf8'));
     sendPasswords();
@@ -2454,9 +2497,10 @@ async function exportPasswords() {
   const ok = await dialog.showMessageBox(win, { type: 'warning', buttons: ['Export', 'Cancel'], defaultId: 1, cancelId: 1,
     message: 'Export passwords?', detail: 'The exported file is NOT encrypted. Anyone who can open it can read all your passwords.' });
   if (ok.response !== 0) return;
+  const dlgCtx = cur;   // the dialog stays open while other windows' events change the current one
   const r = await dialog.showSaveDialog(win, { title: 'Export passwords', defaultPath: path.join(app.getPath('documents'), 'drift-passwords.csv'),
     filters: [{ name: 'CSV', extensions: ['csv'] }] });
-  if (r.canceled || !r.filePath) return;
+  if (r.canceled || !r.filePath) return; if (!windows.includes(dlgCtx)) return; useWin(dlgCtx);
   fs.writeFileSync(r.filePath, passwords.exportCSV(), { mode: 0o600 });
 }
 
@@ -2839,7 +2883,7 @@ function setupIPC() {
     else delete settings.permissions[key];
     saveSettings();
   });
-  handle('site-clear', async (origin) => { const ok = await clearSiteData(origin); if (ok) { const t = activeTab(); if (t && t.view) t.view.webContents.reload(); } return ok; });
+  handle('site-clear', async (origin) => { const t = activeTab(); const ok = await clearSiteData(origin); if (ok && t && t.view && !t.view.webContents.isDestroyed()) t.view.webContents.reload(); return ok; });
   on('bm-open-background', (id) => { const h = bookmarks.find(id); if (h) openBookmark(h.item, true, true); });
   on('bm-menu', (id) => bookmarkContextMenu(id));
   on('bm-bar-menu', () => {
@@ -3021,6 +3065,7 @@ function closeWindowCtx(ctx) {
   useWin(ctx);
   for (const t of [...tabs]) { try { destroyView(t); } catch {} }
   splits = []; tabs = [];
+  clearTimeout(toastTimer); clearTimeout(ctx.toastIdle);
   try { if (toastView) toastView.webContents.close(); } catch {}
   try { if (ui && !ui.webContents.isDestroyed()) ui.webContents.close(); } catch {}
   windows.splice(i, 1);
