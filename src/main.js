@@ -468,6 +468,7 @@ function pushOne() {
       chrome: process.versions.chrome,
       dark: isDark(),
       windowCount: windows.length, windowId: cur ? cur.id : 0,
+      defaultBrowser,
     });
   }
 }
@@ -2645,6 +2646,82 @@ function warmOrigin(target) {
   try { session.defaultSession.preconnect({ url: origin, numSockets: 1 }); } catch {}
 }
 
+// ---------------------------------------------------------------------------
+// Default browser (Windows). Drift registers itself for this Windows user as a browser that
+// can open web links and web files, so it's listed under Settings → Apps → Default apps.
+// Windows doesn't let apps make themselves the default: the user picks Drift there.
+// ---------------------------------------------------------------------------
+const PROGID = 'DriftHTML';
+const FILE_TYPES = ['.htm', '.html', '.shtml', '.xht', '.xhtml', '.svg', '.webp', '.pdf'];
+const isInstalledCopy = () => process.platform === 'win32' && fs.existsSync(path.join(path.dirname(process.execPath), 'Uninstall Drift.exe'));
+const run = (cmd, args) => new Promise((res) => require('child_process').execFile(cmd, args, { windowsHide: true }, (err, out) => res(err ? null : String(out))));
+
+async function registerAsBrowser() {
+  if (!isInstalledCopy()) return;
+  const exe = process.execPath;
+  // Already registered for this copy of Drift? (Checked in the registry itself, not in
+  // settings, so it repairs itself if something removed it.)
+  const cmdNow = await run('reg', ['query', `HKCU\\Software\\Classes\\${PROGID}\\shell\\open\\command`, '/ve']);
+  const want = `"${exe}" --single-argument %1`;
+  const reged = await run('reg', ['query', 'HKCU\\Software\\RegisteredApplications', '/v', 'Drift']);
+  if (cmdNow && cmdNow.includes(want) && reged) return;
+  const q = (v) => '"' + String(v).replace(/\\/g, '\\\\').replace(/"/g, '\\"') + '"';
+  const C = `HKEY_CURRENT_USER\\Software\\Clients\\StartMenuInternet\\Drift`;
+  const lines = [
+    'Windows Registry Editor Version 5.00', '',
+    `[HKEY_CURRENT_USER\\Software\\Classes\\${PROGID}]`, `@=${q('Drift HTML Document')}`, `"AppUserModelId"=${q('com.drift.browser')}`, '',
+    `[HKEY_CURRENT_USER\\Software\\Classes\\${PROGID}\\Application]`, `"ApplicationName"=${q('Drift')}`, `"ApplicationIcon"=${q(exe + ',0')}`, `"ApplicationCompany"=${q('Drift')}`, `"AppUserModelId"=${q('com.drift.browser')}`, '',
+    `[HKEY_CURRENT_USER\\Software\\Classes\\${PROGID}\\DefaultIcon]`, `@=${q(exe + ',0')}`, '',
+    // --single-argument: everything after it is one link, so a crafted link can't add options.
+    `[HKEY_CURRENT_USER\\Software\\Classes\\${PROGID}\\shell\\open\\command]`, `@=${q(want)}`, '',
+    `[${C}]`, `@=${q('Drift')}`, '',
+    `[${C}\\Capabilities]`, `"ApplicationName"=${q('Drift')}`, `"ApplicationDescription"=${q('A lightweight, private browser')}`, `"ApplicationIcon"=${q(exe + ',0')}`, '',
+    `[${C}\\Capabilities\\FileAssociations]`, ...FILE_TYPES.map(t => `${q(t)}=${q(PROGID)}`), '',
+    `[${C}\\Capabilities\\URLAssociations]`, `"http"=${q(PROGID)}`, `"https"=${q(PROGID)}`, '',
+    `[${C}\\Capabilities\\StartMenu]`, `"StartMenuInternet"=${q('Drift')}`, '',
+    `[${C}\\DefaultIcon]`, `@=${q(exe + ',0')}`, '',
+    `[${C}\\shell\\open\\command]`, `@=${q('"' + exe + '"')}`, '',
+    `[HKEY_CURRENT_USER\\Software\\RegisteredApplications]`, `"Drift"=${q('Software\\Clients\\StartMenuInternet\\Drift\\Capabilities')}`, '',
+    ...FILE_TYPES.flatMap(t => [`[HKEY_CURRENT_USER\\Software\\Classes\\${t}\\OpenWithProgids]`, `${q(PROGID)}=""`, '']),
+  ];
+  const regFile = file('drift-browser.reg');
+  try {
+    await fs.promises.writeFile(regFile, '﻿' + lines.join('\r\n') + '\r\n', 'utf16le');
+    const ok = await run('reg', ['import', regFile]);
+    console.log('[default browser] registration', ok !== null ? 'done' : 'failed');
+  } finally { fs.promises.unlink(regFile).catch(() => {}); }
+  checkDefaultBrowser();
+}
+
+// Is Drift the browser Windows uses for web links? (The user's choice, read from Windows.)
+let defaultBrowser = 'unknown';   // 'yes' | 'no' | 'unknown' (not Windows, or a portable copy)
+async function checkDefaultBrowser() {
+  if (!isInstalledCopy()) { defaultBrowser = 'unknown'; return; }
+  const out = await run('reg', ['query', 'HKCU\\Software\\Microsoft\\Windows\\Shell\\Associations\\UrlAssociations\\https\\UserChoice', '/v', 'ProgId']);
+  const next = out && out.includes(PROGID) ? 'yes' : 'no';
+  if (next !== defaultBrowser) { defaultBrowser = next; push(); }
+}
+function openDefaultAppsSettings() {
+  // Windows 11 opens Drift's own page; Windows 10 shows the Default apps list.
+  shell.openExternal('ms-settings:defaultapps?registeredAppUser=Drift').catch(() => shell.openExternal('ms-settings:defaultapps'));
+}
+
+// Links and files Windows (or another app) hands Drift on its command line. Registered as
+// `Drift.exe --single-argument %1`: everything after that marker is one link.
+function launchTargets(argv) {
+  const i = argv.indexOf('--single-argument');
+  const raw = i >= 0 ? [argv.slice(i + 1).join(' ')] : argv.slice(1).filter(a => a && !a.startsWith('-'));
+  const out = [];
+  for (const a of raw) {
+    const s = a.trim(); if (!s) continue;
+    if (/^https?:\/\//i.test(s)) { out.push(s); continue; }
+    if (/^file:\/\//i.test(s)) { out.push(s); continue; }
+    // A web file opened from Explorer: a path that exists, with a type Drift registered for.
+    try { if (FILE_TYPES.includes(path.extname(s).toLowerCase()) && fs.statSync(s).isFile()) out.push(require('url').pathToFileURL(s).href); } catch {}
+  }
+  return out;
+}
+
 function setupPageIPC() {
   ipcMain.on('drift-no-webgpu', (e) => { e.returnValue = !webgpuUsable(); });
   // A link the user is about to click (page-preload.js): connect to its site early.
@@ -2774,6 +2851,7 @@ function setupIPC() {
   });
   on('tab-drag-start', (id) => perfNote(`tab drag start: tab ${id}`));
   on('whats-new', () => createTab('drift://whatsnew/'));
+  on('default-browser', () => openDefaultAppsSettings());
   on('new-window', () => newWindow());
   on('toggle-pin', (id) => togglePin(id));
   on('toggle-mute', (id) => toggleMute(id));
@@ -3030,6 +3108,8 @@ function createWindow(opts = {}) {
     // the user switching windows: don't react to them (that's how a focus loop starts).
     const now = Date.now();
     if (focusingPage || now - lastFocusAt < 500) return;
+    // Back from Windows Settings, maybe having picked Drift as the default: check again.
+    if (now - lastFocusAt > 5000) checkDefaultBrowser();
     lastFocusAt = now;
     const t = activeTab();
     if (extensions && t && t.view) { try { extensions.selectTab(t.view.webContents); } catch {} }
@@ -3167,7 +3247,7 @@ if (!app.requestSingleInstanceLock()) {
 } else {
   // Drift was launched again (taskbar menu, a link from another app): use the open window.
   app.on('second-instance', (_e, argv) => {
-    const urls = argv.filter(a => /^https?:\/\//.test(a));
+    const urls = launchTargets(argv);
     if (argv.includes('--new-window') || !windows.length) { createWindow({ urls }); return; }
     const c = lastFocused || windows[0]; useWin(c);
     if (win.isMinimized()) win.restore();
@@ -3226,13 +3306,15 @@ if (!app.requestSingleInstanceLock()) {
     const shieldsReady = initShields().then(() => PERF('shields ready'));
     let openGate; startupGate = new Promise(r => { openGate = r; });
     // Reopen every window from last time (older sessions hold one window at the top level).
-    const urls = process.argv.slice(1).filter(a => /^https?:\/\//.test(a));
+    const urls = launchTargets(process.argv);
     const saved = settings.restoreTabs ? readJSON('session.json', null) : null;
     const snaps = saved ? (Array.isArray(saved.windows) && saved.windows.length ? saved.windows : [saved]).filter(w => w && w.tabs && w.tabs.length) : [];
     const first = createWindow({ snapshot: snaps[0], urls, gate: startupGate });
     for (const w of snaps.slice(1)) createWindow({ snapshot: w, gate: startupGate });
     if (process.argv.includes('--new-window') && snaps.length) createWindow({ gate: startupGate });
     else if (process.argv.includes('--new-tab') && !urls.length) startupGate.then(() => { useWin(first); createTab(NEWTAB); });
+    // Offer Drift to Windows as a browser (Settings → Default apps), after startup settles.
+    setTimeout(() => registerAsBrowser().catch(() => {}), 3000);
     // Just updated: show what changed, in front, once the window is ready.
     if (updatedFrom) startupGate.then(() => { if (!first.win || first.win.isDestroyed()) return; useWin(first); createTab(`drift://whatsnew/?from=${updatedFrom}`); });
     useWin(first);

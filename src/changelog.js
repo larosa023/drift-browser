@@ -1,6 +1,10 @@
 // What's new in each release, shown on the What's new page (drift://whatsnew) after an update.
 // Newest first. Kinds: new, faster, fixed, changed. Written for people using Drift.
 module.exports = [
+  { version: '1.15.0', date: '2026-10-29', items: [
+    ['new', 'Drift can be your default browser: it now appears in Windows Settings → Apps → Default apps. Settings → About → Default browser takes you there and shows when Drift is the default.'],
+    ['new', 'Links from other apps and web files (.html, .svg, .pdf and more) open in Drift when it is the default.'],
+  ] },
   { version: '1.14.2', date: '2026-10-29', items: [
     ['fixed', 'With two windows open, a notification could stay stuck on screen, show up in the wrong window, or cause an error popup.'],
     ['fixed', 'Results of importing or exporting bookmarks and passwords, and Clear data in site info, always apply to the window you used.'],
