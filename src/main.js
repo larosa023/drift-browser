@@ -18,6 +18,7 @@ const { installChromeWebStore, uninstallExtension } = require('electron-chrome-w
 const { Bookmarks, chromiumProfiles, fromChromiumJSON, fromNetscapeHTML, toNetscapeHTML } = require('./bookmarks');
 const { Passwords } = require('./passwords');
 const WALLPAPERS = require('./wallpapers');
+const CHANGELOG = require('./changelog');
 
 // ---------------------------------------------------------------------------
 // Constants & small helpers
@@ -83,7 +84,8 @@ const DEFAULT_SETTINGS = {
   forceDark: false,          // darken every site (Chromium's auto dark mode, like Opera)
   forceDarkOff: [],          // hostnames excluded from force dark
   offerPasswords: true,
-  webgpu: false,             // offer WebGPU to sites (off: requesting it froze the window for seconds on some PCs)
+  webgpu: false,
+  lastVersion: '',           // the version that last ran (shows What's new after an update)             // offer WebGPU to sites (off: requesting it froze the window for seconds on some PCs)
   wallpaper: '',             // '' (none) | 'builtin:<id>' | 'file:<name in userData/wallpapers>'
   wallpaperDim: 0.35,        // 0..0.85 tint over the wallpaper so text stays readable
   wallpaperBlur: 0,          // px
@@ -150,6 +152,11 @@ function flushSaves() {
     try { fs.writeFileSync(file(name + '.tmp'), json); fs.renameSync(file(name + '.tmp'), file(name)); } catch (e) { console.error('save failed', name, e.message); }
   }
   pendingWrites.clear();
+}
+function semverCmp(a, b) {
+  const x = String(a).split('.').map(Number), y = String(b).split('.').map(Number);
+  for (let i = 0; i < 3; i++) if ((x[i] || 0) !== (y[i] || 0)) return (x[i] || 0) - (y[i] || 0);
+  return 0;
 }
 function hostOf(u) { try { return new URL(u).hostname.replace(/^www\./, ''); } catch { return ''; } }
 function isInternal(u) { return !u || u.startsWith('drift:') || u === 'about:blank'; }
@@ -2103,6 +2110,12 @@ function setupProtocol() {
       if (host && !settings.hiddenSites.includes(host)) { settings.hiddenSites.push(host); saveSettings(); }
       return new Response(JSON.stringify(topSites()), { headers: { 'content-type': 'application/json' } });
     }
+    if (u.hostname === 'whatsnew') {
+      let html = await fs.promises.readFile(path.join(PAGES_DIR, 'whatsnew.html'), 'utf8');
+      const data = { entries: CHANGELOG, current: app.getVersion(), from: (u.searchParams.get('from') || '').replace(/[^\d.]/g, ''), accent: settings.accent, dark: isDark() };
+      html = html.replace('/*__DATA__*/null', JSON.stringify(data).replace(/</g, '\\u003c'));
+      return new Response(html, { headers: { 'content-type': 'text/html; charset=utf-8' } });
+    }
     if (u.hostname === 'newtab') {
       let html = newtabHtml || (newtabHtml = fs.readFileSync(path.join(PAGES_DIR, 'newtab.html'), 'utf8'));
       const data = {
@@ -2700,6 +2713,7 @@ function setupIPC() {
     }, 150);
   });
   on('tab-drag-start', (id) => perfNote(`tab drag start: tab ${id}`));
+  on('whats-new', () => createTab('drift://whatsnew/'));
   on('new-window', () => newWindow());
   on('toggle-pin', (id) => togglePin(id));
   on('toggle-mute', (id) => toggleMute(id));
@@ -3103,7 +3117,13 @@ if (!app.requestSingleInstanceLock()) {
       }, 8000);
       app.on('web-contents-created', (_e, w) => { PERF('created wc' + w.id + ' ' + w.getType()); w.on('did-finish-load', () => PERF('loaded wc' + w.id + ' ' + w.getURL().slice(0, 60))); w.once('destroyed', () => PERF('destroyed wc' + w.id)); });
     }
+    const hadSettings = fs.existsSync(file('settings.json'));
     settings = { ...DEFAULT_SETTINGS, ...readJSON('settings.json', {}) };
+    // The version that ran last time: Drift updated if this one is newer. (Versions before
+    // 1.14 didn't record it; anyone with settings already was on 1.13.16 or earlier.)
+    const prevVersion = settings.lastVersion || (hadSettings ? '1.13.16' : '');
+    const updatedFrom = prevVersion && semverCmp(app.getVersion(), prevVersion) > 0 ? prevVersion : '';
+    if (settings.lastVersion !== app.getVersion()) { settings.lastVersion = app.getVersion(); writeJSON('settings.json', settings); }
     nativeTheme.themeSource = settings.theme;
     history = new Map(readJSON('history.json', []).map(h => [h.url, h]));
     bookmarks = new Bookmarks(() => readJSON('bookmarks.json', null), (d) => writeJSON('bookmarks.json', d));
@@ -3144,6 +3164,8 @@ if (!app.requestSingleInstanceLock()) {
     for (const w of snaps.slice(1)) createWindow({ snapshot: w, gate: startupGate });
     if (process.argv.includes('--new-window') && snaps.length) createWindow({ gate: startupGate });
     else if (process.argv.includes('--new-tab') && !urls.length) startupGate.then(() => { useWin(first); createTab(NEWTAB); });
+    // Just updated: show what changed, in front, once the window is ready.
+    if (updatedFrom) startupGate.then(() => { if (!first.win || first.win.isDestroyed()) return; useWin(first); createTab(`drift://whatsnew/?from=${updatedFrom}`); });
     useWin(first);
     PERF('window created');
     const uiReady = new Promise(r => first.ui.webContents.once('did-finish-load', r)).then(() => { setTimeout(prepareBookmarkMenuIcons, 300); return initIdentity(); });

@@ -746,6 +746,7 @@ function renderSettings() {
         ${S.update.status === 'ready' ? `<button class="mini accent" id="upd-install">Restart to update</button>`
           : S.update.status === 'checking' || S.update.status === 'downloading' ? `<button class="mini" disabled>${S.update.status === 'checking' ? 'Checking…' : 'Downloading…'}</button>`
           : S.update.status !== 'portable' ? `<button class="mini" id="upd-check">Check for updates</button>` : ''}</div>
+      <div class="row"><span class="lbl">What's new<small>Changes in recent updates</small></span><button class="mini" id="whats-new">Open</button></div>
     </div>`;
 }
 $('#settings-body').addEventListener('click', (e) => {
@@ -760,6 +761,7 @@ $('#settings-body').addEventListener('click', (e) => {
   const src = e.target.closest('[data-bmsrc]'); if (src) send('bm-import', src.dataset.bmsrc);
   if (e.target.id === 'clear-data') send('clear-data');
   if (e.target.id === 'upd-check') send('update-check');
+  if (e.target.id === 'whats-new') { send('whats-new'); togglePanel(null); }
   if (e.target.id === 'upd-install') send('update-install');
   if (e.target.closest('[data-uboopts]')) send('ext-options', S.uboId);
   if (e.target.id === 'pw-manage') togglePanel('passwords');
