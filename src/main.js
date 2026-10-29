@@ -592,9 +592,19 @@ function setOverlay(mode, keepFocus) {
   push();
 }
 
+// Give the active page keyboard focus. Only in the window that's already in front, and only
+// when the page doesn't have focus yet: on Windows, focusing a page can re-activate its window,
+// and with two windows restored that turned into an endless focus tug-of-war between them,
+// freezing Drift and swallowing mouse clicks everywhere until it was closed.
+let focusingPage = false;
 function focusPage() {
   const t = activeTab();
-  if (t && t.view && !findOpen) t.view.webContents.focus();
+  if (!t || !t.view || findOpen) return;
+  const wc = t.view.webContents;
+  if (wc.isDestroyed() || wc.isFocused()) return;
+  if (!win || win.isDestroyed() || !win.isFocused()) return;
+  focusingPage = true;
+  try { wc.focus(); } finally { focusingPage = false; }
 }
 
 // ---------------------------------------------------------------------------
@@ -2513,16 +2523,8 @@ function startPerfLog() {
   const labelOf = (wc) => () => { try { if (ui && wc === ui.webContents) return 'Drift sidebar'; const t = wcToTab.get(wc.id); return `tab:${hostOf(wc.getURL()) || wc.getURL().slice(0, 40)}${t && t.dark ? ' (force dark)' : ''}`; } catch { return '?'; } };
   app.on('web-contents-created', (_e, wc) => { if (wc.getType() === 'window' || wc.getType() === 'browserView') instrument(wc, labelOf(wc)); });
   for (const wc of webContents.getAllWebContents()) if (wc.getType() === 'window' || wc.getType() === 'browserView') { instrument(wc, labelOf(wc)); try { wc.executeJavaScriptInIsolatedWorld(1997, [{ code: LOAF }]).catch(() => {}); } catch {} }
-  // What a freeze was made of: a rolling Chromium trace of the last seconds (browser tasks,
-  // messages between processes) and a CPU profile of Drift's own code, both saved only when
-  // the main thread froze. A few captures per run, then they stop.
-  const { contentTracing } = require('electron');
-  let ringOn = false, ringSaving = false, ringSaved = 0;
-  const startRing = () => contentTracing.startRecording({
-    included_categories: ['toplevel', 'ipc', 'mojom', 'electron', 'browser', 'navigation', 'loading', 'extensions', 'content', 'views', 'ui', 'base'],
-    excluded_categories: ['*'], recording_mode: 'record-continuously', trace_buffer_size_in_kb: 24576,
-  }).then(() => { ringOn = true; }).catch((e) => log('trace ring failed ' + e.message));
-  setTimeout(startRing, 15000);   // after startup settles
+  // What a freeze was made of: a CPU profile of Drift's own code, saved only when the main
+  // thread froze (a few per run). (A rolling Chromium trace was tried too: too heavy.)
   const insp = require('inspector'), prof = new insp.Session(); prof.connect();
   const post = (m, p) => new Promise((res, rej) => prof.post(m, p || {}, (e, r) => e ? rej(e) : res(r)));
   let profStart = 0, profSaved = 0, frozeSince = false;
@@ -2537,21 +2539,7 @@ function startPerfLog() {
     startProf();
   }, 20000);
   profTimer.unref();
-  onFreeze = (ms) => {
-    frozeSince = true;
-    if (!ringOn || ringSaving || ringSaved >= 3 || ms < 140) return;
-    ringSaving = true; ringSaved++;
-    setTimeout(async () => {
-      try {
-        const out = path.join(file('logs'), `freeze-trace-${Date.now()}.json`);
-        ringOn = false;
-        await contentTracing.stopRecording(out);
-        log('trace around the freeze saved'); flush();
-      } catch (e) { log('trace save failed ' + e.message); }
-      ringSaving = false;
-      if (ringSaved < 3) startRing();
-    }, 800);
-  };
+  onFreeze = () => { frozeSince = true; };
   // Read after startup: until the graphics process is up, Chromium reports everything as off.
   setTimeout(() => { try { const g = app.getGPUFeatureStatus(); log('gpu features: ' + Object.entries(g).map(([k, v]) => k + '=' + v).join(' ')); } catch {} }, 10000);
   app.getGPUInfo('basic').then((g) => { try { log('gpu: ' + (g.gpuDevice || []).map(d => `${d.vendorId}:${d.deviceId}${d.active ? '(active)' : ''} ${d.driverVersion || ''}`).join(', ') + ' ' + JSON.stringify(g.auxAttributes ? { gl: g.auxAttributes.glRenderer, angle: g.auxAttributes.displayType } : {})); } catch {} }).catch(() => {});
@@ -2960,9 +2948,15 @@ function createWindow(opts = {}) {
     if (cmd === 'browser-backward' && wc.navigationHistory.canGoBack()) wc.navigationHistory.goBack();
     if (cmd === 'browser-forward' && wc.navigationHistory.canGoForward()) wc.navigationHistory.goForward();
   }));
+  let lastFocusAt = 0;
   win.on('focus', W(() => {
     lastFocused = ctx;
     const z = zOrder.indexOf(ctx); if (z > 0) { zOrder.splice(z, 1); zOrder.unshift(ctx); }
+    // Focus events caused by Drift moving focus itself, or arriving in a rapid burst, are not
+    // the user switching windows: don't react to them (that's how a focus loop starts).
+    const now = Date.now();
+    if (focusingPage || now - lastFocusAt < 500) return;
+    lastFocusAt = now;
     const t = activeTab();
     if (extensions && t && t.view) { try { extensions.selectTab(t.view.webContents); } catch {} }
     if (!overlay) focusPage();
@@ -3130,6 +3124,8 @@ if (!app.requestSingleInstanceLock()) {
       push(); refreshNewTabs(); folderMenuIcon = null; prepareBookmarkMenuIcons();
       for (const t of allTabs()) if (t.view && !t.view.webContents.isDestroyed()) t.view.setBackgroundColor(baseFor(t.view.webContents.getURL()));
     });
+    // Diagnostic traces from earlier versions (hundreds of MB each) and partial trace files.
+    fs.promises.readdir(file('logs')).then(fs_ => { for (const f of fs_) if (/^(freeze-)?trace-\d+\.json$|\.tmp$/.test(f)) fs.promises.unlink(path.join(file('logs'), f)).catch(() => {}); }).catch(() => {});
     // Temp files from background saves cut off by a crash.
     fs.promises.readdir(userData()).then(fs_ => { for (const f of fs_) if (/\.\d+-\d+\.tmp$/.test(f)) fs.promises.unlink(file(f)).catch(() => {}); }).catch(() => {});
     PERF('setup done');
