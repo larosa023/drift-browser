@@ -657,10 +657,22 @@ function bindToTab(wc, tab) {
   const wrap = (fn) => {
     if (typeof fn !== 'function') return fn;
     let w = wrapped.get(fn);
-    if (!w) { w = function (...a) { useTab(tab); return fn.apply(this, a); }; wrapped.set(fn, w); }
+    if (!w) {
+      w = function (...a) {
+        try { useTab(tab); return fn.apply(this, a); }
+        catch (e) {
+          // A handler (often Electron's own) running for a page that's already been torn down,
+          // as happens while Drift closes: nothing left to do, so don't raise an error dialog.
+          if (/has been destroyed/i.test(e && e.message || '')) { console.warn('[tab] ignored after teardown:', e.message); return undefined; }
+          throw e;
+        }
+      };
+      wrapped.set(fn, w);
+    }
     return w;
   };
-  for (const m of ['on', 'once', 'addListener', 'prependListener', 'prependOnceListener']) { const orig = wc[m].bind(wc); wc[m] = (ev, fn) => orig(ev, wrap(fn)); }
+  // Electron's internal events (named "-...") are left as they are.
+  for (const m of ['on', 'once', 'addListener', 'prependListener', 'prependOnceListener']) { const orig = wc[m].bind(wc); wc[m] = (ev, fn) => orig(ev, typeof ev === 'string' && ev[0] === '-' ? fn : wrap(fn)); }
   for (const m of ['off', 'removeListener']) { const orig = wc[m].bind(wc); wc[m] = (ev, fn) => orig(ev, wrapped.get(fn) || fn); }
   const swoh = wc.setWindowOpenHandler.bind(wc);
   wc.setWindowOpenHandler = (fn) => swoh(wrap(fn));
@@ -2667,7 +2679,11 @@ function setupUpdates() {
   // Restart to update: installs silently and reopens Drift with the same tabs.
   ipcMain.on('update-install', (e) => {
     if (!ctxOfUi(e.sender) || updateState.status !== 'ready') return;
+    flushSaves();
     writeJSONSync('session.json', sessionSnapshot()); writeJSONSync('settings.json', settings);
+    // Quitting from here on: closing the windows one by one must not save a smaller session
+    // (with two windows, the update used to reopen only the last one).
+    quitting = true;
     setImmediate(() => autoUpdater.quitAndInstall(true, true));
   });
 }
@@ -3092,6 +3108,14 @@ app.commandLine.appendSwitch('disable-features', 'HardwareMediaKeyHandling');
 // Faster downloads: fetch large files over several connections at once (Chromium's parallel
 // downloading). Servers that don't support it fall back to a normal single download.
 app.commandLine.appendSwitch('enable-features', 'ParallelDownloading:parallel_request_count/6/min_slice_size/1048576/parallel_request_delay/0');
+
+// While Drift is closing (quitting, or restarting to update), pages are torn down while their
+// events may still arrive. Errors from those are logged rather than shown as a crash dialog.
+process.on('uncaughtException', (e) => {
+  if (quitting || /has been destroyed/i.test(e && e.message || '')) { console.error('[main] ignored during teardown:', e && e.stack || e); return; }
+  console.error(e);
+  try { dialog.showErrorBox('A JavaScript error occurred in the main process', String(e && e.stack || e)); } catch {}
+});
 
 if (!app.requestSingleInstanceLock()) {
   app.quit();

@@ -1,6 +1,10 @@
 // What's new in each release, shown on the What's new page (drift://whatsnew) after an update.
 // Newest first. Kinds: new, faster, fixed, changed. Written for people using Drift.
 module.exports = [
+  { version: '1.14.1', date: '2026-10-29', items: [
+    ['fixed', 'No more "JavaScript error occurred in the main process" popup when Drift restarts to install an update.'],
+    ['fixed', 'Restarting to update keeps all your windows, not just the last one.'],
+  ] },
   { version: '1.14.0', date: '2026-10-29', items: [
     ['new', "This page: after each update, Drift shows what changed. You can open it any time from Settings → About."],
   ] },
