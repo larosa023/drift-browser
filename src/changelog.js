@@ -1,6 +1,9 @@
 // What's new in each release, shown on the What's new page (drift://whatsnew) after an update.
 // Newest first. Kinds: new, faster, fixed, changed. Written for people using Drift.
 module.exports = [
+  { version: '1.15.5', date: '2026-10-29', items: [
+    ['changed', 'A test release to check the new update notification. No other changes.'],
+  ] },
   { version: '1.15.4', date: '2026-10-29', items: [
     ['new', 'When a new version is ready, a small dot appears on the settings gear and an Update button in the sidebar footer. One click restarts into the new version.'],
     ['changed', 'Drift checks for new versions every hour instead of every four.'],
