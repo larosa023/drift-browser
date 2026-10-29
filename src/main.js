@@ -1593,6 +1593,44 @@ function shieldsOnFor(url) {
 function uboPath() {
   return app.isPackaged ? path.join(process.resourcesPath, 'extensions', 'ublock') : path.join(__dirname, '..', 'extensions', 'ublock');
 }
+// The installed app carries uBlock Origin as one packed file (scripts/pack-ubo.js), so
+// installing and updating writes one file instead of ~640. It's unpacked into Drift's data
+// folder the first time, and again only when its contents changed (by hash).
+async function ensureUboDir() {
+  const pack = path.join(process.resourcesPath || '', 'extensions', 'ublock.pack');
+  if (!app.isPackaged || !fs.existsSync(pack)) return uboPath();   // development, or an older layout
+  const fh = await fs.promises.open(pack, 'r');
+  try {
+    const lenBuf = Buffer.alloc(4); await fh.read(lenBuf, 0, 4, 0);
+    const hlen = lenBuf.readUInt32LE(0);
+    const hBuf = Buffer.alloc(hlen); await fh.read(hBuf, 0, hlen, 4);
+    const header = JSON.parse(hBuf.toString('utf8'));
+    const root = file('ublock'), dir = path.join(root, header.hash);
+    if (fs.existsSync(path.join(dir, '.complete'))) return dir;
+    // Unpack into a temporary folder, then move it into place, so an interrupted unpack
+    // never leaves a half-written extension behind.
+    const tmp = dir + '.tmp';
+    await fs.promises.rm(tmp, { recursive: true, force: true });
+    let pos = 4 + hlen;
+    const made = new Set();
+    for (const [rel, size] of header.files) {
+      if (rel.includes('..')) { pos += size; continue; }
+      const out = path.join(tmp, ...rel.split('/'));
+      const d = path.dirname(out);
+      if (!made.has(d)) { await fs.promises.mkdir(d, { recursive: true }); made.add(d); }
+      const buf = Buffer.alloc(size); if (size) await fh.read(buf, 0, size, pos);
+      await fs.promises.writeFile(out, buf);
+      pos += size;
+    }
+    await fs.promises.writeFile(path.join(tmp, '.complete'), header.hash);
+    await fs.promises.rm(dir, { recursive: true, force: true });
+    await fs.promises.rename(tmp, dir);
+    // Older unpacked versions are no longer used.
+    for (const old of await fs.promises.readdir(root)) if (old !== header.hash) fs.promises.rm(path.join(root, old), { recursive: true, force: true }).catch(() => {});
+    console.log('[shields] unpacked uBlock Origin', header.hash);
+    return dir;
+  } finally { await fh.close(); }
+}
 
 // Chromium's User-Agent client hints, which Electron leaves off page loads, are added by a
 // small helper (extensions/drift-hints/bg.js). It normally runs inside uBlock Origin's
@@ -1693,13 +1731,26 @@ function addHintHeaders(details, cb) {
   cb({ requestHeaders: h });
 }
 
+// uBlock Origin is loaded before its filter lists are: pages opened before then aren't
+// filtered. Wait for it to say it's ready, up to 1.2 s (startup also gives up after 2 s overall).
+async function uboFilterReady(id, ms = 1200) {
+  const prefix = `chrome-extension://${id}/`;
+  const t0 = Date.now();
+  while (Date.now() - t0 < ms) {
+    const bg = webContents.getAllWebContents().find(w => w.getType() === 'backgroundPage' && w.getURL().startsWith(prefix));
+    if (bg) { try { if (await bg.executeJavaScript('!!(self.µBlock && self.µBlock.readyToFilter)')) { PERF(`uBO filtering after ${Date.now() - t0}ms`); return; } } catch {} }
+    await new Promise(r => setTimeout(r, 40));
+  }
+}
 async function loadUbo() {
   if (uboId) return;
   try {
-    const ext = await extApi().loadExtension(uboPath(), { allowFileAccess: true });
+    let dir; try { dir = await ensureUboDir(); } catch (e) { console.error('[shields] unpacking uBlock Origin failed:', e.message); dir = uboPath(); }
+    const ext = await extApi().loadExtension(dir, { allowFileAccess: true });
     uboId = ext.id;
     unloadHintsExt();   // uBO's background page carries the hints helper
     await bgReady(ext.id);
+    await uboFilterReady(ext.id);
     console.log('[shields] uBlock Origin', ext.version, 'loaded');
   } catch (e) { console.error('[shields] could not load uBlock Origin:', e.message); }
   sendExtensions(); push();
@@ -2515,7 +2566,9 @@ async function exportPasswords() {
 // ---------------------------------------------------------------------------
 let perfNote = () => {};   // replaced by the performance log when it's on
 function startPerfLog() {
-  if (!fs.existsSync(file('perf-log'))) return;
+  let st; try { st = fs.statSync(file('perf-log')); } catch { return; }
+  // Diagnostics are for a short investigation: they switch themselves off after two days.
+  if (Date.now() - st.mtimeMs > 2 * 864e5) { fs.promises.unlink(file('perf-log')).catch(() => {}); fs.promises.unlink(file('perf-trace')).catch(() => {}); return; }
   const out = path.join(file('logs'), 'perf.log');
   let buf = '';
   const log = (line) => { buf += `${new Date().toISOString().slice(11, 23)} ${line}\n`; };
@@ -2598,7 +2651,7 @@ function startPerfLog() {
   const insp = require('inspector'), prof = new insp.Session(); prof.connect();
   const post = (m, p) => new Promise((res, rej) => prof.post(m, p || {}, (e, r) => e ? rej(e) : res(r)));
   let profStart = 0, profSaved = 0, frozeSince = false;
-  const startProf = () => post('Profiler.enable').then(() => post('Profiler.setSamplingInterval', { interval: 500 })).then(() => post('Profiler.start')).then(() => { profStart = Date.now(); frozeSince = false; }).catch(() => {});
+  const startProf = () => post('Profiler.enable').then(() => post('Profiler.setSamplingInterval', { interval: 2000 })).then(() => post('Profiler.start')).then(() => { profStart = Date.now(); frozeSince = false; }).catch(() => {});
   startProf();
   const profTimer = setInterval(async () => {
     if (profSaved >= 4) { clearInterval(profTimer); post('Profiler.stop').catch(() => {}); return; }
@@ -2826,12 +2879,9 @@ function setupIPC() {
   on('new-tab', () => { ui.webContents.send('palette', { newTab: true }); });
   on('tab-menu', (id) => tabContextMenu(id));
   on('move-tab', (id, idx, pinned) => moveTab(id, idx, pinned));
-  on('tab-adopt', (id, idx) => { const t = findTab(Number(id)); if (t && ctxOfTab(t) !== cur) moveTabToWindow(t, cur, idx); });
-  // A tab drag ended. Decided from where the cursor is (Windows doesn't report where a drag that
-  // leaves the window ended, and other programs may claim the drop): over this window's own
-  // sidebar, or taken by something inside this window → nothing; anywhere else → the tab moves
-  // to the Drift window there, or into a new window. A drop on another window's tab list
-  // arrives there as tab-adopt, so wait a moment and leave the tab alone if it already moved.
+  // A tab dragged out of the sidebar (ui.js tab dragging) was let go over the page or outside
+  // the window. Decided from where the cursor is: over this window's own sidebar → nothing;
+  // otherwise the tab moves to the Drift window there, or into a new window.
   on('tab-drag-end', (id, effect, sidebarRect) => {
     const t = findTab(Number(id)); if (!t) return;
     const src = ctxOfTab(t); if (!src || !src.win || src.win.isDestroyed()) return;
@@ -2842,12 +2892,9 @@ function setupIPC() {
     const inSidebar = sidebarRect && x >= sidebarRect.x && x < sidebarRect.x + sidebarRect.width && y >= sidebarRect.y && y < sidebarRect.y + sidebarRect.height;
     perfNote(`tab drag end: tab ${t.id} effect=${effect} cursor=${p.x},${p.y} window=${cb.x},${cb.y} ${cb.width}x${cb.height} inWindow=${inWin} inSidebar=${!!inSidebar} tabs=${src.tabs.length}`);
     if (inSidebar || inWin && effect !== 'none') return;
-    setTimeout(() => {
-      if (!findTab(t.id) || ctxOfTab(t) !== src) { perfNote('  -> taken by another window'); return; }
-      useTab(t);
-      perfNote('  -> ' + (inWin ? 'dropped on own page' : 'dropped outside'));
-      tabDroppedOutside(t, p.x, p.y);
-    }, 150);
+    useTab(t);
+    perfNote('  -> ' + (inWin ? 'dropped on own page' : 'dropped outside'));
+    tabDroppedOutside(t, p.x, p.y);
   });
   on('tab-drag-start', (id) => perfNote(`tab drag start: tab ${id}`));
   on('whats-new', () => createTab('drift://whatsnew/'));
@@ -3131,7 +3178,11 @@ function createWindow(opts = {}) {
     }
   }
   const urls = opts.urls || [];
-  (opts.gate || Promise.resolve()).then(W(() => {
+  // Web pages wait for the startup gate (ad blocking ready, identity set); a window that opens
+  // on Drift's own new tab page has nothing to wait for.
+  const activeSnapUrl = snap && snap.tabs && snap.tabs.length && tabs.length ? tabs[Math.min(snap.active || 0, tabs.length - 1)].url : '';
+  const onlyInternal = !urls.length && (activeSnapUrl ? isInternal(activeSnapUrl) : true);
+  ((onlyInternal ? null : opts.gate) || Promise.resolve()).then(W(() => {
     if (snap && snap.tabs && snap.tabs.length && tabs.length) activate(tabs[Math.min(snap.active || 0, tabs.length - 1)].id);
     for (const u of urls) createTab(u);
     if (!tabs.length && !opts.empty) createTab(NEWTAB);

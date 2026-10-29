@@ -1,6 +1,13 @@
 // What's new in each release, shown on the What's new page (drift://whatsnew) after an update.
 // Newest first. Kinds: new, faster, fixed, changed. Written for people using Drift.
 module.exports = [
+  { version: '1.15.1', date: '2026-10-29', items: [
+    ['faster', 'Updates install faster: the installer no longer has to decompress everything, and the built-in ad blocker ships as one file instead of hundreds. Future updates can download only what changed.'],
+    ['faster', 'Starting on a new tab is about twice as fast.'],
+    ['fixed', 'Ads are blocked on the very first page after Drift starts (pages used to load before the blocker had its filter lists ready).'],
+    ['faster', 'A tab dragged out of the window opens in its new window straight away.'],
+    ['changed', 'Diagnostic logging switches itself off after two days.'],
+  ] },
   { version: '1.15.0', date: '2026-10-29', items: [
     ['new', 'Drift can be your default browser: it now appears in Windows Settings → Apps → Default apps. Settings → About → Default browser takes you there and shows when Drift is the default.'],
     ['new', 'Links from other apps and web files (.html, .svg, .pdf and more) open in Drift when it is the default.'],
