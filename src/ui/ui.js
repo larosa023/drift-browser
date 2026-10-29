@@ -120,6 +120,14 @@ function render() {
   if (panel === 'extensions') renderExtensions();
   if (panel === 'volume') renderVolume();
   $('#vol-dot').hidden = !S.tabs.some(t => t.volume !== 1);
+  // A new version is downloaded and waits for a restart.
+  const updReady = !!(S.update && S.update.status === 'ready');
+  if (document.body.classList.contains('upd-ready') !== updReady) document.body.classList.toggle('upd-ready', updReady);
+  $('#upd-dot').hidden = !updReady; $('#upd-pill').hidden = !updReady;
+  const updTip = updReady ? `Drift ${S.update.version} is ready · click to restart and update` : '';
+  if ($('#upd-pill').title !== updTip) $('#upd-pill').title = updTip;
+  const gearTip = updReady ? `Settings · Drift ${S.update.version} is ready to install` : 'Settings';
+  if ($('#btn-settings').title !== gearTip) $('#btn-settings').title = gearTip;
   if (panel === 'downloads') renderDownloads();
   $('#palette-wrap').hidden = S.overlay !== 'palette';
   $('#modal-wrap').hidden = S.overlay !== 'modal';
@@ -864,6 +872,7 @@ function openDlMenu() {
   setTimeout(() => m.focus({ preventScroll: true }), 0);
 }
 function closeDlMenu() { pendingOverlay = null; $('#dlmenu-wrap').hidden = true; if (S && S.overlay === 'dlmenu') send('overlay', null); }
+$('#upd-pill').addEventListener('click', () => send('update-install'));
 $('#tb-dl').addEventListener('click', () => { if (S && S.overlay === 'dlmenu') closeDlMenu(); else openDlMenu(); });
 $('#dlmenu-wrap').addEventListener('mousedown', (e) => { if (e.target.id === 'dlmenu-wrap') closeDlMenu(); });
 document.addEventListener('keydown', (e) => { if (e.key === 'Escape' && S && S.overlay === 'dlmenu') closeDlMenu(); });

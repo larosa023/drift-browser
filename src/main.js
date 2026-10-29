@@ -2846,7 +2846,7 @@ function setupUpdates() {
   });
   const check = () => autoUpdater.checkForUpdates().catch(() => {});
   setTimeout(check, 8000);
-  setInterval(check, 4 * 3600 * 1000);
+  setInterval(check, 3600 * 1000);   // hourly: one small request for latest.yml
   ipcMain.on('update-check', (e) => {
     if (!ctxOfUi(e.sender) || ['checking', 'downloading', 'ready'].includes(updateState.status)) return;
     check();
