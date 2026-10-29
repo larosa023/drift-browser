@@ -2815,6 +2815,14 @@ function setupPageIPC() {
 // ---------------------------------------------------------------------------
 
 let updateState = { status: 'idle', version: '' };   // idle | checking | downloading | ready | none | error
+// Updates leave a short record (logs\updates.log): when Drift looked, what it found.
+let maybeCheckUpdates = () => {};
+function updLog(line) {
+  const f = path.join(file('logs'), 'updates.log');
+  fs.promises.mkdir(file('logs'), { recursive: true })
+    .then(() => fs.promises.stat(f).then(st => st.size > 100000 ? fs.promises.rename(f, f + '.old') : null).catch(() => null))
+    .then(() => fs.promises.appendFile(f, `${new Date().toISOString()} ${app.getVersion()} ${line}\n`)).catch(() => {});
+}
 function setupUpdates() {
   if (!app.isPackaged) return;
   let autoUpdater;
@@ -2827,26 +2835,32 @@ function setupUpdates() {
   autoUpdater.autoInstallOnAppQuit = true;
   const set = (status, version = updateState.version, extra = {}) => { updateState = { status, version, ...extra }; push(); };
   autoUpdater.on('checking-for-update', () => set('checking'));
-  autoUpdater.on('update-available', (i) => set('downloading', i.version, { percent: 0 }));
+  autoUpdater.on('update-available', (i) => { updLog('available ' + i.version); set('downloading', i.version, { percent: 0 }); });
   autoUpdater.on('download-progress', (p) => {
     const percent = Math.floor(p.percent || 0);
     if (updateState.status === 'downloading' && percent !== updateState.percent) set('downloading', updateState.version, { percent });
   });
-  autoUpdater.on('update-not-available', () => set('none', '', { checkedAt: Date.now() }));
+  autoUpdater.on('update-not-available', () => { updLog('up to date'); set('none', '', { checkedAt: Date.now() }); });
   autoUpdater.on('error', (e) => {
     const msg = String((e && e.message) || '');
     console.error('[update]', msg);
+    updLog('error ' + msg.slice(0, 300));
     // Short reason for Settings; the full message is in the console.
     const why = /ENOTFOUND|ECONNRESET|ETIMEDOUT|net::ERR/i.test(msg) ? 'no connection to GitHub' : /404|latest\.yml/i.test(msg) ? 'release not found' : /signature|sha512|checksum/i.test(msg) ? 'download was damaged' : 'unexpected error';
     set('error', updateState.version, { why });
   });
   autoUpdater.on('update-downloaded', (i) => {
+    updLog('downloaded ' + i.version);
     set('ready', i.version);
     sendAll('toast', { text: `Drift ${i.version} is ready — it installs when you restart`, icon: 'download', action: { label: 'Restart', update: true } });
   });
-  const check = () => autoUpdater.checkForUpdates().catch(() => {});
+  // When to look for a new version (each look is one small request for latest.yml): shortly
+  // after starting, every 30 minutes, and when you come back to Drift after 10+ minutes away.
+  let lastCheck = 0;
+  const check = () => { lastCheck = Date.now(); updLog('check'); autoUpdater.checkForUpdates().catch((e) => updLog('check failed ' + (e && e.message))); };
   setTimeout(check, 8000);
-  setInterval(check, 3600 * 1000);   // hourly: one small request for latest.yml
+  setInterval(() => { if (!['downloading', 'ready'].includes(updateState.status)) check(); }, 30 * 60 * 1000);
+  maybeCheckUpdates = () => { if (Date.now() - lastCheck > 10 * 60 * 1000 && !['checking', 'downloading', 'ready'].includes(updateState.status)) check(); };
   ipcMain.on('update-check', (e) => {
     if (!ctxOfUi(e.sender) || ['checking', 'downloading', 'ready'].includes(updateState.status)) return;
     check();
@@ -3157,7 +3171,7 @@ function createWindow(opts = {}) {
     const now = Date.now();
     if (focusingPage || now - lastFocusAt < 500) return;
     // Back from Windows Settings, maybe having picked Drift as the default: check again.
-    if (now - lastFocusAt > 5000) checkDefaultBrowser();
+    if (now - lastFocusAt > 5000) { checkDefaultBrowser(); maybeCheckUpdates(); }
     lastFocusAt = now;
     const t = activeTab();
     if (extensions && t && t.view) { try { extensions.selectTab(t.view.webContents); } catch {} }

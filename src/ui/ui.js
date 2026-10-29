@@ -121,12 +121,16 @@ function render() {
   if (panel === 'volume') renderVolume();
   $('#vol-dot').hidden = !S.tabs.some(t => t.volume !== 1);
   // A new version is downloaded and waits for a restart.
+  // The dot appears as soon as a new version is found (while it downloads); the Update pill
+  // once it's ready to install.
   const updReady = !!(S.update && S.update.status === 'ready');
+  const updComing = !!(S.update && S.update.status === 'downloading');
   if (document.body.classList.contains('upd-ready') !== updReady) document.body.classList.toggle('upd-ready', updReady);
-  $('#upd-dot').hidden = !updReady; $('#upd-pill').hidden = !updReady;
+  $('#upd-dot').hidden = !(updReady || updComing); $('#upd-pill').hidden = !updReady;
   const updTip = updReady ? `Drift ${S.update.version} is ready · click to restart and update` : '';
   if ($('#upd-pill').title !== updTip) $('#upd-pill').title = updTip;
-  const gearTip = updReady ? `Settings · Drift ${S.update.version} is ready to install` : 'Settings';
+  const gearTip = updReady ? `Settings · Drift ${S.update.version} is ready to install`
+    : updComing ? `Settings · downloading Drift ${S.update.version}${S.update.percent ? ` (${S.update.percent}%)` : ''}` : 'Settings';
   if ($('#btn-settings').title !== gearTip) $('#btn-settings').title = gearTip;
   if (panel === 'downloads') renderDownloads();
   $('#palette-wrap').hidden = S.overlay !== 'palette';
