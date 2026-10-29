@@ -59,7 +59,7 @@ svg { display: block; flex: none; }
 body.over-peek #wash, body.over-peek #page-frame, body.over-palette #page-frame { display: none; }
 
 #page-frame {
-  position: fixed; border-radius: 10px; box-shadow: var(--page-shadow);
+  position: fixed; border-radius: 0; box-shadow: var(--page-shadow);
   background: var(--card-2); pointer-events: none;
 }
 
@@ -563,7 +563,7 @@ body.has-wp .tab:not(.active):hover, body.has-wp #btn-newtab:hover { background:
 .tb-split { -webkit-app-region: no-drag; width: 30px; height: 30px; flex: none; }
 .tb-split.on { color: var(--accent); background: color-mix(in srgb, var(--accent) 14%, transparent); }
 #panes { position: fixed; inset: 0; pointer-events: none; }
-#panes .pane { position: fixed; border-radius: 10px; box-shadow: var(--page-shadow); background: var(--card-2); }
+#panes .pane { position: fixed; border-radius: 0; box-shadow: var(--page-shadow); background: var(--card-2); }
 #panes .pane.active { box-shadow: 0 0 0 2px var(--accent), 0 10px 30px rgba(0,0,0,.35); }
 body.split #page-frame { display: none; }
 body.over-palette #panes, body.over-peek #panes { display: none; }

@@ -29,7 +29,7 @@ const FIND_H = 46;        // height of the find bar
 const TITLE_H = 40;       // height of the top toolbar (address bar, drag area, window buttons)
 const BOOKMARKS_H = 30;   // height of the bookmarks bar
 const RAIL_W = 52;        // width of the icon-only sidebar
-const RADIUS = 10;        // page corner radius
+const RADIUS = 0;         // page corner radius (square: the page is flush with the window edges)
 const UI_DIR = path.join(__dirname, 'ui');
 const PAGES_DIR = path.join(__dirname, 'pages');
 const NEWTAB = 'drift://newtab/';
@@ -491,7 +491,8 @@ function contentRect() {
   if (htmlFullscreen) return { x: 0, y: 0, width: w, height: h };
   const top = titleHeight() + bookmarksHeight() + (findOpen ? FIND_H : 0);
   const left = sidebarLeft();
-  return { x: left, y: top, width: Math.max(0, w - left - GAP), height: Math.max(0, h - top - GAP) };
+  // The page runs to the window's right and bottom edges: one clean view, no frame around it.
+  return { x: left, y: top, width: Math.max(0, w - left), height: Math.max(0, h - top) };
 }
 
 function titleHeight() {
