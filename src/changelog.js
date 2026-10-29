@@ -1,8 +1,11 @@
 // What's new in each release, shown on the What's new page (drift://whatsnew) after an update.
 // Newest first. Kinds: new, faster, fixed, changed. Written for people using Drift.
 module.exports = [
+  { version: '1.15.2', date: '2026-10-29', items: [
+    ['changed', 'The portable zip download is back to its smaller size.'],
+  ] },
   { version: '1.15.1', date: '2026-10-29', items: [
-    ['faster', 'Updates install faster: the installer no longer has to decompress everything, and the built-in ad blocker ships as one file instead of hundreds. Future updates can download only what changed.'],
+    ['faster', 'Updates install faster: Drift now installs about 27 files instead of about 680 (the built-in ad blocker ships as one file and unpacks itself only when it changes).'],
     ['faster', 'Starting on a new tab is about twice as fast.'],
     ['fixed', 'Ads are blocked on the very first page after Drift starts (pages used to load before the blocker had its filter lists ready).'],
     ['faster', 'A tab dragged out of the window opens in its new window straight away.'],

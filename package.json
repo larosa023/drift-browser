@@ -1,6 +1,6 @@
 {
   "name": "drift-browser",
-  "version": "1.15.1",
+  "version": "1.15.2",
   "description": "A lightweight Chromium browser with vertical tabs and built-in ad blocking",
   "main": "src/main.js",
   "scripts": {
@@ -66,7 +66,7 @@
     "electronLanguages": [
       "en-US"
     ],
-    "compression": "store",
+    "compression": "normal",
     "extraResources": [
       {
         "from": "extensions/drift-hints",
