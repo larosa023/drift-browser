@@ -1622,6 +1622,7 @@ function openSub(row, it) {
 }
 $('#bmpop-wrap').addEventListener('mouseover', (e) => {
   const row = e.target.closest('.bp-row'); if (!row) return;
+  { const it = row.dataset.bp && findBm(row.dataset.bp); if (it && it.type !== 'folder') warm({ url: it.url }); }
   clearTimeout(bpHoverTimer);
   const pop = row.closest('.bmpop'), level = Number(pop.dataset.level);
   bpHoverTimer = setTimeout(() => {

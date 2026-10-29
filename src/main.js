@@ -2451,7 +2451,8 @@ function startPerfLog() {
   log(`--- start Drift ${app.getVersion()} (Chromium ${process.versions.chrome}) ${process.platform} ${require('os').cpus().length} cores`);
   // Main-thread freezes: a 50 ms timer that fires late means the browser couldn't respond.
   let last = Date.now();
-  setInterval(() => { const now = Date.now(), late = now - last - 50; last = now; if (late > 150) log(`FREEZE main thread blocked ${late} ms`); }, 50).unref();
+  let onFreeze = () => {};
+  setInterval(() => { const now = Date.now(), late = now - last - 50; last = now; if (late > 150) { log(`FREEZE main thread blocked ${late} ms`); try { onFreeze(late); } catch {} } }, 50).unref();
   const extName = (id) => { try { const e = extApi().getExtension(id); return e ? localize(e.manifest.name || e.name, e) : id; } catch { return id; } };
   setInterval(() => {
     const labels = new Map();
@@ -2512,27 +2513,45 @@ function startPerfLog() {
   const labelOf = (wc) => () => { try { if (ui && wc === ui.webContents) return 'Drift sidebar'; const t = wcToTab.get(wc.id); return `tab:${hostOf(wc.getURL()) || wc.getURL().slice(0, 40)}${t && t.dark ? ' (force dark)' : ''}`; } catch { return '?'; } };
   app.on('web-contents-created', (_e, wc) => { if (wc.getType() === 'window' || wc.getType() === 'browserView') instrument(wc, labelOf(wc)); });
   for (const wc of webContents.getAllWebContents()) if (wc.getType() === 'window' || wc.getType() === 'browserView') { instrument(wc, labelOf(wc)); try { wc.executeJavaScriptInIsolatedWorld(1997, [{ code: LOAF }]).catch(() => {}); } catch {} }
-  // A one-off Chromium trace (graphics, video, page) when a chosen site starts loading: put the
-  // site's name in a file named "perf-trace" next to "perf-log". Saved to logs\trace-*.json.
-  let traceHost = '';
-  try { traceHost = fs.readFileSync(file('perf-trace'), 'utf8').trim().toLowerCase(); } catch {}
-  let tracing = false, traced = 0;
-  if (traceHost) app.on('web-contents-created', (_e, wc) => {
-    wc.on('did-start-navigation', async (d) => {
-      if (tracing || traced >= 2 || !d.isMainFrame || d.isSameDocument || !hostOf(d.url).endsWith(traceHost)) return;
-      tracing = true; traced++;
-      const { contentTracing } = require('electron');
+  // What a freeze was made of: a rolling Chromium trace of the last seconds (browser tasks,
+  // messages between processes) and a CPU profile of Drift's own code, both saved only when
+  // the main thread froze. A few captures per run, then they stop.
+  const { contentTracing } = require('electron');
+  let ringOn = false, ringSaving = false, ringSaved = 0;
+  const startRing = () => contentTracing.startRecording({
+    included_categories: ['toplevel', 'ipc', 'mojom', 'electron', 'browser', 'navigation', 'loading', 'extensions', 'content', 'views', 'ui', 'base'],
+    excluded_categories: ['*'], recording_mode: 'record-continuously', trace_buffer_size_in_kb: 24576,
+  }).then(() => { ringOn = true; }).catch((e) => log('trace ring failed ' + e.message));
+  setTimeout(startRing, 15000);   // after startup settles
+  const insp = require('inspector'), prof = new insp.Session(); prof.connect();
+  const post = (m, p) => new Promise((res, rej) => prof.post(m, p || {}, (e, r) => e ? rej(e) : res(r)));
+  let profStart = 0, profSaved = 0, frozeSince = false;
+  const startProf = () => post('Profiler.enable').then(() => post('Profiler.setSamplingInterval', { interval: 500 })).then(() => post('Profiler.start')).then(() => { profStart = Date.now(); frozeSince = false; }).catch(() => {});
+  startProf();
+  const profTimer = setInterval(async () => {
+    if (profSaved >= 4) { clearInterval(profTimer); post('Profiler.stop').catch(() => {}); return; }
+    try {
+      const { profile } = await post('Profiler.stop');
+      if (frozeSince) { profSaved++; await fs.promises.writeFile(path.join(file('logs'), `freeze-${Date.now()}.cpuprofile`), JSON.stringify(profile)); log('CPU profile around the freeze saved'); flush(); }
+    } catch {}
+    startProf();
+  }, 20000);
+  profTimer.unref();
+  onFreeze = (ms) => {
+    frozeSince = true;
+    if (!ringOn || ringSaving || ringSaved >= 3 || ms < 140) return;
+    ringSaving = true; ringSaved++;
+    setTimeout(async () => {
       try {
-        await contentTracing.startRecording({ included_categories: ['toplevel', 'gpu', 'gpu.angle', 'gpu.service', 'gpu.capture', 'viz', 'cc', 'media', 'blink', 'v8', 'navigation', 'loading', 'devtools.timeline', 'disabled-by-default-devtools.timeline', 'disabled-by-default-gpu.service', 'disabled-by-default-gpu.decoder', 'disabled-by-default-viz.gpu_composite_time', 'skia', 'webgl'], excluded_categories: ['*'] });
-        log(`TRACE started for ${hostOf(d.url)}`); flush();
-        await new Promise(r => setTimeout(r, 9000));
-        const outFile = path.join(file('logs'), `trace-${Date.now()}.json`);
-        await contentTracing.stopRecording(outFile);
-        log(`TRACE saved ${outFile}`); flush();
-      } catch (e) { log('TRACE failed ' + e.message); }
-      tracing = false;
-    });
-  });
+        const out = path.join(file('logs'), `freeze-trace-${Date.now()}.json`);
+        ringOn = false;
+        await contentTracing.stopRecording(out);
+        log('trace around the freeze saved'); flush();
+      } catch (e) { log('trace save failed ' + e.message); }
+      ringSaving = false;
+      if (ringSaved < 3) startRing();
+    }, 800);
+  };
   // Read after startup: until the graphics process is up, Chromium reports everything as off.
   setTimeout(() => { try { const g = app.getGPUFeatureStatus(); log('gpu features: ' + Object.entries(g).map(([k, v]) => k + '=' + v).join(' ')); } catch {} }, 10000);
   app.getGPUInfo('basic').then((g) => { try { log('gpu: ' + (g.gpuDevice || []).map(d => `${d.vendorId}:${d.deviceId}${d.active ? '(active)' : ''} ${d.driverVersion || ''}`).join(', ') + ' ' + JSON.stringify(g.auxAttributes ? { gl: g.auxAttributes.glRenderer, angle: g.auxAttributes.displayType } : {})); } catch {} }).catch(() => {});
@@ -2559,8 +2578,20 @@ function startPerfLog() {
   setTimeout(() => { try { log('service workers: ' + Object.values(session.defaultSession.serviceWorkers.getAllRunning()).map(w => w.scope).join(', ')); } catch {} }, 8000);
 }
 
+// Warm up a connection (DNS, TCP, TLS) to a site the user is about to open: the address bar's
+// selected suggestion, a bookmark or a link under the pointer. Once per site per 10 s.
+const warmed = new Map();
+function warmOrigin(target) {
+  let origin; try { const u = new URL(toUrl(String(target || ''))); if (!/^https?:$/.test(u.protocol)) return; origin = u.origin; } catch { return; }
+  const now = Date.now(); if (now - (warmed.get(origin) || 0) < 10000) return;
+  warmed.set(origin, now); if (warmed.size > 200) warmed.clear();
+  try { session.defaultSession.preconnect({ url: origin, numSockets: 1 }); } catch {}
+}
+
 function setupPageIPC() {
   ipcMain.on('drift-no-webgpu', (e) => { e.returnValue = !webgpuUsable(); });
+  // A link the user is about to click (page-preload.js): connect to its site early.
+  ipcMain.on('drift-preconnect', (e, href) => { if (wcToTab.has(e.sender.id) && typeof href === 'string' && /^https?:\/\//.test(href)) warmOrigin(href); });
   // Synchronous tab lookup for extension background pages only.
   ipcMain.on('drift-tab-for', (e, d) => {
     let out = -1;
@@ -2647,14 +2678,7 @@ function setupUpdates() {
 function setupIPC() {
   // Messages from a window's sidebar UI run as that window.
   const on = (ch, fn) => ipcMain.on(ch, (e, ...a) => { const c = ctxOfUi(e.sender); if (!c) return; useWin(c); fn(...a); });
-  // Warm up a connection to a suggestion or bookmark under the pointer (once per site per 10s).
-  const warmed = new Map();
-  on('preconnect', (target) => {
-    let origin; try { const u = new URL(toUrl(String(target || ''))); if (!/^https?:$/.test(u.protocol)) return; origin = u.origin; } catch { return; }
-    const now = Date.now(); if (now - (warmed.get(origin) || 0) < 10000) return;
-    warmed.set(origin, now); if (warmed.size > 200) warmed.clear();
-    try { session.defaultSession.preconnect({ url: origin, numSockets: 1 }); } catch {}
-  });
+  on('preconnect', (target) => warmOrigin(target));
   const handle = (ch, fn) => ipcMain.handle(ch, (e, ...a) => { const c = ctxOfUi(e.sender); if (!c) return null; useWin(c); return fn(...a); });
 
   on('ready', () => { push(); layout(); sendBookmarks(); });

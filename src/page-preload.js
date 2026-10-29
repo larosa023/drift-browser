@@ -181,3 +181,26 @@ if (IS_WEB_PAGE && /^https?:$/.test(location.protocol)) {
   };
   if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', start); else start();
 }
+
+// ---------------------------------------------------------------------------
+// Links: when the pointer rests on a link to another site (or presses it), ask Drift to open
+// the connection to that site early, so the page starts loading sooner after the click.
+// ---------------------------------------------------------------------------
+if (IS_WEB_PAGE && /^https?:$/.test(location.protocol)) {
+  let hoverTimer = 0, lastOrigin = '';
+  const ask = (a) => {
+    let u; try { u = new URL(a.href, location.href); } catch { return; }
+    if (!/^https?:$/.test(u.protocol) || u.origin === location.origin || u.origin === lastOrigin) return;
+    lastOrigin = u.origin;
+    ipcRenderer.send('drift-preconnect', u.origin);
+  };
+  document.addEventListener('mouseover', (e) => {
+    const a = e.target && e.target.closest ? e.target.closest('a[href]') : null;
+    clearTimeout(hoverTimer);
+    if (a) hoverTimer = setTimeout(() => ask(a), 150);
+  }, { passive: true, capture: true });
+  document.addEventListener('pointerdown', (e) => {
+    const a = e.target && e.target.closest ? e.target.closest('a[href]') : null;
+    if (a) ask(a);
+  }, { passive: true, capture: true });
+}
