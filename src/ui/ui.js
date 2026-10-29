@@ -1528,9 +1528,12 @@ function closeRail() {
     if (S && S.overlay === 'railpeek') send('overlay', null, true);
   }, wasIn ? 260 : 0);
 }
+// The slim sidebar no longer flies out on hover: the button at the top left switches between
+// the slim and full sidebar. (Set to true to bring the hover flyout back.)
+const RAIL_HOVER_FLYOUT = false;
 $('#sidebar').addEventListener('mouseenter', () => {
   clearTimeout(railTimer);
-  if (!railMode()) return;
+  if (!railMode() || !RAIL_HOVER_FLYOUT) return;
   if (document.body.classList.contains('rail-in')) { railWant = true; clearTimeout(railEndTimer); railEndTimer = 0; return; }
   if (document.body.classList.contains('rail-closing')) { railWant = true; clearTimeout(railEndTimer); railEndTimer = 0; document.body.classList.add('rail-in'); document.body.classList.remove('rail-closing'); return; }   // back in while it was closing
   prepRail();
