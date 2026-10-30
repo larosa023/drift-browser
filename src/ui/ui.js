@@ -233,7 +233,7 @@ function renderTabs() {
   const pinned = S.tabs.filter(t => t.pinned);
   const normal = S.tabs.filter(t => !t.pinned);
   syncKeyed(ess, pinned.map(t => ({
-    id: t.id, cls: `ess ${t.id === S.activeId ? 'active' : ''} ${t.asleep ? 'asleep' : ''}`.trim(), title: tabTitle(t),
+    id: t.id, cls: `ess ${t.id === S.activeId ? 'active' : ''} ${t.asleep ? 'asleep' : ''}`.trim(), title: tabTitle(t) + (t.asleep ? ' (not loaded)' : ''),
     html: `${favHTML(t, 18)}${t.audible || t.muted ? `<button class="audio" data-act="mute" title="${t.muted ? 'Unmute' : 'Mute'} tab">${icon(t.muted ? 'muted' : 'sound', 13)}</button>` : ''}`,
   })));
   const splitClass = (t) => {

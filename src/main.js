@@ -389,7 +389,8 @@ function windowSnapshot(c) {
   let bounds = null;
   try { if (c.win && !c.win.isDestroyed()) bounds = c.win.isMaximized() || c.win.isFullScreen() ? c.win.getNormalBounds() : c.win.getBounds(); } catch {}
   return {
-    tabs: kept.map(t => ({ url: t.url, title: t.title, favicon: (t.favicon || '').length < 12000 ? t.favicon : '', pinned: t.pinned })),
+    tabs: kept.map(t => ({ url: t.url, title: t.title, favicon: (t.favicon || '').length < 12000 ? t.favicon : '', pinned: t.pinned,
+      ...(t.pinned && t.home ? { home: t.home, homeTitle: t.homeTitle || '' } : {}) })),
     active: Math.max(0, idx(c.activeId)),
     splits: c.splits.map(sp => [idx(sp.a), idx(sp.b), sp.ratio, sp.dir]).filter(x => x[0] >= 0 && x[1] >= 0),
     bounds, maximized: !!(c.win && !c.win.isDestroyed() && c.win.isMaximized()),
@@ -658,7 +659,8 @@ function focusPage() {
 function createTab(url = NEWTAB, opts = {}) {
   const tab = {
     id: nextTabId++, wid: cur.id, url, title: opts.title || '', favicon: opts.favicon || (faviconStore[hostOf(url)] || ''),
-    pinned: !!opts.pinned, view: null, loading: false, audible: false, muted: false,
+    pinned: !!opts.pinned, home: opts.pinned ? (opts.home || url) : null, homeTitle: opts.pinned ? (opts.homeTitle || opts.title || '') : null,
+    view: null, loading: false, audible: false, muted: false,
     volume: 1, hadAudio: false,
     blocked: 0, lastActive: Date.now(), crashed: false,
   };
@@ -1088,10 +1090,11 @@ function activate(id, opts = {}) {
   push(); saveSession();
 }
 
-function closeTab(id) {
+function closeTab(id, opts = {}) {
   const i = tabs.findIndex(t => t.id === id);
   if (i < 0) return;
   const tab = tabs[i];
+  if (tab.pinned && !opts.remove) { unloadEssential(tab); return; }
   if (!isInternal(tab.url)) {
     closedTabs.push({ url: tab.url, title: tab.title, favicon: tab.favicon, index: i, pinned: tab.pinned });
     if (closedTabs.length > 25) closedTabs.shift();
@@ -1138,11 +1141,33 @@ function cycle(dir) {
   activate(tabs[(i + dir + tabs.length) % tabs.length].id);
 }
 
+// Essentials (pinned tabs): icon tiles at the top of the sidebar, like Zen's. Each remembers
+// its own site (tab.home, the page it was added on). They stay asleep until clicked, and
+// closing one only unloads it (freeing its memory) and takes it back to its site; it stays in
+// Essentials until removed from there.
+function unloadEssential(tab) {
+  const others = tabs.filter(t => t !== tab);
+  const sp = splitOf(tab.id);
+  if (sp) splits = splits.filter(x => x !== sp);
+  if (tab.id === activeId) {
+    const next = [...others].sort((a, b) => (b.lastActive || 0) - (a.lastActive || 0)).find(t => !t.pinned) || others.find(t => t.view) || null;
+    if (next) activate(next.id); else { createTab(NEWTAB); }
+  }
+  destroyView(tab);
+  tab.sleepHistory = null;
+  if (tab.home && tab.url !== tab.home) { tab.url = tab.home; tab.title = tab.homeTitle || ''; tab.favicon = faviconStore[hostOf(tab.home)] || tab.favicon; }
+  layout(); push(); saveSession();
+}
+
 function moveTab(id, toIndex, pinned) {
   const i = tabs.findIndex(t => t.id === id);
   if (i < 0) return;
   const [tab] = tabs.splice(i, 1);
-  if (typeof pinned === 'boolean') tab.pinned = pinned;
+  if (typeof pinned === 'boolean') {
+    if (pinned && !tab.pinned) { tab.home = tab.url; tab.homeTitle = tab.title; }
+    if (!pinned) { tab.home = null; tab.homeTitle = null; }
+    tab.pinned = pinned;
+  }
   const pinnedCount = tabs.filter(t => t.pinned).length;
   // Keep pinned tabs grouped at the top.
   let idx = Math.max(0, Math.min(toIndex, tabs.length));
@@ -1602,7 +1627,8 @@ function tabContextMenu(id) {
   popupMenu([
     { label: 'Reload', enabled: !!wc, click: () => wc && wc.reload() },
     { label: 'Duplicate', click: () => createTab(tab.url, { openerId: tab.id }) },
-    { label: tab.pinned ? 'Unpin tab' : 'Pin tab', click: () => togglePin(id) },
+    { label: tab.pinned ? 'Remove from Essentials' : 'Add to Essentials', click: () => togglePin(id) },
+    ...(tab.pinned && tab.home && tab.url !== tab.home ? [{ label: 'Make this page its site', click: () => { tab.home = tab.url; tab.homeTitle = tab.title; saveSession(); } }] : []),
     { label: tab.muted ? 'Unmute tab' : 'Mute tab', enabled: !!wc, click: () => toggleMute(id) },
     { label: `Volume (${Math.round(tab.volume * 100)}%)`, enabled: !!wc, submenu: [300, 200, 150, 100, 75, 50, 25, 10].map(p => ({
       label: p + '%', type: 'radio', checked: Math.round(tab.volume * 100) === p, click: () => setTabVolume(id, p / 100),
@@ -1618,7 +1644,7 @@ function tabContextMenu(id) {
       return { label: `${(t && (t.title || hostOf(t.url))) || 'Window'} (${c.tabs.length} tab${c.tabs.length === 1 ? '' : 's'})`.slice(0, 60), click: () => moveTabToWindow(tab, c) };
     }) }] : []),
     { type: 'separator' },
-    { label: 'Close tab', click: () => closeTab(id) },
+    tab.pinned ? { label: 'Unload', enabled: !!tab.view, click: () => closeTab(id) } : { label: 'Close tab', click: () => closeTab(id) },
     { label: 'Close other tabs', click: () => tabs.filter(t => t.id !== id && !t.pinned).forEach(t => closeTab(t.id)) },
     { label: 'Close tabs below', click: () => { const i = tabs.indexOf(tab); tabs.slice(i + 1).filter(t => !t.pinned).forEach(t => closeTab(t.id)); } },
   ]);
@@ -3447,7 +3473,7 @@ function createWindow(opts = {}) {
   // First pages.
   const snap = opts.snapshot;
   if (snap && snap.tabs && snap.tabs.length) {
-    snap.tabs.forEach((t) => createTab(t.url, { title: t.title, favicon: t.favicon, pinned: t.pinned, lazy: true, activate: false }));
+    snap.tabs.forEach((t) => createTab(t.url, { title: t.title, favicon: t.favicon, pinned: t.pinned, home: t.home, homeTitle: t.homeTitle, lazy: true, activate: false }));
     for (const [i, j, ratio, dir] of snap.splits || []) {
       if (tabs[i] && tabs[j] && !splitOf(tabs[i].id) && !splitOf(tabs[j].id)) splits.push({ a: tabs[i].id, b: tabs[j].id, ratio: ratio || 0.5, dir: dir === 'col' ? 'col' : 'row' });
     }

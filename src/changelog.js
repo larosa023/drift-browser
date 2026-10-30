@@ -1,6 +1,12 @@
 // What's new in each release, shown on the What's new page (drift://whatsnew) after an update.
 // Newest first. Kinds: new, faster, fixed, changed. Written for people using Drift.
 module.exports = [
+  { version: '1.19.0', date: '2026-10-30', items: [
+    ['new', 'Essentials (like Zen): your always-there sites as icon tiles at the top of the sidebar. Drag a tab up into them, or right-click a tab → Add to Essentials.'],
+    ['new', 'Closing an Essential (Ctrl+W, middle-click, or right-click → Unload) only unloads it, freeing its memory; the tile stays, and clicking it opens its site again. Right-click → Remove from Essentials turns it back into a normal tab.'],
+    ['new', 'Each Essential remembers its site: after browsing elsewhere in it, unloading takes it back there. Right-click → Make this page its site to change it.'],
+    ['faster', 'Essentials stay asleep at startup until you click them. Dimmed tiles are not loaded.'],
+  ] },
   { version: '1.18.2', date: '2026-10-30', items: [
     ['faster', 'Glance opens sooner: on the new tab page, Alt+click starts the preview straight away (it used to wait for the site to answer a download first), links start loading as you press the mouse button, and the dimmed backdrop is ready as soon as you hold Alt.'],
     ['faster', 'Resting the pointer on a new tab page tile starts connecting to that site, so it opens sooner when you click.'],
