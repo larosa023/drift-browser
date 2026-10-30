@@ -162,8 +162,11 @@ function hostOf(u) { try { return new URL(u).hostname.replace(/^www\./, ''); } c
 function isInternal(u) { return !u || u.startsWith('drift:') || u === 'about:blank'; }
 
 function toUrl(text) {
-  const t = (text || '').trim();
+  let t = (text || '').trim();
   if (!t) return NEWTAB;
+  // A file path, as typed or pasted (Explorer's "Copy as path" adds quotes): open the file.
+  const unq = t.replace(/^"(.*)"$/, '$1');
+  if (/^[a-zA-Z]:[\\/]/.test(unq) || /^\\\\[^\\]+\\/.test(unq) || (unq.startsWith('/') && unq.length > 1 && fs.existsSync(unq))) { try { return require('url').pathToFileURL(unq).href; } catch {} }
   if (t.startsWith('?')) return searchUrl(t.slice(1).trim());
   if (/^(https?|file|drift|about|view-source|chrome-extension):/i.test(t)) return t;
   if (/^localhost(:\d+)?(\/.*)?$/i.test(t) || /^\d{1,3}(\.\d{1,3}){3}(:\d+)?(\/.*)?$/.test(t)) return 'http://' + t;
@@ -1317,6 +1320,7 @@ function handleShortcut(input) {
       case 'r': if (wc) wc.reload(); return true;
       case 'f': openFind(); return true;
       case 'p': if (wc) wc.print(); return true;
+      case 'o': openFileDialog(); return true;
       case 'd': toggleBookmarkActive(); return true;
       case 'Tab': cycle(1); return true;
       case 'PageDown': cycle(1); return true;
@@ -2776,6 +2780,26 @@ function launchTargets(argv) {
   return out;
 }
 
+// Opening files from this computer: Ctrl+O, or files dropped on the sidebar or toolbar.
+const fileUrl = (p) => require('url').pathToFileURL(p).href;
+async function openFileDialog() {
+  const dlgCtx = cur;
+  const r = await dialog.showOpenDialog(win, { title: 'Open file', properties: ['openFile', 'multiSelections'], filters: [
+    { name: 'Web pages', extensions: ['html', 'htm', 'shtml', 'xhtml', 'xht', 'mhtml', 'mht', 'svg'] },
+    { name: 'Images', extensions: ['png', 'jpg', 'jpeg', 'gif', 'webp', 'avif', 'bmp', 'ico', 'svg'] },
+    { name: 'PDF', extensions: ['pdf'] },
+    { name: 'Text', extensions: ['txt', 'json', 'xml', 'md', 'css', 'js', 'csv', 'log'] },
+    { name: 'All files', extensions: ['*'] },
+  ] });
+  if (r.canceled || !r.filePaths.length) return; if (!windows.includes(dlgCtx)) return; useWin(dlgCtx);
+  openFiles(r.filePaths);
+}
+function openFiles(paths) {
+  for (const p of paths) {
+    try { if (typeof p === 'string' && path.isAbsolute(p) && fs.statSync(p).isFile()) createTab(fileUrl(p)); } catch {}
+  }
+}
+
 function setupPageIPC() {
   ipcMain.on('drift-no-webgpu', (e) => { e.returnValue = !webgpuUsable(); });
   // A link the user is about to click (page-preload.js): connect to its site early.
@@ -2913,6 +2937,7 @@ function setupIPC() {
   });
   on('tab-drag-start', (id) => perfNote(`tab drag start: tab ${id}`));
   on('whats-new', () => createTab('drift://whatsnew/'));
+  on('open-files', (paths) => { if (Array.isArray(paths)) openFiles(paths.slice(0, 20)); });
   on('default-browser', () => openDefaultAppsSettings());
   on('new-window', () => newWindow());
   on('toggle-pin', (id) => togglePin(id));

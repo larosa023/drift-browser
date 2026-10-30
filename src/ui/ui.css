@@ -779,3 +779,6 @@ body.rail.rail-open #sidebar .tab { padding-left: 12px; }
 .upd-pill svg { width: 12px; height: 12px; }
 body.upd-ready #blocked-total { display: none; }
 body.rail:not(.rail-open) .upd-pill { display: none; }
+
+/* Files dragged over the sidebar: a quiet hint that dropping opens them */
+body.file-over #sidebar { box-shadow: inset 0 0 0 2px color-mix(in srgb, var(--accent) 55%, transparent); }

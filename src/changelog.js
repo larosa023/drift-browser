@@ -1,6 +1,10 @@
 // What's new in each release, shown on the What's new page (drift://whatsnew) after an update.
 // Newest first. Kinds: new, faster, fixed, changed. Written for people using Drift.
 module.exports = [
+  { version: '1.16.0', date: '2026-10-30', items: [
+    ['new', 'Open files from your computer: press Ctrl+O, drag files onto the sidebar or toolbar, or paste a file path (like C:\\Users\\you\\page.html, quotes and all) into the address bar.'],
+    ['new', 'Local web pages load with their own styles, scripts and images, and links between them work.'],
+  ] },
   { version: '1.15.6', date: '2026-10-29', items: [
     ['fixed', "New versions are noticed much sooner: Drift checks every 30 minutes and whenever you come back to it after 10 minutes away (it used to check only hourly, so a release could go unnoticed for an hour)."],
     ['changed', 'The dot on the settings gear appears as soon as a new version starts downloading; hover it to see the progress. The Update button appears when it is ready.'],

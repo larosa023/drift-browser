@@ -423,7 +423,7 @@ var require_browser_action = __commonJS({
 });
 
 // src/ui/preload.src.js
-var { contextBridge, ipcRenderer } = require("electron");
+var { contextBridge, ipcRenderer, webUtils } = require("electron");
 var { injectBrowserAction } = require_browser_action();
 var IN = ["state", "layout", "palette", "panel", "find-open", "find-result", "download-started", "extensions", "bookmarks", "passwords", "toast", "bm-edit", "download-done", "toast-action"];
 contextBridge.exposeInMainWorld("drift", {
@@ -432,6 +432,14 @@ contextBridge.exposeInMainWorld("drift", {
   invoke: (ch, ...a) => ["pw-reveal", "bm-sources", "site-info", "site-clear"].includes(ch) ? ipcRenderer.invoke(ch, ...a) : Promise.resolve(null),
   on: (ch, fn) => {
     if (IN.includes(ch)) ipcRenderer.on(ch, (_e, ...a) => fn(...a));
+  },
+  // Where a file dropped on the sidebar lives on disk (to open it in a tab).
+  pathForFile: (f) => {
+    try {
+      return webUtils.getPathForFile(f) || "";
+    } catch {
+      return "";
+    }
   }
 });
 injectBrowserAction();

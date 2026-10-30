@@ -1649,3 +1649,21 @@ $('#bmpop-wrap').addEventListener('mouseover', (e) => {
   }, 220);
 });
 document.addEventListener('keydown', (e) => { if (e.key === 'Escape' && S && S.overlay === 'bmpop') closeBmPopups(false); });
+
+// ---------------------------------------------------------------------- files dropped on Drift
+// Files from Explorer dropped on the sidebar or toolbar open in new tabs (on a page, the page
+// itself opens them, like Chrome).
+const draggingFiles = (e) => e.dataTransfer && [...e.dataTransfer.types].includes('Files');
+document.addEventListener('dragover', (e) => {
+  if (!draggingFiles(e)) return;
+  e.preventDefault(); e.dataTransfer.dropEffect = 'copy';
+  document.body.classList.add('file-over');
+});
+document.addEventListener('dragleave', (e) => { if (!e.relatedTarget) document.body.classList.remove('file-over'); });
+document.addEventListener('drop', (e) => {
+  document.body.classList.remove('file-over');
+  if (!draggingFiles(e)) return;
+  e.preventDefault();
+  const paths = [...e.dataTransfer.files].map(f => window.drift.pathForFile(f)).filter(Boolean);
+  if (paths.length) send('open-files', paths);
+});
