@@ -1,6 +1,9 @@
 // What's new in each release, shown on the What's new page (drift://whatsnew) after an update.
 // Newest first. Kinds: new, faster, fixed, changed. Written for people using Drift.
 module.exports = [
+  { version: '1.17.1', date: '2026-10-30', items: [
+    ['fixed', 'Drift is now verified for protected video (Widevine VMP), so streaming sites that require a verified browser accept it.'],
+  ] },
   { version: '1.17.0', date: '2026-10-30', items: [
     ['new', 'Protected video plays: sites that use DRM (NBA, Spotify, streaming services) no longer fail with "no key system". Drift fetches the Widevine video module from Google the first time (about 10 MB) and keeps it updated.'],
   ] },
