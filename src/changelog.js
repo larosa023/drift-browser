@@ -1,6 +1,9 @@
 // What's new in each release, shown on the What's new page (drift://whatsnew) after an update.
 // Newest first. Kinds: new, faster, fixed, changed. Written for people using Drift.
 module.exports = [
+  { version: '1.16.1', date: '2026-10-30', items: [
+    ['fixed', 'Double-clicking an HTML file (or opening it with Drift from Explorer) opens it in a tab again, also while Drift is already running.'],
+  ] },
   { version: '1.16.0', date: '2026-10-30', items: [
     ['new', 'Open files from your computer: press Ctrl+O, drag files onto the sidebar or toolbar, or paste a file path (like C:\\Users\\you\\page.html, quotes and all) into the address bar.'],
     ['new', 'Local web pages load with their own styles, scripts and images, and links between them work.'],

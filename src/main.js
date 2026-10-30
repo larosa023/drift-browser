@@ -2765,10 +2765,12 @@ function openDefaultAppsSettings() {
 }
 
 // Links and files Windows (or another app) hands Drift on its command line. Registered as
-// `Drift.exe --single-argument %1`: everything after that marker is one link.
+// `Drift.exe --single-argument %1`: Chromium already keeps everything after that marker as one
+// argument, so a crafted link can't add options. By the time Drift sees the list, Electron's
+// own startup switches may sit between the marker and the file, so look at each argument
+// rather than at what follows the marker.
 function launchTargets(argv) {
-  const i = argv.indexOf('--single-argument');
-  const raw = i >= 0 ? [argv.slice(i + 1).join(' ')] : argv.slice(1).filter(a => a && !a.startsWith('-'));
+  const raw = argv.slice(1).filter(a => a && !a.startsWith('-'));
   const out = [];
   for (const a of raw) {
     const s = a.trim(); if (!s) continue;
