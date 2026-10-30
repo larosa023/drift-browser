@@ -1,6 +1,10 @@
 // What's new in each release, shown on the What's new page (drift://whatsnew) after an update.
 // Newest first. Kinds: new, faster, fixed, changed. Written for people using Drift.
 module.exports = [
+  { version: '1.18.1', date: '2026-10-30', items: [
+    ['fixed', 'Alt+click opens Glance everywhere, including links in embedded frames and on the new tab page (it could download the page as an .html file instead).'],
+    ['fixed', 'Double-clicking an HTML file in Explorer opens it in Drift (Windows added an invisible character to the file path).'],
+  ] },
   { version: '1.18.0', date: '2026-10-30', items: [
     ['new', 'Pop-up blocker: pages can open a new tab or window only right after you click, one per click. Pop-under ads that turn a click on the page (or on an invisible layer over it) into an ad are stopped too. When something is blocked, a small notice lets you open it or always allow that site; manage it in Settings → Shields.'],
     ['new', 'Glance: Alt+click a link (or right-click → Glance) to preview it floating over the page. Open as tab keeps it (Ctrl+Enter); Esc or a click beside it closes it.'],

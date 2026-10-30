@@ -886,7 +886,7 @@ function wireTab(tab, wc) {
   wc.on('context-menu', (_e, p) => pageContextMenu(tab, wc, p));
   // Pop-up blocker: when you last clicked or pressed a key in this page, embedded frames
   // included (see popupVerdict). Touch taps only reach input-event.
-  wc.on('before-mouse-event', (_e, me) => { if (me.type === 'mouseDown') wc.__act = Date.now(); });
+  wc.on('before-mouse-event', (_e, me) => { if (me.type === 'mouseDown') { wc.__act = Date.now(); wc.__leftDown = me.button === 'left' ? Date.now() : 0; } });
   wc.on('before-input-event', (_e, ie) => { if (ie.type === 'keyDown') wc.__act = Date.now(); });
   wc.on('input-event', (_e, ie) => { if (ie.type === 'touchStart' || ie.type === 'gestureTap') wc.__act = Date.now(); });
   wc.setWindowOpenHandler(({ url, disposition }) => {
@@ -2325,9 +2325,21 @@ async function clearSiteData(origin) {
 // ---------------------------------------------------------------------------
 
 function setupDownloads(ses) {
-  ses.on('will-download', (_e, item, fromWc) => {
+  ses.on('will-download', (e, item, fromWc) => {
     // Belongs to the window whose page started it.
     const from = fromWc && wcToTab.get(fromWc.id);
+    // Alt+click on a link downloads the page in Chromium; Drift opens Glance instead. Usually
+    // page-preload.js catches the click first; this covers links it can't see (in embedded
+    // frames, Drift's own pages). Recognised as: a web page (not a file the site sends as a
+    // download) saved right after a click.
+    const disp = (() => { try { return item.getContentDisposition() || ''; } catch { return ''; } })();
+    if (from && fromWc.__leftDown && Date.now() - fromWc.__leftDown < 2500 && /^https?:/i.test(item.getURL())
+      && /^(text\/html|application\/xhtml\+xml)/i.test(item.getMimeType() || '') && !/attachment/i.test(disp) && !item.getURL().startsWith('blob:')) {
+      fromWc.__leftDown = 0;
+      e.preventDefault();
+      if (useTab(from)) openGlance(item.getURL(), from.glance ? null : from);
+      return;
+    }
     if (!(from && useTab(from)) && lastFocused) useWin(lastFocused);
     const dctx = cur;
     const dir = app.getPath('downloads');
@@ -2937,7 +2949,8 @@ function launchTargets(argv) {
   const raw = argv.slice(1).filter(a => a && !a.startsWith('-'));
   const out = [];
   for (const a of raw) {
-    const s = a.trim(); if (!s) continue;
+    // Windows can pass a file's path with a NUL character on the end; drop it.
+    const s = a.replace(/\0/g, '').trim(); if (!s) continue;
     if (/^https?:\/\//i.test(s)) { out.push(s); continue; }
     if (/^file:\/\//i.test(s)) { out.push(s); continue; }
     // A web file opened from Explorer: a path that exists, with a type Drift registered for.
