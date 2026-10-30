@@ -2722,7 +2722,7 @@ async function registerAsBrowser() {
   const cmdNow = await run('reg', ['query', `HKCU\\Software\\Classes\\${PROGID}\\shell\\open\\command`, '/ve']);
   const want = `"${exe}" --single-argument %1`;
   const reged = await run('reg', ['query', 'HKCU\\Software\\RegisteredApplications', '/v', 'Drift']);
-  if (cmdNow && cmdNow.includes(want) && reged) return;
+  if (cmdNow && cmdNow.includes(want) && reged) { launchLog(`registered with Windows: yes; open command: ${cmdNow.trim().split('\n').pop().trim()}`); return; }
   const q = (v) => '"' + String(v).replace(/\\/g, '\\\\').replace(/"/g, '\\"') + '"';
   const C = `HKEY_CURRENT_USER\\Software\\Clients\\StartMenuInternet\\Drift`;
   const lines = [
@@ -2747,6 +2747,8 @@ async function registerAsBrowser() {
     await fs.promises.writeFile(regFile, '﻿' + lines.join('\r\n') + '\r\n', 'utf16le');
     const ok = await run('reg', ['import', regFile]);
     console.log('[default browser] registration', ok !== null ? 'done' : 'failed');
+    const check = await run('reg', ['query', `HKCU\\Software\\Classes\\${PROGID}\\shell\\open\\command`, '/ve']);
+    launchLog(`registered with Windows: ${ok !== null ? 'ok' : 'FAILED'}; open command now: ${(check || 'missing').trim().split('\n').pop().trim()}`);
   } finally { fs.promises.unlink(regFile).catch(() => {}); }
   checkDefaultBrowser();
 }
@@ -2769,6 +2771,16 @@ function openDefaultAppsSettings() {
 // argument, so a crafted link can't add options. By the time Drift sees the list, Electron's
 // own startup switches may sit between the marker and the file, so look at each argument
 // rather than at what follows the marker.
+// A short record of launches and hand-offs (logs\launch.log), for when opening files or links
+// from Windows doesn't work.
+function launchLog(line) {
+  try {
+    const dir = path.join(app.getPath('userData'), 'logs'), f = path.join(dir, 'launch.log');
+    fs.promises.mkdir(dir, { recursive: true })
+      .then(() => fs.promises.stat(f).then(st => st.size > 100000 ? fs.promises.rename(f, f + '.old') : null).catch(() => null))
+      .then(() => fs.promises.appendFile(f, `${new Date().toISOString()} ${app.getVersion()} ${line}\n`)).catch(() => {});
+  } catch {}
+}
 function launchTargets(argv) {
   const raw = argv.slice(1).filter(a => a && !a.startsWith('-'));
   const out = [];
@@ -3335,18 +3347,24 @@ process.on('uncaughtException', (e) => {
   try { dialog.showErrorBox('A JavaScript error occurred in the main process', String(e && e.stack || e)); } catch {}
 });
 
-if (!app.requestSingleInstanceLock()) {
+// What a launch asked for, worked out by the process Windows started. Handed to the running
+// Drift as data, because Electron's copy of the command line can be reordered on the way.
+const launchRequest = { targets: launchTargets(process.argv), newWindow: process.argv.includes('--new-window'), newTab: process.argv.includes('--new-tab') };
+if (!app.requestSingleInstanceLock(launchRequest)) {
   app.quit();
 } else {
-  // Drift was launched again (taskbar menu, a link from another app): use the open window.
-  app.on('second-instance', (_e, argv) => {
-    const urls = launchTargets(argv);
-    if (argv.includes('--new-window') || !windows.length) { createWindow({ urls }); return; }
+  // Drift was launched again (a double-clicked file, a link from another app, the taskbar
+  // menu): open what it asked for in the window in use.
+  app.on('second-instance', (_e, argv, _cwd, data) => {
+    const req = data && Array.isArray(data.targets) ? data : { targets: launchTargets(argv), newWindow: argv.includes('--new-window'), newTab: argv.includes('--new-tab') };
+    const urls = req.targets.filter(u => typeof u === 'string' && /^(https?|file):/i.test(u)).slice(0, 20);
+    launchLog(`hand-off: ${JSON.stringify(argv)} data=${JSON.stringify(data || null)} -> ${JSON.stringify(urls)}`);
+    if (req.newWindow || !windows.length) { createWindow({ urls }); return; }
     const c = lastFocused || windows[0]; useWin(c);
     if (win.isMinimized()) win.restore();
     win.focus();
     urls.forEach(u => createTab(u));
-    if (argv.includes('--new-tab')) createTab(NEWTAB);
+    if (req.newTab) createTab(NEWTAB);
   });
 
   app.whenReady().then(async () => {
@@ -3399,7 +3417,8 @@ if (!app.requestSingleInstanceLock()) {
     const shieldsReady = initShields().then(() => PERF('shields ready'));
     let openGate; startupGate = new Promise(r => { openGate = r; });
     // Reopen every window from last time (older sessions hold one window at the top level).
-    const urls = launchTargets(process.argv);
+    const urls = launchRequest.targets;
+    launchLog(`start: ${JSON.stringify(process.argv)} -> ${JSON.stringify(urls)}`);
     const saved = settings.restoreTabs ? readJSON('session.json', null) : null;
     const snaps = saved ? (Array.isArray(saved.windows) && saved.windows.length ? saved.windows : [saved]).filter(w => w && w.tabs && w.tabs.length) : [];
     const first = createWindow({ snapshot: snaps[0], urls, gate: startupGate });
