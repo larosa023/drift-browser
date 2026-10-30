@@ -2,6 +2,7 @@
 const { contextBridge, ipcRenderer } = require('electron');
 contextBridge.exposeInMainWorld('glanceBridge', {
   onState: (fn) => ipcRenderer.on('glance', (_e, d) => fn(d)),
+  onHide: (fn) => ipcRenderer.on('glance-hide', () => fn()),
   close: () => ipcRenderer.send('glance-close'),
   expand: () => ipcRenderer.send('glance-expand'),
 });

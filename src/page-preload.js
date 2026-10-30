@@ -237,13 +237,22 @@ if (IS_WEB_PAGE) {
   window.addEventListener('keydown', (e) => { if (e.key === 'Enter' || e.key === ' ') report(e, document.activeElement); }, { capture: true, passive: true });
 
   // Glance: Alt+click a link to preview it over the page (Chromium would download it instead).
-  window.addEventListener('click', (e) => {
-    if (!e.isTrusted || !e.altKey || e.ctrlKey || e.shiftKey || e.metaKey || e.button !== 0) return;
+  // Starts as the button goes down, not when it comes back up, so the preview loads sooner; the
+  // click that follows is swallowed.
+  const altLink = (e) => {
+    if (!e.isTrusted || !e.altKey || e.ctrlKey || e.shiftKey || e.metaKey || e.button !== 0) return null;
     const t = e.composedPath()[0] || e.target;
     const a = t && t.closest ? t.closest('a[href]') : null;
-    if (!a || !/^https?:/i.test(a.href)) return;
-    e.preventDefault(); e.stopImmediatePropagation();
+    return a && /^https?:/i.test(a.href) ? a : null;
+  };
+  let glanced = 0;
+  window.addEventListener('pointerdown', (e) => {
+    const a = altLink(e); if (!a) return;
+    glanced = Date.now();
     ipcRenderer.send('drift-glance', a.href);
+  }, { capture: true });
+  for (const type of ['mousedown', 'mouseup', 'click', 'auxclick']) window.addEventListener(type, (e) => {
+    if (Date.now() - glanced < 3000 && altLink(e)) { e.preventDefault(); e.stopImmediatePropagation(); }
   }, { capture: true });
 }
 

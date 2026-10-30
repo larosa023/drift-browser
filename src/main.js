@@ -887,7 +887,12 @@ function wireTab(tab, wc) {
   // Pop-up blocker: when you last clicked or pressed a key in this page, embedded frames
   // included (see popupVerdict). Touch taps only reach input-event.
   wc.on('before-mouse-event', (_e, me) => { if (me.type === 'mouseDown') { wc.__act = Date.now(); wc.__leftDown = me.button === 'left' ? Date.now() : 0; } });
-  wc.on('before-input-event', (_e, ie) => { if (ie.type === 'keyDown') wc.__act = Date.now(); });
+  wc.on('before-input-event', (_e, ie) => {
+    if (ie.type !== 'keyDown') return;
+    wc.__act = Date.now();
+    // Alt pressed: a Glance may follow, have its backdrop ready.
+    if (ie.key === 'Alt' && !ie.isAutoRepeat && !tab.glance) { const c = ctxOfTab(tab); if (c && !c.glance && !(c.glanceFrame && !c.glanceFrame.webContents.isDestroyed())) { useWin(c); glanceFrame(); releaseGlanceFrame(c.glanceFrame); } }
+  });
   wc.on('input-event', (_e, ie) => { if (ie.type === 'touchStart' || ie.type === 'gestureTap') wc.__act = Date.now(); });
   wc.setWindowOpenHandler(({ url, disposition }) => {
     const why = popupVerdict(tab, wc, url);
@@ -980,14 +985,33 @@ function openGlance(url, opener) {
     pinned: false, view: null, loading: false, audible: false, muted: false, volume: 1, hadAudio: false,
     blocked: 0, lastActive: Date.now(), crashed: false, glance: true, openerId: opener ? opener.id : null,
   };
-  const frame = new WebContentsView({ webPreferences: { sandbox: true, contextIsolation: true, preload: path.join(__dirname, 'ui', 'glance-preload.js') } });
-  frame.setBackgroundColor('#00000000');
-  frame.webContents.loadURL('drift://ui/glance.html');
-  frame.webContents.once('did-finish-load', inThisWin(sendGlance));
+  const frame = glanceFrame();
   cur.glance = { tab, frame };
   ensureView(tab);
   layout();
   focusPage();
+}
+// The backdrop page is kept for a while after a preview closes (and made as soon as Alt is
+// pressed in a page), so a preview doesn't wait for it to load.
+function glanceFrame() {
+  clearTimeout(cur.glanceFrameIdle);
+  let f = cur.glanceFrame;
+  if (f && !f.webContents.isDestroyed()) return f;
+  f = cur.glanceFrame = new WebContentsView({ webPreferences: { sandbox: true, contextIsolation: true, preload: path.join(__dirname, 'ui', 'glance-preload.js') } });
+  f.setBackgroundColor('#00000000');
+  f.webContents.loadURL('drift://ui/glance.html');
+  f.webContents.on('did-finish-load', inThisWin(sendGlance));
+  return f;
+}
+function releaseGlanceFrame(f) {
+  try { win.contentView.removeChildView(f); } catch {}
+  if (!f.webContents.isDestroyed()) f.webContents.send('glance-hide');
+  clearTimeout(cur.glanceFrameIdle);
+  cur.glanceFrameIdle = setTimeout(inThisWin(() => {
+    if (cur.glance || cur.glanceFrame !== f) return;
+    try { f.webContents.close(); } catch {}
+    cur.glanceFrame = null;
+  }), 120000);
 }
 function glanceCard(r) {
   const mx = Math.max(20, Math.round(r.width * 0.06));
@@ -1003,15 +1027,13 @@ function closeGlance() {
   const g = cur && cur.glance; if (!g) return;
   cur.glance = null;
   destroyView(g.tab);
-  try { win.contentView.removeChildView(g.frame); } catch {}
-  try { g.frame.webContents.close(); } catch {}
+  releaseGlanceFrame(g.frame);
   layout(); focusPage();
 }
 function expandGlance() {
   const g = cur && cur.glance; if (!g) return;
   cur.glance = null;
-  try { win.contentView.removeChildView(g.frame); } catch {}
-  try { g.frame.webContents.close(); } catch {}
+  releaseGlanceFrame(g.frame);
   const tab = g.tab;
   tab.glance = false;
   if (tab.view) tab.view.setBorderRadius(RADIUS);
@@ -2382,6 +2404,20 @@ function setupProtocol() {
       if (host && !settings.hiddenSites.includes(host)) { settings.hiddenSites.push(host); saveSettings(); }
       return new Response(JSON.stringify(topSites()), { headers: { 'content-type': 'application/json' } });
     }
+    // The new tab page: Alt+click on a tile (Glance) and a pointer resting on one (connect early).
+    // Sent from the new tab page showing in the window in front.
+    if (u.hostname === 'newtab' && (u.pathname === '/glance' || u.pathname === '/warm')) {
+      if (req.method !== 'POST' || req.headers.get('x-drift-newtab') !== '1') return new Response('', { status: 403 });
+      const target = String(u.searchParams.get('url') || '');
+      if (/^https?:\/\//i.test(target)) {
+        if (u.pathname === '/warm') warmOrigin(target);
+        else {
+          const c = lastFocused || windows[0];
+          if (c) { useWin(c); const t = activeTab(); if (t && t.url.startsWith(NEWTAB)) openGlance(target, t); }
+        }
+      }
+      return new Response(null, { status: 204 });
+    }
     if (u.hostname === 'whatsnew') {
       let html = await fs.promises.readFile(path.join(PAGES_DIR, 'whatsnew.html'), 'utf8');
       const data = { entries: CHANGELOG, current: app.getVersion(), from: (u.searchParams.get('from') || '').replace(/[^\d.]/g, ''), accent: settings.accent, dark: isDark() };
@@ -3434,7 +3470,9 @@ function closeWindowCtx(ctx) {
   const i = windows.indexOf(ctx); if (i < 0) return;
   useWin(ctx);
   for (const t of [...tabs]) { try { destroyView(t); } catch {} }
-  if (ctx.glance) { try { destroyView(ctx.glance.tab); ctx.glance.frame.webContents.close(); } catch {} ctx.glance = null; }
+  if (ctx.glance) { try { destroyView(ctx.glance.tab); } catch {} ctx.glance = null; }
+  clearTimeout(ctx.glanceFrameIdle);
+  if (ctx.glanceFrame) { try { ctx.glanceFrame.webContents.close(); } catch {} ctx.glanceFrame = null; }
   splits = []; tabs = [];
   clearTimeout(toastTimer); clearTimeout(ctx.toastIdle);
   try { if (toastView) toastView.webContents.close(); } catch {}

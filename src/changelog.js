@@ -1,6 +1,10 @@
 // What's new in each release, shown on the What's new page (drift://whatsnew) after an update.
 // Newest first. Kinds: new, faster, fixed, changed. Written for people using Drift.
 module.exports = [
+  { version: '1.18.2', date: '2026-10-30', items: [
+    ['faster', 'Glance opens sooner: on the new tab page, Alt+click starts the preview straight away (it used to wait for the site to answer a download first), links start loading as you press the mouse button, and the dimmed backdrop is ready as soon as you hold Alt.'],
+    ['faster', 'Resting the pointer on a new tab page tile starts connecting to that site, so it opens sooner when you click.'],
+  ] },
   { version: '1.18.1', date: '2026-10-30', items: [
     ['fixed', 'Alt+click opens Glance everywhere, including links in embedded frames and on the new tab page (it could download the page as an .html file instead).'],
     ['fixed', 'Double-clicking an HTML file in Explorer opens it in Drift (Windows added an invisible character to the file path).'],

@@ -2,7 +2,13 @@
 // The preview itself is a page view Drift places over #card.
 const $ = (s) => document.querySelector(s);
 const host = (u) => { try { return new URL(u).hostname.replace(/^www\./, ''); } catch { return u; } };
+// Reused between previews: hidden while unused, and the fade-in replays when it's shown again.
+window.glanceBridge.onHide(() => { document.body.classList.add('off'); $('#bar').hidden = true; });
 window.glanceBridge.onState((d) => {
+  if (document.body.classList.contains('off')) {
+    for (const el of [$('#scrim'), $('#card'), $('#bar')]) { el.style.animation = 'none'; void el.offsetWidth; el.style.animation = ''; }
+    document.body.classList.remove('off');
+  }
   document.documentElement.style.setProperty('--accent', d.accent);
   const c = d.card;
   Object.assign($('#card').style, { left: c.x + 'px', top: c.y + 'px', width: c.width + 'px', height: c.height + 'px' });

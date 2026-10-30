@@ -142,6 +142,23 @@
   }
   }
   renderSites(D.sites);
+  // Alt+click a tile: preview it in Glance (straight away, without Chromium's download detour).
+  // Resting the pointer on a tile opens the connection to the site early.
+  const tell = (what, url) => fetch(`drift://newtab/${what}?url=` + encodeURIComponent(url), { method: 'POST', headers: { 'x-drift-newtab': '1' } }).catch(() => {});
+  let glanced = 0;
+  sites.addEventListener('pointerdown', (e) => {
+    const a = e.target.closest('a.site');
+    if (!a || !e.altKey || e.ctrlKey || e.shiftKey || e.button !== 0 || e.target.closest('.x')) return;
+    glanced = Date.now(); tell('glance', a.href);
+  }, true);
+  for (const type of ['mousedown', 'click']) sites.addEventListener(type, (e) => {
+    if (Date.now() - glanced < 3000 && e.altKey && e.target.closest('a.site')) { e.preventDefault(); e.stopPropagation(); }
+  }, true);
+  let warmT = 0;
+  sites.addEventListener('pointerover', (e) => {
+    const a = e.target.closest('a.site'); clearTimeout(warmT);
+    if (a) warmT = setTimeout(() => tell('warm', a.href), 120);
+  });
   if (D.blocked) document.getElementById('stat').innerHTML = `<b>${D.blocked.toLocaleString()}</b> ads and trackers blocked this session`;
 </script>
 </body>
