@@ -1,6 +1,12 @@
 // What's new in each release, shown on the What's new page (drift://whatsnew) after an update.
 // Newest first. Kinds: new, faster, fixed, changed. Written for people using Drift.
 module.exports = [
+  { version: '1.20.0', date: '2026-10-30', items: [
+    ['changed', 'Essentials are kept for good: saved on their own, so they stay through restarts, closed windows and PC restarts, even with Reopen tabs on startup turned off. They stay until you remove them.'],
+    ['new', 'Every window shows the same Essentials. Adding, removing or reordering them in one window updates the others.'],
+    ['new', 'Add Essentials with the + tile at the end of them: type a site, or pick this tab, an open tab, a bookmark or a recent site.'],
+    ['new', 'Drag Essentials to rearrange them; a space opens where the tile will land, in both the full and the slim sidebar.'],
+  ] },
   { version: '1.19.0', date: '2026-10-30', items: [
     ['new', 'Essentials (like Zen): your always-there sites as icon tiles at the top of the sidebar. Drag a tab up into them, or right-click a tab → Add to Essentials.'],
     ['new', 'Closing an Essential (Ctrl+W, middle-click, or right-click → Unload) only unloads it, freeing its memory; the tile stays, and clicking it opens its site again. Right-click → Remove from Essentials turns it back into a normal tab.'],

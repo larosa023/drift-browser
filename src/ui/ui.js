@@ -224,7 +224,7 @@ function syncKeyed(container, items) {
     if (at !== el) container.insertBefore(el, at || null);
   });
   for (const el of have.values()) el.remove();
-  for (const el of [...container.children]) if (!el.dataset.id) el.remove();   // stray drop markers
+  for (const el of [...container.children]) if (!el.dataset.id && !el.classList.contains('keep')) el.remove();   // stray drop markers
 }
 function renderTabs() {
   if (dragId != null) { tabsPending = true; return; }
@@ -236,6 +236,17 @@ function renderTabs() {
     id: t.id, cls: `ess ${t.id === S.activeId ? 'active' : ''} ${t.asleep ? 'asleep' : ''}`.trim(), title: tabTitle(t) + (t.asleep ? ' (not loaded)' : ''),
     html: `${favHTML(t, 18)}${t.audible || t.muted ? `<button class="audio" data-act="mute" title="${t.muted ? 'Unmute' : 'Mute'} tab">${icon(t.muted ? 'muted' : 'sound', 13)}</button>` : ''}`,
   })));
+  // The + tile at the end (a wide "Add Essentials" bar while there are none) opens the
+  // command bar to pick a site.
+  let add = ess.querySelector('.ess-add');
+  if (!add) {
+    add = document.createElement('button'); add.className = 'ess-add keep';
+    add.innerHTML = `${icon('plus', 15)}<span>Add Essentials</span>`;
+    add.addEventListener('click', (e) => { e.stopPropagation(); openEssentialsPicker(); });
+  }
+  add.title = 'Add an Essential: a site you always keep at hand';
+  if (ess.lastElementChild !== add) ess.append(add);
+  ess.classList.toggle('none', !pinned.length);
   const splitClass = (t) => {
     const sp = (S.splits || []).find(x => x.a === t.id || x.b === t.id);
     if (!sp) return '';
@@ -302,13 +313,24 @@ function tabDropAt(x, y) {
   if (x >= c.x && x < c.x + c.width && y >= c.y && y < c.y + c.height) return { kind: 'out' };
   return { kind: 'none' };
 }
+// Where a tab dropped on Essentials goes: before the tile under or after the pointer, in
+// reading order (works for the grid and for the slim sidebar's single column).
+function essBefore(e, exceptId) {
+  const tiles = [...$('#essentials').querySelectorAll('.ess')].filter(r => Number(r.dataset.id) !== exceptId);
+  return tiles.find(r => { const b = r.getBoundingClientRect(); return e.clientY < b.top + b.height / 2 || (e.clientY < b.bottom && e.clientX < b.left + b.width / 2); }) || null;
+}
 function showTabDrop(e) {
   document.querySelectorAll('.drop-line').forEach(x => x.remove());
   clearBmDrop();
   $('#essentials').classList.toggle('drop-target', true);
   const d = tabDropAt(e.clientX, e.clientY);
   document.body.classList.toggle('tab-out', d.kind === 'out');
-  if (d.kind === 'list') {
+  document.querySelectorAll('.ess-drop').forEach(x => x.remove());
+  if (d.kind === 'pin') {
+    const mark = document.createElement('div'); mark.className = 'ess-drop';
+    const before = essBefore(e, tabPtr && tabPtr.id);
+    $('#essentials').insertBefore(mark, before || $('#essentials .ess-add'));
+  } else if (d.kind === 'list') {
     const rows = [...$('#tablist').querySelectorAll('.tab')];
     const before = rows.find(r => e.clientY < r.getBoundingClientRect().top + r.offsetHeight / 2);
     const line = document.createElement('div'); line.className = 'drop-line';
@@ -336,8 +358,8 @@ function endTabDrag(e, cancelled) {
       send('move-tab', id, Math.max(idx, pinnedCount), false);
     } else if (d.kind === 'pin') {
       const tiles = [...$('#essentials').querySelectorAll('.ess')].filter(r => Number(r.dataset.id) !== id);
-      const before = tiles.find(r => { const b = r.getBoundingClientRect(); return e.clientY < b.bottom && e.clientX < b.left + b.width / 2; });
-      const idx = before ? S.tabs.filter(t => t.id !== id).findIndex(t => t.id === Number(before.dataset.id)) : tiles.length;
+      const before = essBefore(e, id);
+      const idx = before ? tiles.indexOf(before) : tiles.length;
       send('move-tab', id, idx, true);
     } else if (d.kind === 'bm') {
       const folder = bmFolderUnder({ target: d.el, clientX: e.clientX });
@@ -351,7 +373,7 @@ function endTabDrag(e, cancelled) {
   dragId = null;
   document.body.classList.remove('tab-dragging', 'tab-out');
   document.querySelectorAll('.tab.dragging, .ess.dragging').forEach(x => x.classList.remove('dragging'));
-  document.querySelectorAll('.drop-line').forEach(x => x.remove());
+  document.querySelectorAll('.drop-line, .ess-drop').forEach(x => x.remove());
   $('#essentials').classList.remove('drop-target');
   clearBmDrop();
   send('focus-page');
@@ -495,7 +517,20 @@ function checkStaleOverlay() {
   }, 120);
 }
 function openPalette(newTab, anchored) {
+  paletteMode = null;
   preparePalette(newTab, anchored);
+  raiseOverlay('palette');
+}
+// The command bar in "Add an Essential" mode: type a site, or pick an open tab, a bookmark or
+// a recent site; the pick is added to Essentials instead of opened.
+let paletteMode = null;
+function openEssentialsPicker() {
+  paletteMode = 'ess';
+  preparePalette(false, false);
+  const inp = $('#p-input');
+  inp.placeholder = 'Add an Essential: type a site, or pick one below';
+  inp.value = '';
+  updatePalette();
   raiseOverlay('palette');
 }
 // anchored = drop down from the toolbar address field instead of the centered command bar
@@ -533,6 +568,12 @@ async function updatePalette(completeInline) {
   const engine = S ? S.engines[S.settings.searchEngine] : 'the web';
   const baseFor = (text, typed) => {
     const b = [];
+    if (paletteMode === 'ess') {
+      const cur = S && S.tabs.find(t => t.id === S.activeId);
+      if (!text && cur && !cur.pinned && /^(https?|file):/i.test(cur.url)) b.push({ kind: 'cur', id: cur.id, url: cur.url, title: tabTitle(cur), sub: 'This tab' });
+      if (text) b.push({ kind: 'go', text, title: looksLikeUrl(text) || /^[a-z0-9-]+$/i.test(text) ? text.replace(/^https?:\/\//, '') + (/^[a-z0-9-]+$/i.test(text) ? '.com' : '') : text, sub: 'Add this site' });
+      return b;
+    }
     if (text) {
       if (looksLikeUrl(text)) b.push({ kind: 'go', text, title: text, sub: 'Open address' });
       b.push({ kind: 'search', text: typed, title: typed, sub: `Search ${engine}` });
@@ -558,10 +599,10 @@ function renderPalette(base, r) {
   const items = [...base];
   const groups = [];
   if (r) {
-    const tabs = (r.items || []).filter(i => i.kind === 'tab');
+    const tabs = (r.items || []).filter(i => i.kind === 'tab' && !(paletteMode === 'ess' && S && (S.tabs.find(t => t.id === i.id) || {}).pinned));
     const hist = (r.items || []).filter(i => i.kind === 'history');
     const bms = (r.items || []).filter(i => i.kind === 'bookmark');
-    const searches = (r.searches || []).map(s => ({ kind: 'search', text: s, title: s, sub: '' }));
+    const searches = paletteMode === 'ess' ? [] : (r.searches || []).map(s => ({ kind: 'search', text: s, title: s, sub: '' }));
     if (searches.length) items.push(...searches);
     if (tabs.length) { groups.push([items.length, 'Open tabs']); items.push(...tabs.map(t => ({ ...t, kind: 'tab' }))); }
     if (bms.length) { groups.push([items.length, 'Bookmarks']); items.push(...bms); }
@@ -574,13 +615,14 @@ function renderPalette(base, r) {
   items.forEach((it, i) => {
     const g = groups.find(([at]) => at === i); if (g) html.push(`<div class="p-sep">${g[1]}</div>`);
     let ic, title, sub, badge = '';
-    if (it.kind === 'go') { ic = icon('globe'); title = it.title; sub = it.sub; }
+    if (it.kind === 'cur') { ic = icon('tab'); title = it.title; sub = hostOf(it.url); badge = 'This tab'; }
+    else if (it.kind === 'go') { ic = icon('globe'); title = it.title; sub = it.sub; }
     else if (it.kind === 'search') { ic = icon('search'); title = it.title; sub = it.sub; }
-    else if (it.kind === 'tab') { ic = icon('tab'); title = it.title; sub = hostOf(it.url); badge = 'Switch to tab'; }
+    else if (it.kind === 'tab') { ic = icon('tab'); title = it.title; sub = hostOf(it.url); badge = paletteMode === 'ess' ? 'Open tab' : 'Switch to tab'; }
     else if (it.kind === 'bookmark') { ic = icon('star'); title = it.title; sub = it.url.replace(/^https?:\/\/(www\.)?/, ''); }
     else { ic = icon('clock'); title = it.title; sub = it.url.replace(/^https?:\/\/(www\.)?/, ''); }
     html.push(`<div class="pr ${i === paletteSel ? 'sel' : ''}" data-i="${i}"><span class="pi">${ic}</span>
-      <span class="pt"><b>${esc(title)}</b><span>${esc(sub)}</span></span>${badge ? `<span class="badge">${badge}</span>` : ''}</div>`);
+      <span class="pt"><b>${esc(title)}</b><span>${esc(sub)}</span></span>${badge ? `<span class="badge">${badge}</span>` : ''}${paletteMode === 'ess' ? `<span class="badge add">${icon('plus', 11)} Add</span>` : ''}</div>`);
   });
   $('#p-results').innerHTML = html.join('');
   if ($('#p-input').value.trim()) warm(paletteItems[paletteSel]);
@@ -588,6 +630,11 @@ function renderPalette(base, r) {
 
 function runItem(it, forceNew) {
   if (!it) return;
+  if (paletteMode === 'ess') {
+    if (it.kind === 'cur' || it.kind === 'tab') send('ess-add', { tabId: it.id });
+    else send('ess-add', it.kind === 'go' ? it.text : it.url);
+    paletteMode = null; return;
+  }
   const newTab = paletteNewTab || forceNew;
   if (it.kind === 'tab') send('switch-to', it.id);
   else if (it.kind === 'go') send('navigate', it.text, newTab);
@@ -607,7 +654,8 @@ $('#p-input').addEventListener('keydown', (e) => {
     const q = $('#p-input').value.trim();
     const it = paletteItems[paletteSel];
     if (!q && !it) { if (paletteNewTab) send('navigate', '', true); closePalette(); return; }
-    if (!it) send('navigate', q, paletteNewTab || e.altKey);
+    if (!it && paletteMode === 'ess') { if (q) send('ess-add', q); paletteMode = null; }
+    else if (!it) send('navigate', q, paletteNewTab || e.altKey);
     else runItem(it, e.altKey);
   } else if (e.key === 'Escape') {
     e.preventDefault();

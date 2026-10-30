@@ -369,6 +369,7 @@ let uboId = null;          // extension id of the bundled uBlock Origin while it
 let extensions = null;     // ElectronChromeExtensions instance
 let blockedTotal = 0;
 let splits = [];          // split view pairs: { a: tabId, b: tabId, ratio, dir: 'row' | 'col' }
+let essentials = [];       // [{ id, url, title, favicon }]: Essentials, shared by every window
 let bookmarks = null;      // Bookmarks store
 let passwords = null;      // Passwords store
 const downloads = [];
@@ -379,18 +380,18 @@ const saveHistory = debounceSave(() => {
   const arr = [...history.values()].sort((a, b) => b.last - a.last).slice(0, 4000);
   writeJSON('history.json', arr);
 }, 2000);
+const saveEssentials = debounceSave(() => writeJSON('essentials.json', essentials), 300);
 const saveSession = debounceSave(() => { if (windows.length) writeJSON('session.json', sessionSnapshot()); }, 800);
 
 // Session: every open window with its tabs. The first window's tabs are also stored at the top
 // level, the format older versions of Drift read.
 function windowSnapshot(c) {
-  const kept = c.tabs.filter(t => !isInternal(t.url) || t.pinned);
+  const kept = c.tabs.filter(t => !t.pinned && !isInternal(t.url));   // Essentials are saved on their own
   const idx = (id) => kept.findIndex(t => t.id === id);
   let bounds = null;
   try { if (c.win && !c.win.isDestroyed()) bounds = c.win.isMaximized() || c.win.isFullScreen() ? c.win.getNormalBounds() : c.win.getBounds(); } catch {}
   return {
-    tabs: kept.map(t => ({ url: t.url, title: t.title, favicon: (t.favicon || '').length < 12000 ? t.favicon : '', pinned: t.pinned,
-      ...(t.pinned && t.home ? { home: t.home, homeTitle: t.homeTitle || '' } : {}) })),
+    tabs: kept.map(t => ({ url: t.url, title: t.title, favicon: (t.favicon || '').length < 12000 ? t.favicon : '' })),
     active: Math.max(0, idx(c.activeId)),
     splits: c.splits.map(sp => [idx(sp.a), idx(sp.b), sp.ratio, sp.dir]).filter(x => x[0] >= 0 && x[1] >= 0),
     bounds, maximized: !!(c.win && !c.win.isDestroyed() && c.win.isMaximized()),
@@ -659,7 +660,7 @@ function focusPage() {
 function createTab(url = NEWTAB, opts = {}) {
   const tab = {
     id: nextTabId++, wid: cur.id, url, title: opts.title || '', favicon: opts.favicon || (faviconStore[hostOf(url)] || ''),
-    pinned: !!opts.pinned, home: opts.pinned ? (opts.home || url) : null, homeTitle: opts.pinned ? (opts.homeTitle || opts.title || '') : null,
+    pinned: !!opts.pinned, ess: null, home: null, homeTitle: null,
     view: null, loading: false, audible: false, muted: false,
     volume: 1, hadAudio: false,
     blocked: 0, lastActive: Date.now(), crashed: false,
@@ -832,7 +833,7 @@ function wireTab(tab, wc) {
   wc.on('did-start-loading', () => { tab.loading = true; if (tab.glance) sendGlance(); push(); });
   wc.on('did-stop-loading', () => { tab.loading = false; if (tab.glance) sendGlance(); push(); });
   wc.on('page-title-updated', (_e, title) => {
-    tab.title = title; upd();
+    tab.title = title; if (tab.pinned) noteEssentialLook(tab); upd();
     const h = history.get(tab.url); if (h) { h.title = title; saveHistory(); }
   });
   wc.on('page-favicon-updated', (_e, icons) => resolveTabIcon(tab, wc, icons));
@@ -1132,7 +1133,7 @@ function destroyView(tab) {
 
 function reopenClosed() {
   const c = closedTabs.pop();
-  if (c) createTab(c.url, { title: c.title, favicon: c.favicon, index: Math.min(c.index, tabs.length), pinned: c.pinned });
+  if (c) createTab(c.url, { title: c.title, favicon: c.favicon, index: Math.min(c.index, tabs.length) });
 }
 
 function cycle(dir) {
@@ -1141,10 +1142,59 @@ function cycle(dir) {
   activate(tabs[(i + dir + tabs.length) % tabs.length].id);
 }
 
-// Essentials (pinned tabs): icon tiles at the top of the sidebar, like Zen's. Each remembers
-// its own site (tab.home, the page it was added on). They stay asleep until clicked, and
-// closing one only unloads it (freeing its memory) and takes it back to its site; it stays in
-// Essentials until removed from there.
+// ---------------------------------------------------------------------------
+// Essentials (like Zen's): your always-there sites, as icon tiles at the top of the sidebar.
+// One list for all windows, saved on its own (essentials.json), so it survives restarts,
+// closed windows and "Reopen tabs on startup" being off. Each window has its own tab for each
+// Essential (tab.pinned, tab.ess = the entry's id), asleep until clicked. Closing one only
+// unloads it and takes it back to its site; it stays until removed from Essentials.
+// ---------------------------------------------------------------------------
+const essOf = (tab) => tab && tab.pinned ? essentials.find(e => e.id === tab.ess) || null : null;
+function newEssId() { return 'e' + Date.now().toString(36) + Math.random().toString(36).slice(2, 6); }
+function essRecord(url, title, favicon) {
+  return { id: newEssId(), url, title: title || hostOf(url), favicon: (favicon || faviconStore[hostOf(url)] || '').length < 12000 ? (favicon || faviconStore[hostOf(url)] || '') : '' };
+}
+// Make this window's Essentials match the list: add missing ones (asleep), drop removed ones,
+// keep them in order at the top.
+function syncWinEssentials() {
+  for (const t of tabs.filter(t => t.pinned && !essentials.some(e => e.id === t.ess))) {
+    if (t.id === activeId) { const next = tabs.find(x => x !== t && !x.pinned) || tabs.find(x => x !== t); if (next) activate(next.id); }
+    const sp = splitOf(t.id); if (sp) splits = splits.filter(x => x !== sp);
+    tabs.splice(tabs.indexOf(t), 1); destroyView(t);
+  }
+  for (const e of essentials) {
+    let t = tabs.find(x => x.pinned && x.ess === e.id);
+    if (!t) { t = createTab(e.url, { pinned: true, lazy: true, activate: false, title: e.title, favicon: e.favicon }); t.ess = e.id; }
+    t.home = e.url; t.homeTitle = e.title;
+    if (!t.view) { t.url = e.url; t.title = e.title; if (e.favicon) t.favicon = e.favicon; }
+  }
+  const pinned = essentials.map(e => tabs.find(x => x.pinned && x.ess === e.id)).filter(Boolean);
+  const rest = tabs.filter(t => !pinned.includes(t));
+  tabs.splice(0, tabs.length, ...pinned, ...rest);
+}
+function essentialsChanged() {
+  saveEssentials();
+  forEachWin(() => { syncWinEssentials(); layout(); });
+  push(); saveSession();
+}
+// Add a site to Essentials (at `index`, or the end). From this window's tab `tab` if given
+// (it becomes the Essential and stays loaded), else from an address.
+function addEssential(url, index, tab) {
+  if (!/^(https?|file):/i.test(url || '')) return null;
+  const rec = essRecord(url, tab ? tab.title : '', tab ? tab.favicon : '');
+  const at = index == null ? essentials.length : Math.max(0, Math.min(index, essentials.length));
+  essentials.splice(at, 0, rec);
+  if (tab) { tab.pinned = true; tab.ess = rec.id; tab.home = url; tab.homeTitle = rec.title; }
+  essentialsChanged();
+  return rec;
+}
+function removeEssential(id) {
+  const tab = tabs.find(t => t.pinned && t.ess === id);
+  essentials = essentials.filter(e => e.id !== id);
+  // In this window it stays open as a normal tab, at the top of the list.
+  if (tab) { tab.pinned = false; tab.ess = null; tab.home = null; tab.homeTitle = null; }
+  essentialsChanged();
+}
 function unloadEssential(tab) {
   const others = tabs.filter(t => t !== tab);
   const sp = splitOf(tab.id);
@@ -1155,19 +1205,59 @@ function unloadEssential(tab) {
   }
   destroyView(tab);
   tab.sleepHistory = null;
-  if (tab.home && tab.url !== tab.home) { tab.url = tab.home; tab.title = tab.homeTitle || ''; tab.favicon = faviconStore[hostOf(tab.home)] || tab.favicon; }
+  const e = essOf(tab);
+  if (e) { tab.url = e.url; tab.title = e.title; tab.favicon = e.favicon || faviconStore[hostOf(e.url)] || tab.favicon; }
   layout(); push(); saveSession();
+}
+// An Essential showing its own site keeps the list's title and icon up to date.
+function noteEssentialLook(tab) {
+  const e = essOf(tab); if (!e || hostOf(tab.url) !== hostOf(e.url)) return;
+  const fav = (tab.favicon || '').length < 12000 ? tab.favicon || '' : e.favicon;
+  if (e.title === (tab.title || e.title) && e.favicon === fav) return;
+  e.title = tab.title || e.title; e.favicon = fav; saveEssentials();
+  for (const t of allTabs()) if (t !== tab && t.pinned && t.ess === e.id && !t.view) { t.title = e.title; t.favicon = e.favicon; }
+}
+// Startup: read the list. The first time (updating from before 1.19.1), pinned tabs saved in
+// the session become the Essentials.
+function loadEssentials() {
+  const saved = readJSON('essentials.json', null);
+  if (Array.isArray(saved)) { essentials = saved.filter(e => e && typeof e.url === 'string' && e.id); return; }
+  const sess = readJSON('session.json', null);
+  const wins = sess ? (Array.isArray(sess.windows) && sess.windows.length ? sess.windows : [sess]) : [];
+  const seen = new Set();
+  for (const w of wins) for (const t of (w && w.tabs) || []) {
+    if (!t.pinned) continue;
+    const url = t.home || t.url;
+    if (!/^(https?|file):/i.test(url) || seen.has(url)) continue;
+    seen.add(url); essentials.push(essRecord(url, t.homeTitle || t.title, t.favicon));
+  }
+  writeJSON('essentials.json', essentials);
 }
 
 function moveTab(id, toIndex, pinned) {
   const i = tabs.findIndex(t => t.id === id);
   if (i < 0) return;
-  const [tab] = tabs.splice(i, 1);
-  if (typeof pinned === 'boolean') {
-    if (pinned && !tab.pinned) { tab.home = tab.url; tab.homeTitle = tab.title; }
-    if (!pinned) { tab.home = null; tab.homeTitle = null; }
-    tab.pinned = pinned;
+  // Into, out of or within Essentials: change the shared list (every window follows).
+  if (pinned === true || (pinned === undefined && tabs[i].pinned)) {
+    const tab = tabs[i];
+    const essIdx = Math.max(0, Math.min(toIndex, essentials.length));
+    if (!tab.pinned) { if (/^(https?|file):/i.test(tab.url)) addEssential(tab.url, essIdx, tab); return; }
+    const from = essentials.findIndex(e => e.id === tab.ess); if (from < 0) return;
+    const [rec] = essentials.splice(from, 1);
+    essentials.splice(Math.min(essIdx, essentials.length), 0, rec);
+    essentialsChanged();
+    return;
   }
+  if (pinned === false && tabs[i].pinned) {
+    const tab = tabs[i];
+    removeEssential(tab.ess);
+    const j = tabs.indexOf(tab); tabs.splice(j, 1);
+    const pc = tabs.filter(t => t.pinned).length;
+    tabs.splice(Math.max(pc, Math.min(toIndex, tabs.length)), 0, tab);
+    push(); saveSession();
+    return;
+  }
+  const [tab] = tabs.splice(i, 1);
   const pinnedCount = tabs.filter(t => t.pinned).length;
   // Keep pinned tabs grouped at the top.
   let idx = Math.max(0, Math.min(toIndex, tabs.length));
@@ -1395,6 +1485,7 @@ async function resolveTabIcon(tab, wc, hinted) {
 
 function setTabIcon(tab, data) {
   tab.favicon = data;
+  if (tab.pinned) noteEssentialLook(tab);
   const host = hostOf(tab.url);
   if (host && data.length < 60000 && faviconStore[host] !== data) { faviconStore[host] = data; saveFavicons(); }
   push(); saveSession();
@@ -1628,7 +1719,11 @@ function tabContextMenu(id) {
     { label: 'Reload', enabled: !!wc, click: () => wc && wc.reload() },
     { label: 'Duplicate', click: () => createTab(tab.url, { openerId: tab.id }) },
     { label: tab.pinned ? 'Remove from Essentials' : 'Add to Essentials', click: () => togglePin(id) },
-    ...(tab.pinned && tab.home && tab.url !== tab.home ? [{ label: 'Make this page its site', click: () => { tab.home = tab.url; tab.homeTitle = tab.title; saveSession(); } }] : []),
+    ...(tab.pinned && tab.home && tab.url !== tab.home && /^(https?|file):/i.test(tab.url) ? [{ label: 'Make this page its site', click: () => {
+      const e = essOf(tab); if (!e) return;
+      e.url = tab.url; e.title = tab.title || hostOf(tab.url); e.favicon = (tab.favicon || '').length < 12000 ? tab.favicon || '' : '';
+      essentialsChanged();
+    } }] : []),
     { label: tab.muted ? 'Unmute tab' : 'Mute tab', enabled: !!wc, click: () => toggleMute(id) },
     { label: `Volume (${Math.round(tab.volume * 100)}%)`, enabled: !!wc, submenu: [300, 200, 150, 100, 75, 50, 25, 10].map(p => ({
       label: p + '%', type: 'radio', checked: Math.round(tab.volume * 100) === p, click: () => setTabVolume(id, p / 100),
@@ -3173,6 +3268,16 @@ function setupIPC() {
   on('new-tab', () => { ui.webContents.send('palette', { newTab: true }); });
   on('tab-menu', (id) => tabContextMenu(id));
   on('move-tab', (id, idx, pinned) => moveTab(id, idx, pinned));
+  // Add to Essentials from the command bar: an address (or what was typed), or an open tab.
+  on('ess-add', (what) => {
+    setOverlay(null);
+    if (what && typeof what === 'object' && what.tabId) { const t = tabs.find(x => x.id === what.tabId); if (t && !t.pinned) moveTab(t.id, essentials.length, true); return; }
+    const text = String(what || '').trim(); if (!text) return;
+    let url = toUrl(/^[a-z0-9-]+$/i.test(text) ? text + '.com' : text);
+    if (!/^(https?|file):/i.test(url)) return;
+    if (essentials.some(e => e.url === url)) return;
+    addEssential(url);
+  });
   // A tab dragged out of the sidebar (ui.js tab dragging) was let go over the page or outside
   // the window. Decided from where the cursor is: over this window's own sidebar → nothing;
   // otherwise the tab moves to the Drift window there, or into a new window.
@@ -3473,20 +3578,24 @@ function createWindow(opts = {}) {
   // First pages.
   const snap = opts.snapshot;
   if (snap && snap.tabs && snap.tabs.length) {
-    snap.tabs.forEach((t) => createTab(t.url, { title: t.title, favicon: t.favicon, pinned: t.pinned, home: t.home, homeTitle: t.homeTitle, lazy: true, activate: false }));
+    // (Pinned tabs in sessions from before 1.19.1 became Essentials at startup.)
+    snap.tabs.filter(t => !t.pinned).forEach((t) => createTab(t.url, { title: t.title, favicon: t.favicon, lazy: true, activate: false }));
     for (const [i, j, ratio, dir] of snap.splits || []) {
       if (tabs[i] && tabs[j] && !splitOf(tabs[i].id) && !splitOf(tabs[j].id)) splits.push({ a: tabs[i].id, b: tabs[j].id, ratio: ratio || 0.5, dir: dir === 'col' ? 'col' : 'row' });
     }
   }
+  syncWinEssentials();
   const urls = opts.urls || [];
   // Web pages wait for the startup gate (ad blocking ready, identity set); a window that opens
   // on Drift's own new tab page has nothing to wait for.
-  const activeSnapUrl = snap && snap.tabs && snap.tabs.length && tabs.length ? tabs[Math.min(snap.active || 0, tabs.length - 1)].url : '';
+  const restored = tabs.filter(t => !t.pinned);
+  const activeSnapUrl = snap && snap.tabs && snap.tabs.length && restored.length ? restored[Math.min(snap.active || 0, restored.length - 1)].url : '';
   const onlyInternal = !urls.length && (activeSnapUrl ? isInternal(activeSnapUrl) : true);
   ((onlyInternal ? null : opts.gate) || Promise.resolve()).then(W(() => {
-    if (snap && snap.tabs && snap.tabs.length && tabs.length) activate(tabs[Math.min(snap.active || 0, tabs.length - 1)].id);
+    const normal = tabs.filter(t => !t.pinned);
+    if (snap && snap.tabs && snap.tabs.length && normal.length) activate(normal[Math.min(snap.active || 0, normal.length - 1)].id);
     for (const u of urls) createTab(u);
-    if (!tabs.length && !opts.empty) createTab(NEWTAB);
+    if (!tabs.some(t => !t.pinned) && !opts.empty) createTab(NEWTAB);
   }));
   return ctx;
 }
@@ -3523,6 +3632,11 @@ function newWindow(urls = []) {
 function moveTabToWindow(tab, target, index) {
   const src = ctxOfTab(tab);
   if (!src || !target || src === target || !windows.includes(target)) return;
+  // Essentials are in every window already: open its page there as a normal tab instead.
+  if (tab.pinned) {
+    useWin(target); const t = createTab(tab.url, { index }); if (win && !win.isDestroyed()) win.focus();
+    useWin(src); unloadEssential(tab); useWin(target); return t;
+  }
   useWin(src);
   const wasActive = activeId === tab.id;
   const sp = splitOf(tab.id); if (sp) splits = splits.filter(x => x !== sp);
@@ -3648,6 +3762,7 @@ if (!app.requestSingleInstanceLock(launchRequest)) {
     bookmarks = new Bookmarks(() => readJSON('bookmarks.json', null), (d) => writeJSON('bookmarks.json', d));
     passwords = new Passwords(file('passwords.json'));
     faviconStore = readJSON('favicons.json', {});
+    loadEssentials();
     Menu.setApplicationMenu(null);
     const ses = session.defaultSession;
     ses.setUserAgent(chromeUA());
@@ -3723,6 +3838,7 @@ if (!app.requestSingleInstanceLock(launchRequest)) {
   app.on('before-quit', () => {
     if (!quitting) flushSaves();
     if (windows.length && !quitting) { writeJSONSync('session.json', sessionSnapshot()); writeJSONSync('settings.json', settings); }
+    if (!quitting) writeJSONSync('essentials.json', essentials);
     quitting = true;
   });
   app.on('web-contents-created', (_e, wc) => {
