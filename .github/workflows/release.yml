@@ -28,6 +28,8 @@ jobs:
         shell: bash
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          EVS_ACCOUNT_NAME: ${{ secrets.EVS_ACCOUNT_NAME }}
+          EVS_PASSWD: ${{ secrets.EVS_PASSWD }}
         run: |
           v=$(node -p "require('./package.json').version")
           echo "version=$v" >> "$GITHUB_OUTPUT"
@@ -45,8 +47,14 @@ jobs:
       - run: npm ci
         if: steps.check.outputs.skip != 'true'
 
+      # castlabs' signing tool, used by scripts/vmp-sign.js when EVS secrets are set.
+      - run: pip install --quiet castlabs-evs
+        if: steps.check.outputs.skip != 'true'
+
       - name: Build and publish v${{ steps.check.outputs.version }}
         if: steps.check.outputs.skip != 'true'
         run: npm run release
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          EVS_ACCOUNT_NAME: ${{ secrets.EVS_ACCOUNT_NAME }}
+          EVS_PASSWD: ${{ secrets.EVS_PASSWD }}

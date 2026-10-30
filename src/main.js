@@ -9,6 +9,9 @@ const {
   app, BaseWindow, WebContentsView, ipcMain, session, Menu, shell, dialog,
   protocol, net, clipboard, nativeTheme, webContents, webFrameMain, nativeImage, screen,
 } = require('electron');
+// castlabs' Electron build adds Widevine (protected video: NBA, Netflix, Disney+, Spotify...).
+// Stock Electron has no `components`; everything below works without it.
+const { components } = require('electron');
 const path = require('path');
 const fs = require('fs');
 // Chrome extension support (tabs/popups/action APIs + Chrome Web Store installs).
@@ -3339,6 +3342,15 @@ app.commandLine.appendSwitch('disable-features', 'HardwareMediaKeyHandling');
 // downloading). Servers that don't support it fall back to a normal single download.
 app.commandLine.appendSwitch('enable-features', 'ParallelDownloading:parallel_request_count/6/min_slice_size/1048576/parallel_request_delay/0');
 
+function setupWidevine() {
+  if (!components || typeof components.whenReady !== 'function') return Promise.resolve();
+  const t0 = Date.now();
+  return components.whenReady().then(() => {
+    const st = (() => { try { return JSON.stringify(components.status()); } catch { return ''; } })();
+    launchLog(`widevine ready in ${Date.now() - t0}ms ${st}`);
+  }, (e) => launchLog(`widevine failed: ${e && e.message || e}`));
+}
+
 // While Drift is closing (quitting, or restarting to update), pages are torn down while their
 // events may still arrive. Errors from those are logged rather than shown as a crash dialog.
 process.on('uncaughtException', (e) => {
@@ -3415,6 +3427,9 @@ if (!app.requestSingleInstanceLock(launchRequest)) {
     // first page waits for both, so it's filtered and carries the right identity from its
     // first request. Capped so a slow first-run filter download can't hold the window up.
     const shieldsReady = initShields().then(() => PERF('shields ready'));
+    // Widevine: installed by Chromium's component updater on first run (~10 MB), then kept up to
+    // date by it. Ready almost at once after that; the first page waits for it like for shields.
+    const drmReady = setupWidevine();
     let openGate; startupGate = new Promise(r => { openGate = r; });
     // Reopen every window from last time (older sessions hold one window at the top level).
     const urls = launchRequest.targets;
@@ -3432,7 +3447,7 @@ if (!app.requestSingleInstanceLock(launchRequest)) {
     useWin(first);
     PERF('window created');
     const uiReady = new Promise(r => first.ui.webContents.once('did-finish-load', r)).then(() => { setTimeout(prepareBookmarkMenuIcons, 300); return initIdentity(); });
-    Promise.race([Promise.all([shieldsReady, uiReady]), new Promise(r => setTimeout(r, 2000))]).then(() => { PERF('gate open'); openGate(); });
+    Promise.race([Promise.all([shieldsReady, uiReady, drmReady]), new Promise(r => setTimeout(r, 2000))]).then(() => { PERF('gate open'); openGate(); });
     setupUpdates();
     startPerfLog();
 
