@@ -1,6 +1,12 @@
 // What's new in each release, shown on the What's new page (drift://whatsnew) after an update.
 // Newest first. Kinds: new, faster, fixed, changed. Written for people using Drift.
 module.exports = [
+  { version: '1.18.0', date: '2026-10-30', items: [
+    ['new', 'Pop-up blocker: pages can open a new tab or window only right after you click, one per click. Pop-under ads that turn a click on the page (or on an invisible layer over it) into an ad are stopped too. When something is blocked, a small notice lets you open it or always allow that site; manage it in Settings → Shields.'],
+    ['new', 'Glance: Alt+click a link (or right-click → Glance) to preview it floating over the page. Open as tab keeps it (Ctrl+Enter); Esc or a click beside it closes it.'],
+    ['new', 'Picture in picture: hover a video and press Pop out to keep it playing in a small window on top while you do other things. Also in the right-click menu on videos.'],
+    ['changed', 'Every release now checks its protected-video verification before it ships.'],
+  ] },
   { version: '1.17.2', date: '2026-10-30', items: [
     ['fixed', 'Protected video (NBA and other streaming sites) gets its licence: the verification added in 1.17.1 was being undone by a later build step.'],
   ] },

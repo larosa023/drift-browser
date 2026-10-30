@@ -204,3 +204,100 @@ if (IS_WEB_PAGE && /^https?:$/.test(location.protocol)) {
     if (a) ask(a);
   }, { passive: true, capture: true });
 }
+
+// ---------------------------------------------------------------------------
+// Pop-up blocker: tell Drift what each click or Enter/Space press landed on, so a page can't
+// turn a click on plain content (or on a see-through layer over the page) into a pop-up ad.
+// Listening on window in the capture phase, registered before any page script, so the page
+// can't hide clicks from it. Only real (trusted) input counts.
+// ---------------------------------------------------------------------------
+if (IS_WEB_PAGE) {
+  const CONTROLS = 'a[href],button,input,select,textarea,label,summary,option,audio,[role=button],[role=link],[role=menuitem],[role=tab],[role=option],[role=checkbox],[role=switch],[role=radio],[onclick],[contenteditable]';
+  const report = (e, el) => {
+    if (!e.isTrusted) return;
+    let interactive = false, link = '';
+    try {
+      if (el && el.nodeType !== 1) el = el.parentElement;
+      if (el && el.closest) {
+        const hit = el.closest(CONTROLS);
+        interactive = !!hit || getComputedStyle(el).cursor === 'pointer';
+        // A layer covering most of the window is how click-hijacking ads catch every click.
+        const box = (hit || el).getBoundingClientRect();
+        if (box.width * box.height > innerWidth * innerHeight * 0.6) interactive = false;
+        const a = interactive && hit && hit.closest('a[href]');
+        if (a) {
+          const u = new URL(a.href, location.href);
+          if (/^https?:$/.test(u.protocol) && !(u.origin === location.origin && u.pathname === location.pathname && u.search === location.search)) link = u.href;
+        }
+      }
+    } catch {}
+    ipcRenderer.send('drift-act', interactive, link);
+  };
+  window.addEventListener('pointerdown', (e) => report(e, e.composedPath()[0] || e.target), { capture: true, passive: true });
+  window.addEventListener('keydown', (e) => { if (e.key === 'Enter' || e.key === ' ') report(e, document.activeElement); }, { capture: true, passive: true });
+
+  // Glance: Alt+click a link to preview it over the page (Chromium would download it instead).
+  window.addEventListener('click', (e) => {
+    if (!e.isTrusted || !e.altKey || e.ctrlKey || e.shiftKey || e.metaKey || e.button !== 0) return;
+    const t = e.composedPath()[0] || e.target;
+    const a = t && t.closest ? t.closest('a[href]') : null;
+    if (!a || !/^https?:/i.test(a.href)) return;
+    e.preventDefault(); e.stopImmediatePropagation();
+    ipcRenderer.send('drift-glance', a.href);
+  }, { capture: true });
+}
+
+// ---------------------------------------------------------------------------
+// Picture in picture: a small button over a video while the pointer is on it. It lives in a
+// closed shadow root so page styles can't touch it, and is only created once a video shows up.
+// ---------------------------------------------------------------------------
+if (IS_WEB_PAGE) {
+  const videos = document.getElementsByTagName('video');   // live list, nothing to keep in sync
+  let host = null, btn = null, target = null, hideTimer = 0, lastMove = 0;
+  const build = () => {
+    host = document.createElement('drift-pip');
+    const root = host.attachShadow({ mode: 'closed' });
+    root.innerHTML = `<style>
+      :host { all: initial; position: fixed; z-index: 2147483647; display: none; }
+      button { all: unset; box-sizing: border-box; display: flex; align-items: center; gap: 6px; height: 30px; padding: 0 10px 0 8px;
+        border-radius: 999px; background: rgba(20,20,24,.72); color: #fff; font: 600 12px/1 "Segoe UI", system-ui, sans-serif;
+        backdrop-filter: blur(8px); box-shadow: 0 2px 10px rgba(0,0,0,.35); cursor: pointer; opacity: 0; transition: opacity .15s; }
+      :host(.on) button { opacity: .92; } button:hover { opacity: 1 !important; background: rgba(20,20,24,.88); }
+      svg { width: 16px; height: 16px; fill: none; stroke: currentColor; stroke-width: 2; stroke-linecap: round; stroke-linejoin: round; }
+    </style><button title="Picture in picture"><svg viewBox="0 0 24 24"><rect x="2.5" y="4.5" width="19" height="15" rx="2"/><rect x="12" y="11.5" width="7" height="5" rx="1" fill="currentColor" stroke="none"/></svg><span>Pop out</span></button>`;
+    btn = root.querySelector('button');
+    btn.addEventListener('pointerdown', (e) => { e.stopPropagation(); e.preventDefault(); }, true);
+    btn.addEventListener('click', (e) => {
+      e.stopPropagation(); e.preventDefault();
+      const v = target; if (!v) return;
+      if (document.pictureInPictureElement === v) { document.exitPictureInPicture().catch(() => {}); return; }
+      try { v.disablePictureInPicture = false; } catch {}
+      v.requestPictureInPicture().catch(() => {});
+      hide();
+    }, true);
+    document.documentElement.appendChild(host);
+  };
+  const hide = () => { if (host) { host.classList.remove('on'); host.style.display = 'none'; } target = null; };
+  const show = (v, r) => {
+    if (!host || !host.isConnected) build();
+    target = v;
+    host.style.display = 'block';
+    host.style.left = Math.max(4, r.right - 110) + 'px';
+    host.style.top = Math.max(4, r.top + 10) + 'px';
+    requestAnimationFrame(() => host && host.classList.add('on'));
+    clearTimeout(hideTimer); hideTimer = setTimeout(hide, 2500);
+  };
+  document.addEventListener('mousemove', (e) => {
+    if (!videos.length) return;
+    const now = performance.now(); if (now - lastMove < 120) return; lastMove = now;
+    if (document.fullscreenElement) { hide(); return; }
+    if (host && e.composedPath()[0] === host) { clearTimeout(hideTimer); return; }
+    for (const v of videos) {
+      const r = v.getBoundingClientRect();
+      if (r.width < 220 || r.height < 124 || v === document.pictureInPictureElement || !v.isConnected) continue;
+      if (e.clientX >= r.left && e.clientX <= r.right && e.clientY >= r.top && e.clientY <= r.bottom) { show(v, r); return; }
+    }
+    if (target) hide();
+  }, { passive: true, capture: true });
+  document.addEventListener('fullscreenchange', hide);
+}

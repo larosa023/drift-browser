@@ -708,6 +708,9 @@ function renderSettings() {
       <div class="row"><span class="lbl">Blocker<small>${s.shieldsEngine === 'ubo' ? 'uBlock Origin (built in): strongest blocking, works with extensions that watch network traffic' : 'Built-in: lighter on memory, but extensions that watch network traffic stop working'}</small></span>
         <div class="seg"><button class="${s.shieldsEngine === 'ubo' ? 'on' : ''}" data-set="shieldsEngine" data-val="ubo">uBlock</button><button class="${s.shieldsEngine !== 'ubo' ? 'on' : ''}" data-set="shieldsEngine" data-val="builtin">Built-in</button></div></div>
       ${S.uboId ? `<div class="row"><span class="lbl">uBlock Origin dashboard<small>Filter lists, custom rules, whitelist</small></span><button class="mini" data-uboopts>Open</button></div>` : ''}
+      <div class="row"><span class="lbl">Block pop-ups<small>Pages can open a new tab or window only right after you click, and pop-under ads that hijack clicks are stopped</small></span>${sw('blockPopups', s.blockPopups)}</div>
+      ${s.popupAllow.length ? `<div class="row" style="display:block"><span class="lbl">Pop-ups allowed on<small>Click × to block them again</small></span>
+        <div class="chips">${s.popupAllow.map(h => `<span class="chip">${esc(h)}<button data-unpopup="${esc(h)}">${icon('x', 11)}</button></span>`).join('')}</div></div>` : ''}
       ${s.shieldsAllow.length ? `<div class="row" style="display:block"><span class="lbl">Shields off on<small>Click × to turn shields back on</small></span>
         <div class="chips">${s.shieldsAllow.map(h => `<span class="chip">${esc(h)}<button data-unallow="${esc(h)}">${icon('x', 11)}</button></span>`).join('')}</div></div>` : ''}
     </div>
@@ -770,6 +773,7 @@ $('#settings-body').addEventListener('click', (e) => {
     send('set', b.dataset.set, v);
   }
   const u = e.target.closest('[data-unallow]'); if (u) send('remove-allow', u.dataset.unallow);
+  const up = e.target.closest('[data-unpopup]'); if (up) send('popup-unallow', up.dataset.unpopup);
   const ud = e.target.closest('[data-undark]'); if (ud) send('undark', ud.dataset.undark);
   const src = e.target.closest('[data-bmsrc]'); if (src) send('bm-import', src.dataset.bmsrc);
   if (e.target.id === 'clear-data') send('clear-data');
@@ -1389,6 +1393,7 @@ window.drift.on('toast', (t) => {
   const actions = [];
   if (t.action && t.action.bm) actions.push({ label: t.action.label, run: () => { const b = findBm(t.action.bm); if (b) editBookmark(b); } });
   if (t.action && t.action.update) actions.push({ label: t.action.label, run: () => send('update-install') });
+  if (t.action && t.action.popup) actions.push({ label: 'Open', run: () => send('popup-open', t.action.popup) }, { label: 'Always allow', run: () => send('popup-allow', t.action.popup, t.action.host) });
   toast(`${icon(t.icon || 'info')}<span>${esc(t.text)}</span>`, 3200, actions);
 });
 window.drift.on('bm-edit', (b) => editBookmark(b));

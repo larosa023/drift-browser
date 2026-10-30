@@ -17,5 +17,8 @@ exports.default = async function vmpSign(ctx) {
   const run = (args) => execFileSync(py, args, { stdio: 'inherit' });
   run(['-m', 'castlabs_evs.account', '-n', 'refresh', '-A', user, '-P', pass]);
   run(['-m', 'castlabs_evs.vmp', '-n', 'sign-pkg', ctx.appOutDir]);
-  console.log('  • VMP signed', ctx.appOutDir);
+  // Check the result: a release with a broken signature would quietly stop protected video
+  // working for everyone who updates. Exits non-zero (failing the build) if it doesn't verify.
+  run(['-m', 'castlabs_evs.vmp', '-n', 'verify-pkg', ctx.appOutDir]);
+  console.log('  • VMP signed and verified', ctx.appOutDir);
 };

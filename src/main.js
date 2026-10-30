@@ -87,8 +87,10 @@ const DEFAULT_SETTINGS = {
   forceDark: false,          // darken every site (Chromium's auto dark mode, like Opera)
   forceDarkOff: [],          // hostnames excluded from force dark
   offerPasswords: true,
-  webgpu: false,
-  lastVersion: '',           // the version that last ran (shows What's new after an update)             // offer WebGPU to sites (off: requesting it froze the window for seconds on some PCs)
+  webgpu: false,             // offer WebGPU to sites (off: requesting it froze the window for seconds on some PCs)
+  blockPopups: true,         // pop-up blocker (see popupVerdict)
+  popupAllow: [],            // hostnames allowed to open pop-ups
+  lastVersion: '',           // the version that last ran (shows What's new after an update)
   wallpaper: '',             // '' (none) | 'builtin:<id>' | 'file:<name in userData/wallpapers>'
   wallpaperDim: 0.35,        // 0..0.85 tint over the wallpaper so text stays readable
   wallpaperBlur: 0,          // px
@@ -244,7 +246,7 @@ function openInFreshView(tab, url) {
   if (tab.id === activeId) {
     if (extensions) { try { extensions.selectTab(nwc); } catch {} }
     layout(); focusPage();
-  }
+  } else if (tab.glance) { layout(); focusPage(); }
   push();
 }
 // Switch identity when a page navigates or redirects into Google sign-in. The first request
@@ -572,24 +574,28 @@ function restack() {
   const views = panes().map(p => p.tab && p.tab.view).filter(Boolean);
   const uiOnTop = overlay !== null && !htmlFullscreen;
   const want = uiOnTop ? [...views, ui] : [ui, ...views];
-  if (toastView && toastShown) want.push(toastView);   // notifications float above everything
+  // Above the pages and sidebar: a Glance preview (backdrop, then page), then notifications.
+  const g = cur && cur.glance, extras = [];
+  if (g && g.tab.view && !htmlFullscreen) extras.push(g.frame, g.tab.view);
+  if (toastView && toastShown) extras.push(toastView);
+  want.push(...extras);
   const have = win.contentView.children;
   if (have.length === want.length && have.every((v, i) => v === want[i])) return;
   for (const c of have) if (!want.includes(c)) win.contentView.removeChildView(c);
   // Raising the UI over the page (opening an overlay) only needs the UI moved to the top.
   // Re-adding the page view too makes it repaint from blank for a few frames (a flash).
-  const pagesOf = (list) => list.filter(v => v !== ui && v !== toastView);
+  const pagesOf = (list) => list.filter(v => v !== ui && v !== toastView && !(g && (v === g.frame || v === g.tab.view)));
   const curPages = pagesOf(win.contentView.children), wantPages = pagesOf(want);
   if (uiOnTop && curPages.length === wantPages.length && curPages.every((v, i) => v === wantPages[i])) {
     win.contentView.addChildView(ui);
-    if (toastView && toastShown) win.contentView.addChildView(toastView);
+    for (const v of extras) win.contentView.addChildView(v);
     return;
   }
   // Only touch views from the first one out of place: adding a view that's already attached
   // moves it to the top without detaching it. Detaching the sidebar UI would drop its focus
   // and cancel anything in progress there (like dragging a tab).
-  const cur = win.contentView.children;
-  let i = 0; while (i < want.length && cur[i] === want[i]) i++;
+  const now = win.contentView.children;
+  let i = 0; while (i < want.length && now[i] === want[i]) i++;
   for (let j = i; j < want.length; j++) win.contentView.addChildView(want[j]);
 }
 
@@ -608,6 +614,14 @@ function layout() {
   const sp = ps.length === 2 ? splitOf(activeId) : null;
   if (overlay === 'peek') ui.setBounds({ x: 0, y: 0, width: (settings.sidebarRail ? RAIL_W : settings.sidebarWidth) + 24, height: h });
   else ui.setBounds({ x: 0, y: 0, width: w, height: h });
+  if (cur && cur.glance) {
+    const g = cur.glance;
+    if (!g.tab.view) ensureView(g.tab);
+    g.frame.setBounds(r);
+    g.tab.view.setBounds(glanceCard(r));
+    g.tab.view.setBorderRadius(12);
+    sendGlance();
+  }
   if (toastShown) placeToast();
   restack();
   ui.webContents.send('layout', { content: r, fullscreen: htmlFullscreen || win.isFullScreen(), titleH: titleHeight(), bmH: bookmarksHeight(), left: sidebarLeft(),
@@ -628,7 +642,7 @@ function setOverlay(mode, keepFocus) {
 // freezing Drift and swallowing mouse clicks everywhere until it was closed.
 let focusingPage = false;
 function focusPage() {
-  const t = activeTab();
+  const t = cur && cur.glance ? cur.glance.tab : activeTab();
   if (!t || !t.view || findOpen) return;
   const wc = t.view.webContents;
   if (wc.isDestroyed() || wc.isFocused()) return;
@@ -807,14 +821,14 @@ function rebuildView(tab) {
   if (tab.id === activeId) {
     if (extensions) { try { extensions.selectTab(nwc); } catch {} }
     layout(); focusPage();
-  }
+  } else if (tab.glance) { layout(); focusPage(); }
   push();
 }
 
 function wireTab(tab, wc) {
-  const upd = () => { push(); saveSession(); };
-  wc.on('did-start-loading', () => { tab.loading = true; push(); });
-  wc.on('did-stop-loading', () => { tab.loading = false; push(); });
+  const upd = () => { if (tab.glance) sendGlance(); push(); saveSession(); };
+  wc.on('did-start-loading', () => { tab.loading = true; if (tab.glance) sendGlance(); push(); });
+  wc.on('did-stop-loading', () => { tab.loading = false; if (tab.glance) sendGlance(); push(); });
   wc.on('page-title-updated', (_e, title) => {
     tab.title = title; upd();
     const h = history.get(tab.url); if (h) { h.title = title; saveHistory(); }
@@ -854,7 +868,7 @@ function wireTab(tab, wc) {
   wc.on('found-in-page', (_e, r) => {
     ui.webContents.send('find-result', { active: r.activeMatchOrdinal, matches: r.matches });
   });
-  wc.on('enter-html-full-screen', () => { htmlFullscreen = true; win.setFullScreen(true); layout(); });
+  wc.on('enter-html-full-screen', () => { if (tab.glance) expandGlance(); htmlFullscreen = true; win.setFullScreen(true); layout(); });
   wc.on('leave-html-full-screen', () => { htmlFullscreen = false; win.setFullScreen(false); layout(); });
   wc.on('zoom-changed', (_e, dir) => zoom(dir === 'in' ? 1 : -1));
   wc.on('before-input-event', (e, input) => { if (handleShortcut(input)) e.preventDefault(); });
@@ -870,7 +884,14 @@ function wireTab(tab, wc) {
     }
   });
   wc.on('context-menu', (_e, p) => pageContextMenu(tab, wc, p));
+  // Pop-up blocker: when you last clicked or pressed a key in this page, embedded frames
+  // included (see popupVerdict). Touch taps only reach input-event.
+  wc.on('before-mouse-event', (_e, me) => { if (me.type === 'mouseDown') wc.__act = Date.now(); });
+  wc.on('before-input-event', (_e, ie) => { if (ie.type === 'keyDown') wc.__act = Date.now(); });
+  wc.on('input-event', (_e, ie) => { if (ie.type === 'touchStart' || ie.type === 'gestureTap') wc.__act = Date.now(); });
   wc.setWindowOpenHandler(({ url, disposition }) => {
+    const why = popupVerdict(tab, wc, url);
+    if (why) { popupBlocked(tab, url, why); return { action: 'deny' }; }
     // Real popups (sign-in windows etc.) stay popups so window.opener keeps working.
     if (disposition === 'new-window') {
       return { action: 'allow', overrideBrowserWindowOptions: {
@@ -881,6 +902,123 @@ function wireTab(tab, wc) {
     createTab(url, { activate: disposition !== 'background-tab', openerId: tab.id });
     return { action: 'deny' };
   });
+}
+
+// ---------------------------------------------------------------------------
+// Pop-up blocker
+// ---------------------------------------------------------------------------
+// A page may open a new tab or window only just after you click or press a key in it, and only
+// one per click (like Chrome). On top of that, two tricks pop-under ads use are blocked:
+// - a click on plain page content (not a link, button or control), or on a see-through layer
+//   covering most of the page, that opens a different site;
+// - a click on a link that opens a third site (neither the link's nor the page's).
+// Clicks inside embedded frames (sign-in and payment buttons) count as clicks. Sites you
+// "Always allow" skip all of this, as do Drift's and extensions' own pages.
+const POPUP_ACT_MS = 5000;
+function siteOf(u) {
+  const h = hostOf(u);
+  if (!h || /^[\d.]+$|:/.test(h)) return h;
+  const p = h.split('.');
+  const n = p.length > 2 && p[p.length - 1].length === 2 && /^(co|com|net|org|gov|edu|ac|or|ne|go)$/.test(p[p.length - 2]) ? 3 : 2;
+  return p.slice(-n).join('.');
+}
+function popupVerdict(tab, wc, url) {
+  if (!settings.blockPopups || !/^(https?|file):/i.test(tab.url) || settings.popupAllow.includes(hostOf(tab.url))) return null;
+  const now = Date.now(), act = wc.__act || 0, pre = wc.__pre;
+  if (now - act > POPUP_ACT_MS) return 'no-click';
+  wc.__act = 0;                                   // one per click
+  if (pre && Math.abs(pre.t - act) < 1500) {      // what the click in the page itself landed on
+    const dest = siteOf(url), page = siteOf(tab.url);
+    if (dest !== page && (pre.link ? dest !== siteOf(pre.link) : !pre.interactive)) return 'hijack';
+  }
+  return null;
+}
+function popupBlocked(tab, url, why) {
+  tab.blockedPopups = [...(tab.blockedPopups || []).slice(-4), url];
+  console.log(`[popups] blocked (${why}) on ${hostOf(tab.url)}: ${String(url).slice(0, 120)}`);
+  const c = ctxOfTab(tab); if (!c) return;
+  const now = Date.now();
+  if (now - (tab.popupToastAt || 0) < 8000) return;   // one notice per burst
+  tab.popupToastAt = now;
+  const show = (tab.glance ? c.glance && c.glance.tab === tab : c.activeId === tab.id);
+  if (show && c.ui && !c.ui.webContents.isDestroyed()) c.ui.webContents.send('toast', { text: `Pop-up blocked on ${hostOf(tab.url)}`, icon: 'shield', action: { popup: tab.id, host: hostOf(tab.url) } });
+}
+function openBlockedPopup(id) {
+  const tab = findTab(id) || (cur && cur.glance && cur.glance.tab.id === id ? cur.glance.tab : null);
+  const url = tab && tab.blockedPopups && tab.blockedPopups.pop();
+  if (!url) return;
+  if (!tab.glance) useTab(tab);
+  createTab(url, { openerId: tab.glance ? undefined : tab.id });
+}
+
+// Picture in picture for the video under the pointer (right-click menu), or the largest one.
+function pipAt(wc, p) {
+  const f = p.frame && !p.frame.isDestroyed() ? p.frame : wc.mainFrame;
+  f.executeJavaScript(`(() => {
+    const vs = [...document.querySelectorAll('video')]; if (!vs.length) return;
+    const X = ${Number(p.x) || 0}, Y = ${Number(p.y) || 0};
+    const v = vs.find(v => { const r = v.getBoundingClientRect(); return X >= r.left && X <= r.right && Y >= r.top && Y <= r.bottom; })
+      || vs.sort((a, b) => b.clientWidth * b.clientHeight - a.clientWidth * a.clientHeight)[0];
+    if (document.pictureInPictureElement === v) return document.exitPictureInPicture();
+    v.disablePictureInPicture = false;
+    return v.requestPictureInPicture().then(() => {}, () => {});
+  })()`, true).catch(() => {});
+}
+
+// ---------------------------------------------------------------------------
+// Glance: Alt+click a link to preview it floating over the page. Expand turns it into a tab;
+// Esc, the close button or a click beside it closes it. The preview is a tab that isn't in the
+// tab list yet (cur.glance = { tab, frame }); `frame` draws the dimmed backdrop and its buttons.
+// ---------------------------------------------------------------------------
+function openGlance(url, opener) {
+  if (!/^https?:/i.test(url || '')) return;
+  const g = cur.glance;
+  if (g) { g.tab.url = url; if (g.tab.view) loadIn(g.tab.view.webContents, url); sendGlance(); return; }
+  if (htmlFullscreen) return;
+  const tab = {
+    id: nextTabId++, wid: cur.id, url, title: '', favicon: faviconStore[hostOf(url)] || '',
+    pinned: false, view: null, loading: false, audible: false, muted: false, volume: 1, hadAudio: false,
+    blocked: 0, lastActive: Date.now(), crashed: false, glance: true, openerId: opener ? opener.id : null,
+  };
+  const frame = new WebContentsView({ webPreferences: { sandbox: true, contextIsolation: true, preload: path.join(__dirname, 'ui', 'glance-preload.js') } });
+  frame.setBackgroundColor('#00000000');
+  frame.webContents.loadURL('drift://ui/glance.html');
+  frame.webContents.once('did-finish-load', inThisWin(sendGlance));
+  cur.glance = { tab, frame };
+  ensureView(tab);
+  layout();
+  focusPage();
+}
+function glanceCard(r) {
+  const mx = Math.max(20, Math.round(r.width * 0.06));
+  return { x: r.x + mx, y: r.y + 52, width: Math.max(200, r.width - mx * 2), height: Math.max(150, r.height - 52 - 20) };
+}
+function sendGlance() {
+  const g = cur && cur.glance; if (!g || g.frame.webContents.isDestroyed()) return;
+  const r = contentRect(), c = glanceCard(r);
+  g.frame.webContents.send('glance', { card: { x: c.x - r.x, y: c.y - r.y, width: c.width, height: c.height },
+    title: g.tab.title, url: g.tab.url, loading: g.tab.loading, dark: isDark(), accent: settings.accent });
+}
+function closeGlance() {
+  const g = cur && cur.glance; if (!g) return;
+  cur.glance = null;
+  destroyView(g.tab);
+  try { win.contentView.removeChildView(g.frame); } catch {}
+  try { g.frame.webContents.close(); } catch {}
+  layout(); focusPage();
+}
+function expandGlance() {
+  const g = cur && cur.glance; if (!g) return;
+  cur.glance = null;
+  try { win.contentView.removeChildView(g.frame); } catch {}
+  try { g.frame.webContents.close(); } catch {}
+  const tab = g.tab;
+  tab.glance = false;
+  if (tab.view) tab.view.setBorderRadius(RADIUS);
+  const i = tabs.findIndex(t => t.id === activeId);
+  tabs.splice(i >= 0 ? i + 1 : tabs.length, 0, tab);
+  if (tab.openerId && !tabs.some(t => t.id === tab.openerId)) tab.openerId = null;
+  activate(tab.id);
 }
 
 function showErrorPage(wc, url, code, desc) {
@@ -905,6 +1043,7 @@ function refreshNewTabs() {
 function activate(id, opts = {}) {
   const tab = tabs.find(t => t.id === id);
   if (!tab) return;
+  if (cur && cur.glance) closeGlance();
   const prev = activeTab();
   if (prev && prev !== tab && findOpen) closeFind();
   // Leaving a tab that was showing a video (or anything) fullscreen: end its fullscreen, or
@@ -1313,6 +1452,11 @@ function handleShortcut(input) {
   const k = input.key.length === 1 ? input.key.toLowerCase() : input.key;
   const t = activeTab();
   const wc = t && t.view ? t.view.webContents : null;
+  if (cur && cur.glance && !input.alt && !input.shift) {
+    if (!mod && k === 'Escape') { closeGlance(); return true; }
+    if (mod && k === 'w') { closeGlance(); return true; }
+    if (mod && k === 'Enter') { expandGlance(); return true; }
+  }
 
   if (mod && !input.shift && !input.alt) {
     switch (k) {
@@ -1383,9 +1527,14 @@ function pageContextMenu(tab, wc, p) {
   }
   if (p.linkURL) {
     m.push({ label: 'Open link in new tab', click: () => createTab(p.linkURL, { activate: false, openerId: tab.id }) });
+    if (/^https?:/i.test(p.linkURL)) m.push({ label: 'Glance (Alt+click)', click: () => openGlance(p.linkURL, tab) });
     m.push({ label: 'Open link in new window', click: () => newWindow([p.linkURL]) });
     m.push({ label: 'Open link here', click: () => wc.loadURL(p.linkURL) });
     m.push({ label: 'Copy link address', click: () => clipboard.writeText(p.linkURL) });
+    sep();
+  }
+  if (p.mediaType === 'video') {
+    m.push({ label: 'Picture in picture', click: () => pipAt(wc, p) });
     sep();
   }
   if (p.mediaType === 'image' && p.srcURL) {
@@ -2820,6 +2969,20 @@ function openFiles(paths) {
 function setupPageIPC() {
   ipcMain.on('drift-no-webgpu', (e) => { e.returnValue = !webgpuUsable(); });
   // A link the user is about to click (page-preload.js): connect to its site early.
+  // Pop-up blocker: what a click or key press in the page landed on (see popupVerdict).
+  ipcMain.on('drift-act', (e, interactive, link) => {
+    if (!wcToTab.has(e.sender.id) || e.senderFrame !== e.sender.mainFrame) return;
+    e.sender.__pre = { t: Date.now(), interactive: !!interactive, link: typeof link === 'string' && /^https?:/i.test(link) ? link.slice(0, 2048) : '' };
+  });
+  ipcMain.on('drift-glance', (e, href) => {
+    const t = wcToTab.get(e.sender.id);
+    if (!t || e.senderFrame !== e.sender.mainFrame || typeof href !== 'string') return;
+    if (!useTab(t)) return;
+    openGlance(href, t.glance ? null : t);
+  });
+  const glanceCtx = (wc) => windows.find(c => c.glance && c.glance.frame.webContents === wc);
+  ipcMain.on('glance-close', (e) => { const c = glanceCtx(e.sender); if (c) { useWin(c); closeGlance(); } });
+  ipcMain.on('glance-expand', (e) => { const c = glanceCtx(e.sender); if (c) { useWin(c); expandGlance(); } });
   ipcMain.on('drift-preconnect', (e, href) => { if (wcToTab.has(e.sender.id) && typeof href === 'string' && /^https?:\/\//.test(href)) warmOrigin(href); });
   // Synchronous tab lookup for extension background pages only.
   ipcMain.on('drift-tab-for', (e, d) => {
@@ -2988,11 +3151,17 @@ function setupIPC() {
   on('site-shields', () => toggleSiteShields());
   on('zoom', (d) => zoom(d));
   on('set', (key, value) => {
-    if (!(key in DEFAULT_SETTINGS) || ['permissions', 'bounds', 'shieldsAllow', 'hiddenActions', 'pinnedActions', 'hiddenSites', 'unpacked', 'forceDarkOff'].includes(key)) return;
+    if (!(key in DEFAULT_SETTINGS) || ['permissions', 'bounds', 'shieldsAllow', 'popupAllow', 'hiddenActions', 'pinnedActions', 'hiddenSites', 'unpacked', 'forceDarkOff'].includes(key)) return;
     if (key === 'shields') return setShieldsGlobal(!!value);
     if (key === 'shieldsEngine') return setShieldsEngine(value === 'builtin' ? 'builtin' : 'ubo');
     setSetting(key, value);
   });
+  on('popup-unallow', (host) => { settings.popupAllow = settings.popupAllow.filter(h => h !== host); saveSettings(); push(); });
+  on('popup-allow', (id, host) => {
+    if (typeof host === 'string' && host && !settings.popupAllow.includes(host)) { settings.popupAllow.push(host); saveSettings(); }
+    openBlockedPopup(id); push();
+  });
+  on('popup-open', (id) => openBlockedPopup(id));
   on('remove-allow', (host) => { settings.shieldsAllow = settings.shieldsAllow.filter(h => h !== host); saveSettings(); push(); });
   on('clear-data', async () => {
     const r = await dialog.showMessageBox(win, { type: 'warning', buttons: ['Clear', 'Cancel'], defaultId: 1, cancelId: 1,
@@ -3252,6 +3421,7 @@ function closeWindowCtx(ctx) {
   const i = windows.indexOf(ctx); if (i < 0) return;
   useWin(ctx);
   for (const t of [...tabs]) { try { destroyView(t); } catch {} }
+  if (ctx.glance) { try { destroyView(ctx.glance.tab); ctx.glance.frame.webContents.close(); } catch {} ctx.glance = null; }
   splits = []; tabs = [];
   clearTimeout(toastTimer); clearTimeout(ctx.toastIdle);
   try { if (toastView) toastView.webContents.close(); } catch {}
