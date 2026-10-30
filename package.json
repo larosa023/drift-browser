@@ -1,6 +1,6 @@
 {
   "name": "drift-browser",
-  "version": "1.17.1",
+  "version": "1.17.2",
   "description": "A lightweight Chromium browser with vertical tabs and built-in ad blocking",
   "main": "src/main.js",
   "scripts": {
@@ -31,7 +31,7 @@
     "electronDownload": {
       "mirror": "https://github.com/castlabs/electron-releases/releases/download/"
     },
-    "afterPack": "scripts/vmp-sign.js",
+    "afterSign": "scripts/vmp-sign.js",
     "directories": {
       "output": "dist",
       "buildResources": "build"

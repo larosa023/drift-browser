@@ -1,8 +1,9 @@
-// electron-builder afterPack hook: VMP-signs the packaged app with castlabs EVS, so streaming
+// electron-builder afterSign hook: VMP-signs the packaged app with castlabs EVS, so streaming
 // sites that insist on a verified browser (Netflix, Disney+ and similar) accept Drift's Widevine.
 // Runs only when EVS credentials are set (GitHub secrets EVS_ACCOUNT_NAME and EVS_PASSWD; the
 // account is free at castlabs). Without them the build is unsigned, which most sites accept.
-// Must run after any Windows code signing; Drift's builds have none.
+// Runs as afterSign, the last step that touches the app: electron-builder edits Drift.exe (icon,
+// version info) after afterPack, which would break a signature made any earlier.
 const { execFileSync } = require('child_process');
 const fs = require('fs');
 const path = require('path');

@@ -1,6 +1,9 @@
 // What's new in each release, shown on the What's new page (drift://whatsnew) after an update.
 // Newest first. Kinds: new, faster, fixed, changed. Written for people using Drift.
 module.exports = [
+  { version: '1.17.2', date: '2026-10-30', items: [
+    ['fixed', 'Protected video (NBA and other streaming sites) gets its licence: the verification added in 1.17.1 was being undone by a later build step.'],
+  ] },
   { version: '1.17.1', date: '2026-10-30', items: [
     ['fixed', 'Drift is now verified for protected video (Widevine VMP), so streaming sites that require a verified browser accept it.'],
   ] },
