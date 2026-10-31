@@ -1,6 +1,9 @@
 // What's new in each release, shown on the What's new page (drift://whatsnew) after an update.
 // Newest first. Kinds: new, faster, fixed, changed. Written for people using Drift.
 module.exports = [
+  { version: '1.20.1', date: '2026-10-31', items: [
+    ['changed', 'Tabs in split view are easy to spot: the two join into one outlined box in the sidebar with a split badge between them, in both the full and the slim sidebar. The pair on screen is highlighted, and so is the side you are using.'],
+  ] },
   { version: '1.20.0', date: '2026-10-30', items: [
     ['changed', 'Essentials are kept for good: saved on their own, so they stay through restarts, closed windows and PC restarts, even with Reopen tabs on startup turned off. They stay until you remove them.'],
     ['new', 'Every window shows the same Essentials. Adding, removing or reordering them in one window updates the others.'],

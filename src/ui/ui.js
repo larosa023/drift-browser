@@ -252,7 +252,8 @@ function renderTabs() {
     if (!sp) return '';
     const i = normal.indexOf(t), partner = sp.a === t.id ? sp.b : sp.a;
     const prevIs = normal[i - 1] && normal[i - 1].id === partner, nextIs = normal[i + 1] && normal[i + 1].id === partner;
-    return 'in-split' + (nextIs ? ' split-first' : prevIs ? ' split-last' : '');
+    const shown = sp.a === S.activeId || sp.b === S.activeId;
+    return 'in-split' + (shown ? ' split-shown' : '') + (nextIs ? ' split-first' : prevIs ? ' split-last' : '');
   };
   syncKeyed(list, normal.map(t => ({
     id: t.id, cls: `tab ${t.id === S.activeId ? 'active' : ''} ${t.asleep ? 'asleep' : ''} ${splitClass(t)}`.replace(/\s+/g, ' ').trim(),

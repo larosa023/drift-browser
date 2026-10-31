@@ -587,17 +587,30 @@ body.over-palette #panes, body.over-peek #panes { display: none; }
 #split-divider:hover i, #split-divider.dragging i { opacity: 1; background: var(--accent); }
 body.split-dragging, body.split-dragging * { cursor: col-resize !important; user-select: none; }
 body.split-dragging.col-drag, body.split-dragging.col-drag * { cursor: row-resize !important; }
-/* Split pair in the sidebar */
-.tab.in-split { margin-left: 8px; }
-.tab.in-split::before {
-  content: ""; position: absolute; left: -7px; top: 6px; bottom: 6px; width: 2px; border-radius: 1px;
-  background: color-mix(in srgb, var(--accent) 70%, transparent);
+/* Split pair in the sidebar: the two tabs join into one outlined box, a split badge on the seam.
+   The pair on screen is brighter, and the pane you're working in is lit within it. */
+.tab.in-split {
+  --sp: color-mix(in srgb, var(--accent) 38%, transparent);
+  background: color-mix(in srgb, var(--accent) 6%, transparent);
+  box-shadow: inset 0 0 0 1.5px var(--sp);
 }
-.tab.split-first::before { top: 12px; bottom: -2px; }
-.tab.split-last::before { top: -2px; bottom: 12px; }
+.tab.in-split.split-shown { --sp: color-mix(in srgb, var(--accent) 75%, transparent); background: color-mix(in srgb, var(--accent) 10%, transparent); }
+.tab.in-split:hover { background: color-mix(in srgb, var(--accent) 14%, transparent); }
+.tab.in-split.active { background: color-mix(in srgb, var(--accent) 22%, var(--card)); }
+.tab.split-first { border-bottom-left-radius: 0; border-bottom-right-radius: 0; margin-bottom: 0;
+  box-shadow: inset 1.5px 0 0 var(--sp), inset -1.5px 0 0 var(--sp), inset 0 1.5px 0 var(--sp); }
+.tab.split-last { border-top-left-radius: 0; border-top-right-radius: 0;
+  box-shadow: inset 1.5px 0 0 var(--sp), inset -1.5px 0 0 var(--sp), inset 0 -1.5px 0 var(--sp); }
+.tab.split-last::before { content: ""; position: absolute; left: 10px; right: 10px; top: 0; height: 1px; background: var(--sp); opacity: .7; }
+.tab.split-first::after {
+  content: ""; position: absolute; z-index: 2; right: 26px; bottom: -8px; width: 16px; height: 16px; border-radius: 50%;
+  background: var(--accent) url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='white' stroke-width='2.6' stroke-linecap='round'%3E%3Crect x='3' y='5' width='18' height='14' rx='2'/%3E%3Cpath d='M12 5v14'/%3E%3C/svg%3E") center / 10px no-repeat;
+  box-shadow: 0 1px 4px rgba(0,0,0,.45); pointer-events: none;
+}
+.tab.in-split:not(.split-shown).split-first::after { opacity: .7; }
 .tab .split-ic { color: var(--accent); display: grid; place-items: center; opacity: .8; }
-body.rail:not(.rail-open) .tab.in-split { margin-left: 0; }
-body.rail:not(.rail-open) .tab.in-split::before { left: -4px; }
+body.rail:not(.rail-open) .tab.split-last::before { left: 7px; right: 7px; }
+body.rail:not(.rail-open) .tab.split-first::after { right: auto; left: 50%; transform: translateX(-50%); width: 14px; height: 14px; background-size: 9px; }
 
 /* ------------------------------------------------------------------ centered address bar */
 /* Side columns are equal (keeps the address bar centred) and never narrower than the nav buttons */
