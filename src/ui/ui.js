@@ -1442,7 +1442,10 @@ window.drift.on('toast', (t) => {
   const actions = [];
   if (t.action && t.action.bm) actions.push({ label: t.action.label, run: () => { const b = findBm(t.action.bm); if (b) editBookmark(b); } });
   if (t.action && t.action.update) actions.push({ label: t.action.label, run: () => send('update-install') });
-  if (t.action && t.action.popup) actions.push({ label: 'Open', run: () => send('popup-open', t.action.popup) }, { label: 'Always allow', run: () => send('popup-allow', t.action.popup, t.action.host) });
+  if (t.action && t.action.popup) {
+    if (!t.action.noOpen) actions.push({ label: 'Open', run: () => send('popup-open', t.action.popup) });
+    actions.push({ label: 'Always allow', run: () => send('popup-allow', t.action.popup, t.action.host) });
+  }
   toast(`${icon(t.icon || 'info')}<span>${esc(t.text)}</span>`, 3200, actions);
 });
 window.drift.on('bm-edit', (b) => editBookmark(b));

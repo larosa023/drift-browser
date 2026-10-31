@@ -1,6 +1,9 @@
 // What's new in each release, shown on the What's new page (drift://whatsnew) after an update.
 // Newest first. Kinds: new, faster, fixed, changed. Written for people using Drift.
 module.exports = [
+  { version: '1.20.2', date: '2026-10-31', items: [
+    ['fixed', 'A blocked pop-up no longer leaves an empty tab behind. Ad scripts often open a blank page and then fill it in; those are now blocked like other pop-ups (on sites you allow, they open as a pop-up window the site can fill).'],
+  ] },
   { version: '1.20.1', date: '2026-10-31', items: [
     ['changed', 'Tabs in split view are easy to spot: the two join into one outlined box in the sidebar with a split badge between them, in both the full and the slim sidebar. The pair on screen is highlighted, and so is the side you are using.'],
   ] },

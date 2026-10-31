@@ -900,8 +900,9 @@ function wireTab(tab, wc) {
   wc.setWindowOpenHandler(({ url, disposition }) => {
     const why = popupVerdict(tab, wc, url);
     if (why) { popupBlocked(tab, url, why); return { action: 'deny' }; }
-    // Real popups (sign-in windows etc.) stay popups so window.opener keeps working.
-    if (disposition === 'new-window') {
+    // Real popups (sign-in windows etc.) stay popups so window.opener keeps working. So do blank
+    // pages a site you allowed opens to fill in itself.
+    if (disposition === 'new-window' || isBlankPopup(url)) {
       return { action: 'allow', overrideBrowserWindowOptions: {
         width: 520, height: 700, autoHideMenuBar: true, backgroundColor: '#ffffff',
         webPreferences: { sandbox: true, contextIsolation: true, nodeIntegration: false },
@@ -935,13 +936,25 @@ function popupVerdict(tab, wc, url) {
   const now = Date.now(), act = wc.__act || 0, pre = wc.__pre;
   if (now - act > POPUP_ACT_MS) return 'no-click';
   wc.__act = 0;                                   // one per click
+  // A blank page opened for a script to fill in (ads write into it or send it elsewhere).
+  // Drift opens tabs itself, so the script couldn't reach it and you'd be left with an empty tab.
+  if (isBlankPopup(url)) return 'blank';
   if (pre && Math.abs(pre.t - act) < 1500) {      // what the click in the page itself landed on
     const dest = siteOf(url), page = siteOf(tab.url);
     if (dest !== page && (pre.link ? dest !== siteOf(pre.link) : !pre.interactive)) return 'hijack';
   }
   return null;
 }
+function isBlankPopup(url) { return !url || /^about:blank([#?]|$)/i.test(url); }
 function popupBlocked(tab, url, why) {
+  if (why === 'blank') {   // nothing to open later; just say so
+    console.log(`[popups] blocked (blank) on ${hostOf(tab.url)}`);
+    const c = ctxOfTab(tab); if (!c) return;
+    const now = Date.now(); if (now - (tab.popupToastAt || 0) < 8000) return; tab.popupToastAt = now;
+    if ((tab.glance ? c.glance && c.glance.tab === tab : c.activeId === tab.id) && c.ui && !c.ui.webContents.isDestroyed())
+      c.ui.webContents.send('toast', { text: `Pop-up blocked on ${hostOf(tab.url)}`, icon: 'shield', action: { popup: tab.id, host: hostOf(tab.url), noOpen: true } });
+    return;
+  }
   tab.blockedPopups = [...(tab.blockedPopups || []).slice(-4), url];
   console.log(`[popups] blocked (${why}) on ${hostOf(tab.url)}: ${String(url).slice(0, 120)}`);
   const c = ctxOfTab(tab); if (!c) return;
