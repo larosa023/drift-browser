@@ -633,7 +633,7 @@ function layout() {
 function setOverlay(mode, keepFocus) {
   overlay = mode;
   layout();
-  if (['palette', 'modal', 'extmenu', 'siteinfo', 'dlmenu', 'bmpop'].includes(mode)) ui.webContents.focus();
+  if (['palette', 'modal', 'extmenu', 'siteinfo', 'dlmenu', 'bmpop', 'zoompop'].includes(mode)) ui.webContents.focus();
   else if (!keepFocus) focusPage();   // keepFocus: an extension popup just opened and must keep focus
   push();
 }

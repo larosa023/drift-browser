@@ -20,6 +20,7 @@
       <div id="addr" title="Search or enter address (Ctrl+L)">
         <span class="a-icon" id="a-icon"></span>
         <span class="a-text" id="a-text"></span>
+        <button class="a-btn a-zoom" id="a-zoom" hidden></button>
         <button class="a-btn" id="a-dark" hidden></button>
         <button class="a-btn" id="a-star" title="Bookmark this page (Ctrl+D)"></button>
         <button class="shield a-shield" id="a-shield" title="Shields"><span></span><b id="a-shield-count"></b></button>
@@ -151,6 +152,14 @@
   </div>
 
   <div id="bmpop-wrap" hidden></div>
+  <div id="zoompop-wrap" hidden>
+    <div id="zoompop" tabindex="-1">
+      <button class="zp-b" id="zp-out" title="Zoom out (Ctrl+−)"></button>
+      <span id="zp-val">100%</span>
+      <button class="zp-b" id="zp-in" title="Zoom in (Ctrl++)"></button>
+      <button class="zp-reset" id="zp-reset" title="Back to 100% (Ctrl+0)">Reset</button>
+    </div>
+  </div>
   <div id="dlmenu-wrap" hidden>
     <div id="dlmenu" tabindex="-1">
       <div class="em-head">Downloads</div>

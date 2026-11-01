@@ -810,3 +810,17 @@ body.rail:not(.rail-open) .upd-pill { display: none; }
 body.file-over #sidebar { box-shadow: inset 0 0 0 2px color-mix(in srgb, var(--accent) 55%, transparent); }
 
 .badge.add { display: inline-flex; align-items: center; gap: 3px; background: color-mix(in srgb, var(--accent) 16%, transparent); color: var(--accent); }
+
+/* Zoom: button in the address bar (shows the level when not 100%) and its popover */
+.a-zoom span { font-size: 11.5px; font-weight: 600; font-variant-numeric: tabular-nums; }
+.a-btn.a-zoom.on { width: auto; padding: 0 7px; background: color-mix(in srgb, var(--accent) 14%, transparent); }
+#zoompop-wrap { position: fixed; inset: 0; z-index: 30; }
+#zoompop { position: absolute; display: flex; align-items: center; gap: 4px; padding: 6px; border-radius: 12px; outline: none;
+  background: var(--bg); color: var(--fg); box-shadow: 0 0 0 1px var(--border), 0 12px 32px rgba(0,0,0,.35); animation: pop .14s ease-out; }
+#zoompop .zp-b { all: unset; width: 32px; height: 30px; border-radius: 8px; display: grid; place-items: center; cursor: pointer; color: var(--fg); }
+#zoompop .zp-b:hover { background: var(--hover); }
+#zp-val { min-width: 52px; text-align: center; font-weight: 600; font-variant-numeric: tabular-nums; }
+#zoompop .zp-reset { all: unset; height: 30px; padding: 0 12px; margin-left: 4px; border-radius: 8px; cursor: pointer; font-weight: 600; font-size: 12.5px;
+  background: var(--accent); color: #fff; }
+#zoompop .zp-reset:hover { filter: brightness(1.08); }
+#zoompop .zp-reset:disabled { background: var(--hover); color: var(--muted); cursor: default; filter: none; }

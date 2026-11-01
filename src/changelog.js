@@ -1,6 +1,9 @@
 // What's new in each release, shown on the What's new page (drift://whatsnew) after an update.
 // Newest first. Kinds: new, faster, fixed, changed. Written for people using Drift.
 module.exports = [
+  { version: '1.21.0', date: '2026-11-01', items: [
+    ['new', 'Zoom button in the address bar. When a page is zoomed it shows the level (like 125%); click it for − and + and a Reset to 100%. Ctrl+scroll, Ctrl+plus/minus and Ctrl+0 still work and update it.'],
+  ] },
   { version: '1.20.2', date: '2026-10-31', items: [
     ['fixed', 'A blocked pop-up no longer leaves an empty tab behind. Ad scripts often open a blank page and then fill it in; those are now blocked like other pop-ups (on sites you allow, they open as a pop-up window the site can fill).'],
   ] },

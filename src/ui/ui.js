@@ -61,7 +61,7 @@ function render() {
   b.classList.toggle('light', !S.dark);
   b.classList.toggle('hidden-bar', S.settings.sidebarHidden);
   b.classList.toggle('docked', !S.settings.sidebarHidden);
-  b.classList.toggle('over-palette', ['palette', 'modal', 'extmenu', 'siteinfo', 'dlmenu', 'railpeek', 'bmpop'].includes(S.overlay));
+  b.classList.toggle('over-palette', ['palette', 'modal', 'extmenu', 'siteinfo', 'dlmenu', 'railpeek', 'bmpop', 'zoompop'].includes(S.overlay));
   b.classList.toggle('rail', !!S.settings.sidebarRail && !S.settings.sidebarHidden);
   b.classList.toggle('bm-on', !!S.settings.titleBar && !!S.settings.bookmarksBar);
   b.classList.toggle('over-peek', S.overlay === 'peek');
@@ -138,6 +138,7 @@ function render() {
   if (S.overlay !== 'extmenu') $('#extmenu-wrap').hidden = true;
   if (S.overlay !== 'siteinfo') $('#siteinfo-wrap').hidden = true;
   if (S.overlay !== 'dlmenu') $('#dlmenu-wrap').hidden = true; else renderDlMenu();
+  if (S.overlay !== 'zoompop') $('#zoompop-wrap').hidden = true;
   if (S.overlay !== 'railpeek' && document.body.classList.contains('rail-open') && !(pendingOverlay && pendingOverlay.mode === 'railpeek')) instantRail(() => document.body.classList.remove('rail-open', 'rail-in', 'rail-closing'));
   if (S.overlay !== 'bmpop') closeBmPopups(true);
   if (panel === 'passwords') renderPasswords();
@@ -165,6 +166,14 @@ function renderAddr() {
   setHTML(star, icon(S.nav.bookmarked ? 'starfill' : 'star', 15));
   star.classList.toggle('on', S.nav.bookmarked);
   star.title = S.nav.bookmarked ? 'Remove bookmark (Ctrl+D)' : 'Bookmark this page (Ctrl+D)';
+  // Zoom: a magnifier at 100%, the zoom level (lit) otherwise; opens − / % / + / Reset.
+  const zb = $('#a-zoom'), z = S.nav.zoom || 100;
+  zb.hidden = internal && z === 100;
+  setHTML(zb, z === 100 ? icon('zoom', 15) : `<span>${z}%</span>`);
+  zb.classList.toggle('on', z !== 100);
+  zb.title = z === 100 ? 'Zoom' : `Zoom: ${z}% · click to change or reset`;
+  $('#zp-val').textContent = z + '%';
+  $('#zp-reset').disabled = z === 100;
   const dk = $('#a-dark');
   dk.hidden = internal || !S.settings.forceDark;
   setHTML(dk, icon(S.nav.dark ? 'moonfill' : 'moon', 14));
@@ -201,7 +210,7 @@ function placeActions() {
 
 function applyHole() {
   const w = $('#wash');
-  if (S && ['palette', 'modal', 'extmenu', 'siteinfo', 'dlmenu', 'railpeek', 'bmpop'].includes(S.overlay)) {
+  if (S && ['palette', 'modal', 'extmenu', 'siteinfo', 'dlmenu', 'railpeek', 'bmpop', 'zoompop'].includes(S.overlay)) {
     const { x, y, width: cw, height: ch } = content;
     w.style.clipPath = `polygon(evenodd, 0 0, 100% 0, 100% 100%, 0 100%, 0 0, ${x}px ${y}px, ${x + cw}px ${y}px, ${x + cw}px ${y + ch}px, ${x}px ${y + ch}px, ${x}px ${y}px)`;
   } else w.style.clipPath = '';
@@ -414,6 +423,29 @@ $('#addr').addEventListener('click', (e) => {
 });
 $('#a-star').onclick = () => send('bm-toggle');
 $('#a-dark').onclick = () => send('force-dark-site');
+// Zoom popover under the address bar's zoom button.
+function openZoomPop() {
+  const r = $('#a-zoom').getBoundingClientRect(), m = $('#zoompop');
+  $('#zp-out').innerHTML = icon('minus', 15); $('#zp-in').innerHTML = icon('plus', 15);
+  m.style.left = Math.max(8, Math.min(window.innerWidth - 220, r.left + r.width / 2 - 104)) + 'px';
+  m.style.top = (r.bottom + 8) + 'px';
+  $('#zoompop-wrap').hidden = false;
+  raiseOverlay('zoompop');
+  setTimeout(() => m.focus({ preventScroll: true }), 0);
+}
+function closeZoomPop() { pendingOverlay = null; $('#zoompop-wrap').hidden = true; if (S && S.overlay === 'zoompop') send('overlay', null); }
+$('#a-zoom').onclick = (e) => { e.stopPropagation(); if (S && S.overlay === 'zoompop') closeZoomPop(); else openZoomPop(); };
+$('#zp-out').onclick = () => send('zoom', -1);
+$('#zp-in').onclick = () => send('zoom', 1);
+$('#zp-reset').onclick = () => { send('zoom', 0); $('#zoompop').focus({ preventScroll: true }); };
+$('#zoompop-wrap').addEventListener('mousedown', (e) => { if (e.target.id === 'zoompop-wrap') closeZoomPop(); });
+document.addEventListener('keydown', (e) => {
+  if (!S || S.overlay !== 'zoompop') return;
+  if (e.key === 'Escape') closeZoomPop();
+  else if (e.key === '+' || e.key === '=' || e.key === 'ArrowUp' || e.key === 'ArrowRight') send('zoom', 1);
+  else if (e.key === '-' || e.key === 'ArrowDown' || e.key === 'ArrowLeft') send('zoom', -1);
+  else if (e.key === '0') send('zoom', 0);
+});
 // With uBlock Origin as the engine, the shield opens its popup (per-site switch, counts, logger).
 function openShields(btn) {
   if (S && S.uboId && window.browserAction) {
@@ -505,6 +537,7 @@ function overlayVisible(mode) {
     case 'siteinfo': return !$('#siteinfo-wrap').hidden;
     case 'dlmenu': return !$('#dlmenu-wrap').hidden;
     case 'bmpop': return !$('#bmpop-wrap').hidden;
+    case 'zoompop': return !$('#zoompop-wrap').hidden;
     default: return true;   // palette, modal and peek are drawn straight from the state
   }
 }
