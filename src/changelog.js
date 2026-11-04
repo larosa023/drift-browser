@@ -1,6 +1,14 @@
 // What's new in each release, shown on the What's new page (drift://whatsnew) after an update.
 // Newest first. Kinds: new, faster, fixed, changed. Written for people using Drift.
 module.exports = [
+  { version: '1.22.0', date: '2026-11-03', items: [
+    ['new', 'Stronger protection against malware: downloads a site starts on its own (without you clicking) are blocked, with a notice to download anyway. Program and script files (.exe, .msi, .bat, .ps1, .js, .hta, .lnk, .iso and similar) ask before they are kept.'],
+    ['new', 'Pop-up windows a site opens follow the pop-up blocker too, so they can no longer open more pop-ups on their own. Notification requests made without a click are blocked silently (scam pages use them for fake virus alerts).'],
+    ['new', 'Workspaces (Settings → Tabs & memory): separate sets of tabs, like Work and Personal, switched at the top of the sidebar. Essentials are shared by all of them. Right-click a workspace to rename it or change its icon; right-click a tab to move it to another workspace.'],
+    ['new', 'Compact mode (Settings → Appearance, or Ctrl+Alt+C): the page fills the whole window. Move the mouse to the left edge for the sidebar, or to the top edge for the toolbar and bookmarks.'],
+    ['new', 'Tab previews: rest the pointer on a tab in the sidebar to see a picture of its page, its site and whether it is sleeping or playing audio.'],
+    ['new', 'Clean links: copying a link (or the address from the address bar) removes tracking junk like utm_ tags, fbclid and YouTube\'s si=. Can be turned off in Settings → Shields.'],
+  ] },
   { version: '1.21.0', date: '2026-11-01', items: [
     ['new', 'Zoom button in the address bar. When a page is zoomed it shows the level (like 125%); click it for − and + and a Reset to 100%. Ctrl+scroll, Ctrl+plus/minus and Ctrl+0 still work and update it.'],
   ] },

@@ -65,6 +65,12 @@ function render() {
   b.classList.toggle('rail', !!S.settings.sidebarRail && !S.settings.sidebarHidden);
   b.classList.toggle('bm-on', !!S.settings.titleBar && !!S.settings.bookmarksBar);
   b.classList.toggle('over-peek', S.overlay === 'peek');
+  b.classList.toggle('compact', !!S.settings.compact);
+  // Compact mode: the toolbar shows while the mouse is at the top edge, and stays while one of
+  // its menus is open.
+  const wasTop = b.classList.contains('over-top');
+  b.classList.toggle('over-top', !!S.settings.compact && ['peektop', 'extmenu', 'dlmenu', 'bmpop', 'siteinfo', 'zoompop'].includes(S.overlay));
+  if (!wasTop && b.classList.contains('over-top')) requestAnimationFrame(() => renderBookmarks());   // it measured nothing while hidden
   b.classList.toggle('no-titlebar', !S.settings.titleBar);
   const act = S.tabs.find(t => t.id === S.activeId);
   document.title = act ? (tabTitle(act) + ' — Drift') : 'Drift';
@@ -240,9 +246,12 @@ function renderTabs() {
   tabsPending = false;
   const ess = $('#essentials'), list = $('#tablist');
   const pinned = S.tabs.filter(t => t.pinned);
-  const normal = S.tabs.filter(t => !t.pinned);
+  // With workspaces on, the list shows the current workspace's tabs (Essentials are shared).
+  const wsList = S.ws ? S.settings.wsList : [];
+  const normal = S.tabs.filter(t => !t.pinned && (!S.ws || (t.ws || (wsList[0] || {}).id) === S.ws));
+  renderWsBar(wsList);
   syncKeyed(ess, pinned.map(t => ({
-    id: t.id, cls: `ess ${t.id === S.activeId ? 'active' : ''} ${t.asleep ? 'asleep' : ''}`.trim(), title: tabTitle(t) + (t.asleep ? ' (not loaded)' : ''),
+    id: t.id, cls: `ess ${t.id === S.activeId ? 'active' : ''} ${t.asleep ? 'asleep' : ''}`.trim(), title: S.settings.tabPreviews ? '' : tabTitle(t) + (t.asleep ? ' (not loaded)' : ''),
     html: `${favHTML(t, 18)}${t.audible || t.muted ? `<button class="audio" data-act="mute" title="${t.muted ? 'Unmute' : 'Mute'} tab">${icon(t.muted ? 'muted' : 'sound', 13)}</button>` : ''}`,
   })));
   // The + tile at the end (a wide "Add Essentials" bar while there are none) opens the
@@ -266,10 +275,48 @@ function renderTabs() {
   };
   syncKeyed(list, normal.map(t => ({
     id: t.id, cls: `tab ${t.id === S.activeId ? 'active' : ''} ${t.asleep ? 'asleep' : ''} ${splitClass(t)}`.replace(/\s+/g, ' ').trim(),
-    title: tabTitle(t) + (t.asleep ? ' (sleeping)' : ''),
+    title: S.settings.tabPreviews ? '' : tabTitle(t) + (t.asleep ? ' (sleeping)' : ''),   // the preview card replaces the tooltip
     html: `${favHTML(t)}<span class="title">${esc(tabTitle(t))}</span>${t.audible || t.muted || t.volume !== 1 ? `<button class="audio" data-act="mute" title="${t.muted ? 'Unmute' : 'Mute'} · volume ${Math.round(t.volume * 100)}% (scroll to adjust)">${icon(t.muted ? 'muted' : 'sound', 18)}</button>` : ''}<button class="close" data-act="close" title="Close (Ctrl+W)">${icon('x', 9)}</button>`,
   })));
 }
+
+// Workspace switcher (Settings → Workspaces): one button per workspace, the current one with
+// its name; + adds one. Right-click a workspace to rename or delete it.
+const WS_ICONS = ['🏠', '💼', '🎮', '📚', '🎵', '🎬', '🛒', '✈️', '💡', '🏀', '💬', '🎨', '🧪', '💰', '🍿', '⭐'];
+function wsIcon(w) { return w.icon ? esc(w.icon) : `<b>${esc((w.name || '?')[0].toUpperCase())}</b>`; }
+function renderWsBar(wsList) {
+  const bar = $('#ws-bar');
+  bar.hidden = !wsList.length;
+  if (!wsList.length) { bar.__key = ''; return; }
+  const key = JSON.stringify([wsList, S.ws]);
+  if (bar.__key === key) return;
+  bar.__key = key;
+  bar.innerHTML = wsList.map(w => `<button class="ws ${w.id === S.ws ? 'on' : ''}" data-ws="${esc(w.id)}" title="${esc(w.name)}${w.id === S.ws ? '' : ' (switch)'} · right-click to rename"><span class="wi">${wsIcon(w)}</span><span class="wn">${esc(w.name)}</span></button>`).join('')
+    + `<button class="ws add" data-wsadd title="New workspace">${icon('plus', 13)}</button>`;
+}
+function editWorkspace(w) {
+  const isNew = !w;
+  w = w || { name: '', icon: WS_ICONS[(S.settings.wsList || []).length % WS_ICONS.length] };
+  openModal(`
+    <h3>${isNew ? 'New workspace' : 'Edit workspace'}</h3>
+    <label>Name<input name="name" value="${esc(w.name || '')}" placeholder="Work, School, Games…" spellcheck="false" maxlength="40"></label>
+    <input type="hidden" name="icon" value="${esc(w.icon || '')}">
+    <div class="ws-icons">${WS_ICONS.map(i => `<button type="button" class="wsi ${i === w.icon ? 'on' : ''}" data-icon="${i}">${i}</button>`).join('')}<button type="button" class="wsi ${!w.icon ? 'on' : ''}" data-icon="" title="First letter">Aa</button></div>
+    <div class="actions">${!isNew && S.settings.wsList.length > 1 ? `<button type="button" class="danger" data-m="ws-delete" data-ws="${esc(w.id)}">Delete</button>` : ''}
+      <span class="grow"></span><button type="button" data-m="cancel">Cancel</button><button type="submit" class="primary">${isNew ? 'Create' : 'Save'}</button></div>`,
+  (d) => { const name = (d.name || '').trim() || (isNew ? 'Workspace ' + ((S.settings.wsList || []).length + 1) : w.name); if (isNew) send('ws-add', name, d.icon); else send('ws-edit', w.id, name, d.icon); });
+}
+$('#modal').addEventListener('click', (e) => {
+  const ic = e.target.closest('.wsi'); if (ic) { $('#modal [name=icon]').value = ic.dataset.icon; document.querySelectorAll('#modal .wsi').forEach(b => b.classList.toggle('on', b === ic)); }
+  const del = e.target.closest('[data-m="ws-delete"]'); if (del) { closeModal(); send('ws-delete', del.dataset.ws); }
+});
+$('#ws-bar').addEventListener('click', (e) => {
+  const b = e.target.closest('.ws'); if (!b) return;
+  if (b.dataset.wsadd !== undefined) editWorkspace(null);
+  else if (b.dataset.ws !== S.ws) send('ws-switch', b.dataset.ws);
+});
+$('#ws-bar').addEventListener('contextmenu', (e) => { const b = e.target.closest('[data-ws]'); if (!b) return; e.preventDefault(); send('ws-menu', b.dataset.ws); });
+window.drift.on('ws-edit', (w) => editWorkspace(w));
 
 // ---------------------------------------------------------------------- tab interactions
 function tabEvents(container) {
@@ -305,6 +352,22 @@ function tabEvents(container) {
 }
 tabEvents($('#tablist'));
 tabEvents($('#essentials'));
+// Tab previews: tell Drift which tab the pointer rests on (it shows the card after a moment).
+let hoverTabId = null;
+function hoverTab(el) {
+  const id = el ? Number(el.dataset.id) : null;
+  if (id === hoverTabId) return;
+  hoverTabId = id;
+  if (id == null) { send('tab-hover', null); return; }
+  const r = el.getBoundingClientRect();
+  send('tab-hover', id, { x: r.left, y: r.top, width: r.width, height: r.height });
+}
+for (const c of [$('#tablist'), $('#essentials')]) {
+  c.addEventListener('pointerover', (e) => { if (dragId != null || tabPtr) return; hoverTab(e.target.closest('[data-id]')); });
+  c.addEventListener('pointerleave', () => hoverTab(null));
+}
+document.addEventListener('pointerdown', () => hoverTab(null), true);
+document.addEventListener('wheel', () => hoverTab(null), { passive: true, capture: true });
 
 // ---------------------------------------------------------------------- tab dragging
 // Press a tab and move: reorder it in the list, drop it on the pinned area to pin, on the
@@ -501,7 +564,7 @@ $('#edge').addEventListener('mouseenter', () => send('overlay', 'peek'));
 $('#sidebar').addEventListener('mouseleave', (e) => {
   if (S && S.overlay === 'peek' && !e.relatedTarget) send('overlay', null);
 });
-document.documentElement.addEventListener('mouseleave', () => { if (S && S.overlay === 'peek') send('overlay', null); });
+document.documentElement.addEventListener('mouseleave', () => { if (S && (S.overlay === 'peek' || S.overlay === 'peektop')) send('overlay', null); });
 
 // Sidebar resizing
 $('#resizer').addEventListener('mousedown', (e) => {
@@ -676,6 +739,12 @@ function runItem(it, forceNew) {
   else send('navigate', it.url, newTab);
 }
 
+// Copying the page address from the address bar: without its tracking parameters.
+$('#p-input').addEventListener('copy', (e) => {
+  const inp = e.target, v = inp.value;
+  if (!S || !S.settings.cleanLinks || paletteMode || inp.selectionStart !== 0 || inp.selectionEnd !== v.length || !/^https?:\/\//i.test(v)) return;
+  e.preventDefault(); e.clipboardData.setData('text/plain', window.cleanUrl(v));
+});
 $('#p-input').addEventListener('input', (e) => {
   paletteSel = 0; typedText = null;
   updatePalette(/^insert(Text|CompositionText)?$/.test(e.inputType || '') && !/\s/.test($('#p-input').value));
@@ -762,6 +831,7 @@ function renderSettings() {
     <div class="group"><h4>Appearance</h4>
       <div class="row"><span class="lbl">Theme</span><div class="seg">
         ${['system', 'dark', 'light'].map(t => `<button class="${s.theme === t ? 'on' : ''}" data-set="theme" data-val="${t}">${t[0].toUpperCase() + t.slice(1)}</button>`).join('')}</div></div>
+      <div class="row"><span class="lbl">Compact mode<small>The page fills the window. Move the mouse to the left edge for the sidebar, or the top edge for the toolbar · Ctrl+Alt+C</small></span>${sw('compact', s.compact)}</div>
       <div class="row"><span class="lbl">Top toolbar<small>Address bar, window buttons and a drag area at the top</small></span>${sw('titleBar', s.titleBar)}</div>
       <div class="row"><span class="lbl">Bookmarks bar<small>${s.titleBar ? 'Under the address bar' : 'Needs the top toolbar'} · Ctrl+Shift+B</small></span>${sw('bookmarksBar', s.bookmarksBar)}</div>
       <div class="row"><span class="lbl">Icon-only sidebar<small>Or drag the sidebar's edge all the way in</small></span>${sw('sidebarRail', s.sidebarRail)}</div>
@@ -790,6 +860,7 @@ function renderSettings() {
       <div class="row"><span class="lbl">Blocker<small>${s.shieldsEngine === 'ubo' ? 'uBlock Origin (built in): strongest blocking, works with extensions that watch network traffic' : 'Built-in: lighter on memory, but extensions that watch network traffic stop working'}</small></span>
         <div class="seg"><button class="${s.shieldsEngine === 'ubo' ? 'on' : ''}" data-set="shieldsEngine" data-val="ubo">uBlock</button><button class="${s.shieldsEngine !== 'ubo' ? 'on' : ''}" data-set="shieldsEngine" data-val="builtin">Built-in</button></div></div>
       ${S.uboId ? `<div class="row"><span class="lbl">uBlock Origin dashboard<small>Filter lists, custom rules, whitelist</small></span><button class="mini" data-uboopts>Open</button></div>` : ''}
+      <div class="row"><span class="lbl">Clean links when copying<small>Removes tracking junk (utm_ tags, click IDs, share trackers) from links you copy</small></span>${sw('cleanLinks', s.cleanLinks)}</div>
       <div class="row"><span class="lbl">Block pop-ups<small>Pages can open a new tab or window only right after you click, and pop-under ads that hijack clicks are stopped</small></span>${sw('blockPopups', s.blockPopups)}</div>
       ${s.popupAllow.length ? `<div class="row" style="display:block"><span class="lbl">Pop-ups allowed on<small>Click × to block them again</small></span>
         <div class="chips">${s.popupAllow.map(h => `<span class="chip">${esc(h)}<button data-unpopup="${esc(h)}">${icon('x', 11)}</button></span>`).join('')}</div></div>` : ''}
@@ -798,6 +869,8 @@ function renderSettings() {
     </div>
     <div class="group"><h4>Tabs & memory</h4>
       <div class="row"><span class="lbl">Reopen tabs on startup</span>${sw('restoreTabs', s.restoreTabs)}</div>
+      <div class="row"><span class="lbl">Workspaces<small>Separate sets of tabs (like Work and Personal), switched at the top of the sidebar. Essentials are shared by all of them</small></span>${sw('workspaces', s.workspaces)}</div>
+      <div class="row"><span class="lbl">Tab previews<small>Rest the pointer on a tab to see its page</small></span>${sw('tabPreviews', s.tabPreviews)}</div>
       <div class="row"><span class="lbl">Sleep inactive tabs<small>Frees memory; tabs reload when you open them</small></span>${sw('sleepTabs', s.sleepTabs)}</div>
       <div class="row"><span class="lbl">Allow WebGPU<small>For 3D and AI sites that need it. Off by default: on some PCs, setting it up for a site freezes the window for a few seconds (Twitch asks for it on every load). Applies to pages loaded afterwards.</small></span>${sw('webgpu', s.webgpu)}</div>
       ${s.sleepTabs ? `<div class="row"><span class="lbl">Sleep after</span><select data-sel="sleepMinutes" data-num>
@@ -1475,6 +1548,7 @@ window.drift.on('toast', (t) => {
   const actions = [];
   if (t.action && t.action.bm) actions.push({ label: t.action.label, run: () => { const b = findBm(t.action.bm); if (b) editBookmark(b); } });
   if (t.action && t.action.update) actions.push({ label: t.action.label, run: () => send('update-install') });
+  if (t.action && t.action.dlAllow) actions.push({ label: 'Download anyway', run: () => send('dl-allow', t.action.dlAllow) });
   if (t.action && t.action.popup) {
     if (!t.action.noOpen) actions.push({ label: 'Open', run: () => send('popup-open', t.action.popup) });
     actions.push({ label: 'Always allow', run: () => send('popup-allow', t.action.popup, t.action.host) });

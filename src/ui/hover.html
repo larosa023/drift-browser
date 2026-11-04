@@ -1,0 +1,32 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; img-src data: drift: https:; style-src 'self' 'unsafe-inline'; script-src 'self'">
+  <style>
+    html, body { margin: 0; height: 100%; overflow: hidden; background: transparent; font: 12.5px/1.35 "Segoe UI Variable Text", "Segoe UI", system-ui, sans-serif; }
+    body.dark { --bg: #1d1d22; --fg: #ececf1; --muted: #8e8e9a; --line: rgba(255,255,255,.08); --shot: #26262c; }
+    body.light { --bg: #ffffff; --fg: #1c1c22; --muted: #6b6b76; --line: rgba(0,0,0,.08); --shot: #f0f0f3; }
+    #card { position: absolute; inset: 12px; border-radius: 12px; background: var(--bg); color: var(--fg); overflow: hidden;
+      box-shadow: 0 0 0 1px var(--line), 0 4px 14px rgba(0,0,0,.35); display: flex; flex-direction: column; animation: in .12s ease-out; }
+    #shot { flex: 1; min-height: 0; background: var(--shot) center top / cover no-repeat; border-bottom: 1px solid var(--line); position: relative; }
+    #shot.none { display: none; }
+    #shot.wait::after { content: ""; position: absolute; inset: 0; background: linear-gradient(100deg, transparent 30%, rgba(255,255,255,.06) 50%, transparent 70%); background-size: 200% 100%; animation: shimmer 1s linear infinite; }
+    #meta { display: flex; gap: 9px; align-items: center; padding: 9px 11px; }
+    #fav { width: 16px; height: 16px; flex: none; border-radius: 3px; object-fit: contain; }
+    #fav.none { display: none; }
+    #text { min-width: 0; flex: 1; }
+    #title { font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+    #sub { color: var(--muted); font-size: 11.5px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+    @keyframes in { from { opacity: 0; transform: translateX(-4px); } }
+    @keyframes shimmer { to { background-position: -200% 0; } }
+  </style>
+</head>
+<body class="dark">
+  <div id="card">
+    <div id="shot" class="none"></div>
+    <div id="meta"><img id="fav" class="none" alt=""><div id="text"><div id="title"></div><div id="sub"></div></div></div>
+  </div>
+  <script src="hover.js"></script>
+</body>
+</html>
