@@ -872,7 +872,7 @@ function renderSettings() {
       <div class="row"><span class="lbl">Workspaces<small>Separate sets of tabs (like Work and Personal), switched at the top of the sidebar. Essentials are shared by all of them</small></span>${sw('workspaces', s.workspaces)}</div>
       <div class="row"><span class="lbl">Tab previews<small>Rest the pointer on a tab to see its page</small></span>${sw('tabPreviews', s.tabPreviews)}</div>
       <div class="row"><span class="lbl">Sleep inactive tabs<small>Frees memory; tabs reload when you open them</small></span>${sw('sleepTabs', s.sleepTabs)}</div>
-      <div class="row"><span class="lbl">Allow WebGPU<small>For 3D and AI sites that need it. Off by default: on some PCs, setting it up for a site freezes the window for a few seconds (Twitch asks for it on every load). Applies to pages loaded afterwards.</small></span>${sw('webgpu', s.webgpu)}</div>
+      <div class="row"><span class="lbl">Allow WebGPU<small>For 3D and AI sites that need it. Off by default: on some PCs, setting it up for a site freezes the window for a few seconds (Twitch asks for it on every load). Takes effect after restarting Drift.</small></span>${sw('webgpu', s.webgpu)}</div>
       ${s.sleepTabs ? `<div class="row"><span class="lbl">Sleep after</span><select data-sel="sleepMinutes" data-num>
         ${[5, 10, 20, 30, 60, 120].map(m => `<option value="${m}" ${m === s.sleepMinutes ? 'selected' : ''}>${m < 60 ? m + ' min' : m / 60 + ' hr'}</option>`).join('')}</select></div>` : ''}
     </div>

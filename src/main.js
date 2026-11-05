@@ -37,32 +37,6 @@ const UI_DIR = path.join(__dirname, 'ui');
 const PAGES_DIR = path.join(__dirname, 'pages');
 const NEWTAB = 'drift://newtab/';
 const AUDIO_HOOK = fs.readFileSync(path.join(__dirname, 'audio-hook.js'), 'utf8');
-// The part of it every page gets up front (same as page-preload.js): Web Audio goes through a
-// per-page gain node, so a later volume change reaches sounds that are already playing.
-const AUDIO_CONNECT_HOOK = `(() => {
-  if (AudioNode.prototype.connect.__drift) return;
-  const origConnect = AudioNode.prototype.connect;
-  const masters = window.__driftMasters = window.__driftMasters || new Set();
-  const patched = function (dest, ...rest) {
-    if (dest instanceof AudioDestinationNode) {
-      const c = dest.context;
-      let m = c.__driftMaster;
-      if (!m) {
-        m = c.createGain();
-        origConnect.call(m, dest);
-        Object.defineProperty(c, '__driftMaster', { value: m });
-        masters.add(new WeakRef(m));
-        if (window.__driftAudio) m.gain.value = window.__driftAudio.gain;
-      }
-      origConnect.call(this, m, ...rest);
-      return dest;
-    }
-    return origConnect.call(this, dest, ...rest);
-  };
-  patched.__drift = origConnect;
-  AudioNode.prototype.connect = patched;
-})();`;
-
 const SEARCH_ENGINES = {
   brave:      { name: 'Brave Search', url: 'https://search.brave.com/search?q=%s' },
   duckduckgo: { name: 'DuckDuckGo',   url: 'https://duckduckgo.com/?q=%s' },
@@ -735,17 +709,6 @@ function bindToTab(wc, tab) {
   const swoh = wc.setWindowOpenHandler.bind(wc);
   wc.setWindowOpenHandler = (fn) => swoh(wrap(fn));
 }
-// WebGPU is offered to sites only if turned on in Settings: setting it up for a site's request
-// made Chromium's graphics process stall for seconds on some PCs (an RTX 4090 + AMD system
-// froze ~2.3 s on every Twitch load, whose anti-bot script asks for it). See page-preload.js.
-function webgpuUsable() { return !!settings.webgpu; }
-const NO_WEBGPU_CODE = `(() => { try {
-  const G = window.GPU && window.GPU.prototype;
-  if (!G || G.requestAdapter.__drift) return;
-  const p = new Proxy(G.requestAdapter, { apply: () => Promise.resolve(null) });
-  Object.defineProperty(p, '__drift', { value: true });
-  Object.defineProperty(G, 'requestAdapter', { ...Object.getOwnPropertyDescriptor(G, 'requestAdapter'), value: p });
-} catch {} })();`;
 function ensureView(tab, restore) {
   if (tab.view) return tab.view;
   if (!restore && tab.sleepHistory && tab.sleepHistory.entries.length) restore = tab.sleepHistory;   // waking from sleep
@@ -797,13 +760,12 @@ function ensureView(tab, restore) {
     // A web tab that moved to an extension page: recreate it with iframe support (keeps history).
     if (!extPage && /^chrome-extension:/.test(url) && tab.view === view) { tab.url = url; setImmediate(() => { if (tab.view === view && useTab(tab)) rebuildView(tab); }); }
   });
-  // Per-tab volume for Web Audio in iframes (embedded games, players): the top page gets the
-  // hook from page-preload.js, web iframes as soon as they load (in the page's own script
-  // context, so nothing extra is set up per frame).
+  // Per-tab volume for Web Audio in iframes (embedded games, players), on tabs whose volume
+  // you changed: as soon as each iframe loads. Pages are otherwise left untouched (see
+  // page-preload.js).
   if (!extPage) view.webContents.on('did-frame-navigate', (_e, url, _code, _status, isMain, pid, rid) => {
-    if (isMain || !/^https?:/.test(url)) return;
-    const code = (tab.volume !== 1 ? `${AUDIO_HOOK};window.__driftAudio.set(${tab.volume});` : AUDIO_CONNECT_HOOK) + (webgpuUsable() ? '' : NO_WEBGPU_CODE);
-    try { const f = webFrameMain.fromId(pid, rid); if (f && !f.isDestroyed()) f.executeJavaScript(code).catch(() => {}); } catch {}
+    if (isMain || !/^https?:/.test(url) || tab.volume === 1) return;
+    try { const f = webFrameMain.fromId(pid, rid); if (f && !f.isDestroyed()) f.executeJavaScript(`${AUDIO_HOOK};window.__driftAudio.set(${tab.volume});`).catch(() => {}); } catch {}
   });
   view.setBorderRadius(RADIUS);
   tab.view = view;
@@ -2865,6 +2827,7 @@ function setSetting(key, value) {
   settings[key] = value; saveSettings();
   if (['titleBar', 'bookmarksBar', 'sidebarRail', 'compact'].includes(key)) forEachWin(() => { if (key === 'compact' && (overlay === 'peek' || overlay === 'peektop')) overlay = null; layout(); });
   if (key === 'compact') updateCompactWatch();
+  if (key === 'webgpu' && ui && !ui.webContents.isDestroyed()) ui.webContents.send('toast', { text: 'Restart Drift to apply the WebGPU setting.', icon: 'info' });
   if (key === 'workspaces') setWorkspacesOn(!!value);
   if (key === 'theme') nativeTheme.themeSource = value;
   if (['theme', 'accent', 'searchEngine', 'wallpaper', 'wallpaperDim', 'wallpaperBlur', 'wallpaperNewTab'].includes(key)) refreshNewTabs();
@@ -3416,7 +3379,6 @@ function openFiles(paths) {
 }
 
 function setupPageIPC() {
-  ipcMain.on('drift-no-webgpu', (e) => { e.returnValue = !webgpuUsable(); });
   // A link the user is about to click (page-preload.js): connect to its site early.
   // Pop-up blocker: what a click or key press in the page landed on (see popupVerdict).
   ipcMain.on('drift-act', (e, interactive, link) => {
@@ -4010,7 +3972,18 @@ app.userAgentFallback = chromeUA();
 app.setName('Drift');
 // Every window under one taskbar icon, the same one as Drift's shortcuts (electron-builder's appId).
 if (process.platform === 'win32') app.setAppUserModelId('com.drift.browser');
-app.commandLine.appendSwitch('disable-features', 'HardwareMediaKeyHandling');
+// WebGPU is offered to sites only if turned on in Settings (read here: engine switches have to
+// be set before startup). Setting it up for a site made Chromium's graphics process stall for
+// seconds on some PCs (an RTX 4090 + AMD system froze ~2.3 s on every Twitch load, whose
+// anti-bot script asks for it). Turning off the engine's WebGPU service makes it answer "no
+// graphics adapter" at once, as Chrome does on PCs without WebGPU support, without changing
+// the page's functions: anti-bot checks (Twitch's, Google sign-in's) treat changed built-in
+// functions as a bot and then refuse things like following a channel.
+{
+  let gpuOn = false;
+  try { gpuOn = !!JSON.parse(fs.readFileSync(path.join(app.getPath('userData'), 'settings.json'), 'utf8')).webgpu; } catch {}
+  app.commandLine.appendSwitch('disable-features', ['HardwareMediaKeyHandling', ...(gpuOn ? [] : ['WebGPUService'])].join(','));
+}
 // Faster downloads: fetch large files over several connections at once (Chromium's parallel
 // downloading). Servers that don't support it fall back to a normal single download.
 app.commandLine.appendSwitch('enable-features', 'ParallelDownloading:parallel_request_count/6/min_slice_size/1048576/parallel_request_delay/0');

@@ -1,6 +1,10 @@
 // What's new in each release, shown on the What's new page (drift://whatsnew) after an update.
 // Newest first. Kinds: new, faster, fixed, changed. Written for people using Drift.
 module.exports = [
+  { version: '1.22.2', date: '2026-11-04', items: [
+    ['fixed', "Following channels on Twitch works. Drift no longer changes any of a page's built-in functions: Twitch's anti-bot check took those changes for a bot and refused the follow."],
+    ['changed', 'WebGPU (off unless allowed in Settings) is now turned off inside the engine, so sites simply see no graphics adapter, as on PCs without WebGPU support. Changing the setting takes effect after restarting Drift.'],
+  ] },
   { version: '1.22.1', date: '2026-11-04', items: [
     ['fixed', 'Download anyway works: a download held for starting without a click is now paused and kept, not thrown away (files a site makes itself, like an export, could not be fetched again and failed).'],
     ['changed', 'Only file types that can carry malware (programs, scripts, archives, macro-enabled Office files) need a click to download. Documents, data files, pictures and video download as usual, including ones a site makes for you.'],

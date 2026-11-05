@@ -1,56 +1,12 @@
-// Runs at document start in every page. Inserts a pass-through gain node in front
-// of each Web Audio destination so per-tab volume can reach sounds made with the
-// Web Audio API (games, some players). At 100% it does nothing audible.
-const { contextBridge } = require('electron');
+// Runs at document start in every web page, in Drift's own isolated script world: the page's
+// built-in functions are never changed here. (Anti-bot checks, like Twitch's and Google
+// sign-in's, treat changed built-ins as a bot: Twitch then refuses to let you follow a
+// channel.) Per-tab volume hooks a page only on tabs whose volume you change (audio-hook.js),
+// and WebGPU is turned off in the engine instead (see main.js).
 
 // Only for web pages: extension pages (some run without context isolation) and Drift's
 // own pages are left alone.
 const IS_WEB_PAGE = process.contextIsolated && /^(https?|file):$/.test(location.protocol);
-
-// WebGPU (unless turned on in Settings): asking for an adapter can make Chromium's graphics
-// process stall for seconds, freezing the whole window (Twitch's anti-bot script asks on
-// every load). Answer "no adapter" at once, as Chromium does on machines without WebGPU
-// support. The wrapper still reads as a built-in function.
-const NO_WEBGPU_FN = () => {
-  try {
-    const G = window.GPU && window.GPU.prototype;
-    if (!G || G.requestAdapter.__drift) return;
-    const orig = G.requestAdapter;
-    const p = new Proxy(orig, { apply: () => Promise.resolve(null) });
-    Object.defineProperty(p, '__drift', { value: true });
-    Object.defineProperty(G, 'requestAdapter', { ...Object.getOwnPropertyDescriptor(G, 'requestAdapter'), value: p });
-  } catch {}
-};
-let noWebGPU = false;
-if (IS_WEB_PAGE) { try { noWebGPU = require('electron').ipcRenderer.sendSync('drift-no-webgpu') === true; } catch {} }
-if (noWebGPU && !/^accounts\.google\./i.test(location.hostname)) contextBridge.executeInMainWorld({ func: NO_WEBGPU_FN });
-
-// Not on Google's sign-in pages, which check that built-in browser functions are untouched.
-if (IS_WEB_PAGE && !/^accounts\.google\./i.test(location.hostname)) contextBridge.executeInMainWorld({
-  func: () => {
-    if (AudioNode.prototype.connect.__drift) return;
-    const origConnect = AudioNode.prototype.connect;
-    const masters = window.__driftMasters = window.__driftMasters || new Set();
-    const patched = function (dest, ...rest) {
-      if (dest instanceof AudioDestinationNode) {
-        const c = dest.context;
-        let m = c.__driftMaster;
-        if (!m) {
-          m = c.createGain();
-          origConnect.call(m, dest);
-          Object.defineProperty(c, '__driftMaster', { value: m });
-          masters.add(new WeakRef(m));
-          if (window.__driftAudio) m.gain.value = window.__driftAudio.gain;
-        }
-        origConnect.call(this, m, ...rest);
-        return dest;
-      }
-      return origConnect.call(this, dest, ...rest);
-    };
-    patched.__drift = origConnect;
-    AudioNode.prototype.connect = patched;
-  },
-});
 
 // ---------------------------------------------------------------------------
 // Passwords: offer saved logins on sign-in forms, and offer to save new ones.
