@@ -1,6 +1,10 @@
 // What's new in each release, shown on the What's new page (drift://whatsnew) after an update.
 // Newest first. Kinds: new, faster, fixed, changed. Written for people using Drift.
 module.exports = [
+  { version: '1.22.9', date: '2026-11-05', items: [
+    ['fixed', 'Twitch follows and sign-in work again. The block came from Twitch\'s side and cleared after its stored data was cleared; Test Twitch (Settings → Privacy) stays in case it comes back.'],
+    ['changed', 'Removed three changes from 1.22.3 to 1.22.5 that tried to fix Twitch without helping: Drift no longer adds Chrome-imitation details to pages, no longer attaches its debugging connection to every tab, and asks for site permissions the usual way again.'],
+  ] },
   { version: '1.22.8', date: '2026-11-05', items: [
     ['changed', 'Test Twitch also checks a saved test profile with Drift\'s extension support, Chrome Web Store support, certificate viewer and uBlock Origin added one at a time.'],
   ] },

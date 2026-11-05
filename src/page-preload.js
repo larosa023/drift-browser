@@ -8,40 +8,6 @@
 // own pages are left alone.
 const IS_WEB_PAGE = process.contextIsolated && /^(https?|file):$/.test(location.protocol);
 
-// Chrome fills window.chrome with loadTimes, csi and app; the engine Drift is built on leaves
-// it empty, which bot checks (Twitch's, among others) read as "not a real Chrome" and then
-// refuse things like following a channel. Fill in what Chrome has, with what Chrome returns.
-// This only adds Chrome's own missing parts: none of the page's built-in functions change.
-if (IS_WEB_PAGE) require('electron').contextBridge.executeInMainWorld({ func: () => {
-  const c = window.chrome;
-  if (!c || typeof c !== 'object' || 'loadTimes' in c) return;
-  // Bound functions read as built-in ("function () { [native code] }"), like Chrome's own.
-  const native = (name, fn) => { const f = fn.bind(null); Object.defineProperty(f, 'name', { value: name }); return f; };
-  const nav = () => performance.getEntriesByType('navigation')[0] || {};
-  const at = (ms) => ms ? (performance.timeOrigin + ms) / 1000 : 0;
-  c.loadTimes = native('loadTimes', () => {
-    const n = nav(), proto = n.nextHopProtocol || 'http/1.1', paint = performance.getEntriesByName('first-paint')[0];
-    return { requestTime: at(n.requestStart || n.startTime || 1), startLoadTime: at(n.startTime || 1), commitLoadTime: at(n.responseStart),
-      finishDocumentLoadTime: at(n.domContentLoadedEventEnd), finishLoadTime: at(n.loadEventEnd), firstPaintTime: at(paint && paint.startTime),
-      firstPaintAfterLoadTime: 0, navigationType: 'Other', wasFetchedViaSpdy: proto === 'h2' || proto === 'h3', wasNpnNegotiated: proto !== 'http/1.1',
-      npnNegotiatedProtocol: proto === 'http/1.1' ? 'unknown' : proto, wasAlternateProtocolAvailable: false, connectionInfo: proto };
-  });
-  c.csi = native('csi', () => {
-    const n = nav();
-    return { startE: Math.round(performance.timeOrigin), onloadT: Math.round(performance.timeOrigin + (n.domContentLoadedEventEnd || 0)), pageT: performance.now(), tran: 15 };
-  });
-  const InstallState = { DISABLED: 'disabled', INSTALLED: 'installed', NOT_INSTALLED: 'not_installed' };
-  const RunningState = { CANNOT_RUN: 'cannot_run', READY_TO_RUN: 'ready_to_run', RUNNING: 'running' };
-  c.app = {   // same order as Chrome's
-    isInstalled: false,
-    getDetails: native('getDetails', () => null),
-    getIsInstalled: native('getIsInstalled', () => false),
-    installState: native('installState', (cb) => { if (typeof cb === 'function') setTimeout(() => cb(InstallState.NOT_INSTALLED), 0); }),
-    runningState: native('runningState', () => RunningState.CANNOT_RUN),
-    InstallState, RunningState,
-  };
-} });
-
 // ---------------------------------------------------------------------------
 // Passwords: offer saved logins on sign-in forms, and offer to save new ones.
 // Runs in the isolated world, so the page's own scripts can't call into it.
