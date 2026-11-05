@@ -14,6 +14,8 @@ const {
 const { components } = require('electron');
 const path = require('path');
 const fs = require('fs');
+// A Twitch check test window (twcheck.js) runs as its own bare process: hand over at once.
+if (process.argv.some(x => x.startsWith('--drift-twcheck='))) { require('./twcheck.js').child(); return; }
 // Chrome extension support (tabs/popups/action APIs + Chrome Web Store installs).
 // Must be required before the app is ready: it registers the crx:// scheme.
 const { ElectronChromeExtensions } = require('electron-chrome-extensions');
@@ -3763,6 +3765,8 @@ function setupIPC() {
     saveSettings(); sendExtensions();
   });
   on('ext-store', () => createTab('https://chromewebstore.google.com/category/extensions'));
+  on('tw-check', () => require('./twcheck.js').run({ parent: win, ua: chromeUA(), switches: ENGINE_SWITCHES.join(' '),
+    preload: path.join(__dirname, 'page-preload.js'), applyIdentity: (wc) => applyIdentity(wc) }));
   on('ext-unpacked', () => loadUnpacked());
   on('force-dark-site', () => toggleForceDarkSite());
   on('split-menu', (x, y) => splitMenu(x, y));
@@ -4088,14 +4092,19 @@ if (process.platform === 'win32') app.setAppUserModelId('com.drift.browser');
 // graphics adapter" at once, as Chrome does on PCs without WebGPU support, without changing
 // the page's functions: anti-bot checks (Twitch's, Google sign-in's) treat changed built-in
 // functions as a bot and then refuse things like following a channel.
+// The engine switches below, as one line (the Twitch check starts test windows with them).
+const ENGINE_SWITCHES = [];
 {
   let gpuOn = false;
   try { gpuOn = !!JSON.parse(fs.readFileSync(path.join(app.getPath('userData'), 'settings.json'), 'utf8')).webgpu; } catch {}
-  app.commandLine.appendSwitch('disable-features', ['HardwareMediaKeyHandling', ...(gpuOn ? [] : ['WebGPUService'])].join(','));
+  const off = ['HardwareMediaKeyHandling', ...(gpuOn ? [] : ['WebGPUService'])].join(',');
+  app.commandLine.appendSwitch('disable-features', off);
+  ENGINE_SWITCHES.push('disable-features=' + off);
 }
 // Faster downloads: fetch large files over several connections at once (Chromium's parallel
 // downloading). Servers that don't support it fall back to a normal single download.
 app.commandLine.appendSwitch('enable-features', 'ParallelDownloading:parallel_request_count/6/min_slice_size/1048576/parallel_request_delay/0');
+ENGINE_SWITCHES.push('enable-features=ParallelDownloading:parallel_request_count/6/min_slice_size/1048576/parallel_request_delay/0');
 
 function setupWidevine() {
   if (!components || typeof components.whenReady !== 'function') return Promise.resolve();

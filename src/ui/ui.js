@@ -889,6 +889,7 @@ function renderSettings() {
       <div class="row"><span class="lbl">Export bookmarks<small>As a bookmarks.html file</small></span><button class="mini" id="bm-export">Export</button></div>
     </div>
     <div class="group"><h4>Privacy</h4>
+      <div class="row"><span class="lbl">Test Twitch<small>Finds out why Twitch won't let you follow or claim points: opens Twitch in a few signed-out test windows (about 2 minutes)</small></span><button class="mini" id="tw-check">Run test</button></div>
       <button class="btn danger" id="clear-data">Clear browsing data…</button>
     </div>
     <div class="group"><h4>Keyboard shortcuts</h4><div class="kbd-list">
@@ -932,6 +933,7 @@ $('#settings-body').addEventListener('click', (e) => {
   const ud = e.target.closest('[data-undark]'); if (ud) send('undark', ud.dataset.undark);
   const src = e.target.closest('[data-bmsrc]'); if (src) send('bm-import', src.dataset.bmsrc);
   if (e.target.id === 'clear-data') send('clear-data');
+  if (e.target.id === 'tw-check') send('tw-check');
   if (e.target.id === 'upd-check') send('update-check');
   if (e.target.id === 'whats-new') { send('whats-new'); togglePanel(null); }
   if (e.target.id === 'default-browser') send('default-browser');
