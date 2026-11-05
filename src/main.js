@@ -822,7 +822,7 @@ function wireTab(tab, wc) {
     if (darkSwitchNeeded(tab, e.url)) { e.preventDefault(); setImmediate(() => { if (tab.view && tab.view.webContents === wc && useTab(tab)) openInFreshView(tab, e.url); }); }
   });
   wc.on('did-start-navigation', (d) => {
-    if (d.isMainFrame && !d.isSameDocument) { tab.blocked = 0; notePendingNav(d.url, wc.id); }
+    if (d.isMainFrame && !d.isSameDocument) { tab.blocked = 0; notePendingNav(d.url, wc.id); overridePerms(webOrigin(d.url)); }
   });
   wc.on('did-redirect-navigation', (d) => { if (d.isMainFrame) notePendingNav(d.url, wc.id); });
   wc.on('did-navigate', (_e, url) => {
@@ -2602,7 +2602,12 @@ async function loadUnpacked() {
 // Permissions — ask the user instead of Electron's default "allow everything"
 // ---------------------------------------------------------------------------
 
-const AUTO_ALLOW = new Set(['fullscreen', 'clipboard-sanitized-write', 'pointerLock']);
+const AUTO_ALLOW = new Set(['fullscreen', 'clipboard-sanitized-write', 'pointerLock',
+  // Granted by Chrome without asking (and reported as granted): keeping the screen on during a
+  // video, motion sensors, background sync and fetch, payment handlers.
+  'screen-wake-lock', 'sensors', 'background-sync', 'background-fetch', 'payment-handler']);
+// Also reported as granted by Chrome before anything is asked (requests still ask here).
+const CHECK_GRANTED = new Set(['keyboardLock', 'storage-access']);
 const ASK = {
   media: 'use your camera or microphone', geolocation: 'know your location',
   notifications: 'show notifications', 'clipboard-read': 'read your clipboard',
@@ -2635,11 +2640,73 @@ function setupPermissions(ses) {
     const allow = r.response === 0;
     if (r.checkboxChecked) { settings.permissions[key] = allow; saveSettings(); }
     cb(allow);
+    if (r.checkboxChecked) { clearPermOverride(origin); }
   });
   ses.setPermissionCheckHandler((wc, perm, origin) => {
     if (AUTO_ALLOW.has(perm)) return true;
-    return settings.permissions[`${origin}|${perm}`] === true;
+    // Same spelling as saved choices ("https://site.com", no trailing slash).
+    try { origin = new URL(origin).origin; } catch {}
+    const key = `${origin}|${perm}`;
+    if (CHECK_GRANTED.has(perm) && !(key in settings.permissions)) return true;
+    return settings.permissions[key] === true;
   });
+}
+
+// ---------------------------------------------------------------------------
+// Permission answers like Chrome's. Asked whether a site may use something you haven't
+// decided on yet (notifications, location, camera…), Chrome answers "prompt" ("default" for
+// notifications); Electron can only say granted or denied, so every site saw everything
+// "denied" before asking anything. That is what automated, headless browsers report, and
+// anti-bot checks (Twitch's) refuse them. Chromium's own per-site override (the one its
+// developer tools use) gives the "prompt" answer. While it's in place a site can't ask, so
+// it's lifted for a few seconds after you click or press Enter on the site: a permission
+// request you set off goes to Drift's usual question. Anything you've decided is left alone.
+// ---------------------------------------------------------------------------
+const PROMPT_PERMS = ['notifications', 'geolocation', 'camera', 'microphone', 'clipboard-read', 'persistent-storage', 'midi',
+  'local-fonts', 'window-management', 'idle-detection', 'push', 'display-capture', 'captured-surface-control'];
+// Drift's own name for each (settings.permissions keys are "origin|name").
+const PERM_KEY = { camera: 'media', microphone: 'media', push: 'notifications' };
+const permOverridden = new Map();   // origin -> names overridden now
+const permLifted = new Map();       // origin -> timer: lifted after a click
+let permDbg = null;
+function permDebugger() {
+  if (permDbg && permDbg.isAttached()) return permDbg;
+  permDbg = null;
+  for (const c of windows) {
+    if (!c.ui || c.ui.webContents.isDestroyed()) continue;
+    const d = c.ui.webContents.debugger;
+    try { if (!d.isAttached()) d.attach('1.3'); permDbg = d; d.once('detach', () => { if (permDbg === d) { permDbg = null; permOverridden.clear(); } }); return d; } catch {}
+  }
+  return null;
+}
+const permDecided = (origin, name) => `${origin}|${PERM_KEY[name] || name}` in settings.permissions;
+function webOrigin(url) { try { const u = new URL(url); return /^https?:$/.test(u.protocol) ? u.origin : ''; } catch { return ''; } }
+async function overridePerms(origin) {
+  if (!origin || permLifted.has(origin)) return;
+  const want = PROMPT_PERMS.filter(n => !permDecided(origin, n));
+  const have = permOverridden.get(origin);
+  if (have && have.size === want.length && want.every(n => have.has(n))) return;
+  const d = permDebugger(); if (!d) return;
+  permOverridden.set(origin, new Set(want));
+  await Promise.all(want.map(name => d.sendCommand('Browser.setPermission', {
+    permission: name === 'push' ? { name, userVisibleOnly: true } : { name }, setting: 'prompt', origin }).catch(() => {})));
+}
+// Chromium can only clear every site's overrides at once: clear, then put back the others.
+async function clearPermOverride(origin) {
+  if (!permOverridden.has(origin)) return;
+  const d = permDebugger(); if (!d) return;
+  permOverridden.delete(origin);
+  const open = new Set(allTabs().map(t => webOrigin(t.url)).filter(Boolean));
+  const others = [...permOverridden.keys()].filter(o => open.has(o));
+  permOverridden.clear();
+  await d.sendCommand('Browser.resetPermissions', {}).catch(() => {});
+  for (const o of others) await overridePerms(o);
+}
+function liftPerms(origin) {
+  if (!origin || !permOverridden.has(origin) && !permLifted.has(origin)) return;
+  clearTimeout(permLifted.get(origin));
+  permLifted.set(origin, setTimeout(() => { permLifted.delete(origin); overridePerms(origin); }, 8000));
+  clearPermOverride(origin);
 }
 
 // Site info (the lock icon): remember each site's certificate as Chromium verifies it.
@@ -3720,6 +3787,7 @@ function setupIPC() {
     else if (value === 'block') settings.permissions[key] = false;
     else delete settings.permissions[key];
     saveSettings();
+    clearPermOverride(origin).then(() => overridePerms(origin));   // the site now sees the new choice
   });
   handle('site-clear', async (origin) => { const t = activeTab(); const ok = await clearSiteData(origin); if (ok && t && t.view && !t.view.webContents.isDestroyed()) t.view.webContents.reload(); return ok; });
   on('bm-open-background', (id) => { const h = bookmarks.find(id); if (h) openBookmark(h.item, true, true); });
@@ -4175,8 +4243,8 @@ if (!app.requestSingleInstanceLock(launchRequest)) {
     // downloads and notification requests are only allowed just after that. Touch taps only
     // reach input-event.
     if (wc.getType() === 'window' || wc.getType() === 'browserView') {
-      wc.on('before-mouse-event', (_e2, me) => { if (me.type === 'mouseDown') { wc.__act = Date.now(); wc.__leftDown = me.button === 'left' ? Date.now() : 0; wc.__dlLeft = 3; } });
-      wc.on('before-input-event', (_e2, ie) => { if (ie.type === 'keyDown') { wc.__act = Date.now(); wc.__dlLeft = 3; } });
+      wc.on('before-mouse-event', (_e2, me) => { if (me.type === 'mouseDown') { wc.__act = Date.now(); wc.__leftDown = me.button === 'left' ? Date.now() : 0; wc.__dlLeft = 3; liftPerms(webOrigin(wc.getURL())); } });
+      wc.on('before-input-event', (_e2, ie) => { if (ie.type === 'keyDown') { wc.__act = Date.now(); wc.__dlLeft = 3; if (ie.key === 'Enter' || ie.key === ' ') liftPerms(webOrigin(wc.getURL())); } });
       wc.on('input-event', (_e2, ie) => { if (ie.type === 'touchStart' || ie.type === 'gestureTap') { wc.__act = Date.now(); wc.__dlLeft = 3; } });
     }
     // Tabs and sign-in popups both need the Google sign-in user agent switch.

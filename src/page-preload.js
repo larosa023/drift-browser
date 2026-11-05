@@ -32,12 +32,13 @@ if (IS_WEB_PAGE) require('electron').contextBridge.executeInMainWorld({ func: ()
   });
   const InstallState = { DISABLED: 'disabled', INSTALLED: 'installed', NOT_INSTALLED: 'not_installed' };
   const RunningState = { CANNOT_RUN: 'cannot_run', READY_TO_RUN: 'ready_to_run', RUNNING: 'running' };
-  c.app = {
-    isInstalled: false, InstallState, RunningState,
+  c.app = {   // same order as Chrome's
+    isInstalled: false,
     getDetails: native('getDetails', () => null),
     getIsInstalled: native('getIsInstalled', () => false),
     installState: native('installState', (cb) => { if (typeof cb === 'function') setTimeout(() => cb(InstallState.NOT_INSTALLED), 0); }),
     runningState: native('runningState', () => RunningState.CANNOT_RUN),
+    InstallState, RunningState,
   };
 } });
 

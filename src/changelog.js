@@ -1,6 +1,10 @@
 // What's new in each release, shown on the What's new page (drift://whatsnew) after an update.
 // Newest first. Kinds: new, faster, fixed, changed. Written for people using Drift.
 module.exports = [
+  { version: '1.22.5', date: '2026-11-05', items: [
+    ['fixed', 'Sites asking what they may use now get the same answers as in Chrome: "not decided yet" for notifications, location, camera and the like (Drift answered "denied" for everything, which anti-bot checks such as Twitch\'s read as an automated browser). Asking still works: click a site\'s button that asks, and Drift shows its usual question.'],
+    ['fixed', 'Sites you allowed to show notifications were told they were not allowed.'],
+  ] },
   { version: '1.22.4', date: '2026-11-05', items: [
     ['fixed', 'Drift identifies to sites as Google Chrome the way Chrome itself does (it reported only "Chromium", which anti-bot services associate with automation tools; Twitch then refused follows and channel-point claims). Pages, embedded frames, background workers and request headers all agree.'],
   ] },
