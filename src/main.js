@@ -2171,6 +2171,36 @@ function applyIdentity(wc) {
     }
   }
   dbg.sendCommand('Emulation.setUserAgentOverride', { userAgent: chromeUA(), userAgentMetadata: uaMeta }).catch(() => {});
+  // Frames from other sites run in their own process and don't inherit the identity: have
+  // each one held at its start, give it the same identity, then let it run.
+  if (!wc.__driftFrames) {
+    wc.__driftFrames = true;
+    const AUTO = { autoAttach: true, waitForDebuggerOnStart: true, flatten: true };
+    dbg.on('message', (_e, method, params) => {
+      if (method !== 'Target.attachedToTarget') return;
+      const sid = params.sessionId, type = params.targetInfo && params.targetInfo.type;
+      const run = () => dbg.sendCommand('Runtime.runIfWaitingForDebugger', {}, sid).catch(() => {});
+      if (type !== 'iframe' || !uaMeta) return run();
+      Promise.all([
+        dbg.sendCommand('Emulation.setUserAgentOverride', { userAgent: chromeUA(), userAgentMetadata: uaMeta }, sid),
+        dbg.sendCommand('Target.setAutoAttach', AUTO, sid),
+      ]).catch(() => {}).finally(run);
+    });
+    dbg.on('detach', () => { wc.__driftFrames = false; });
+  }
+  dbg.sendCommand('Target.setAutoAttach', { autoAttach: true, waitForDebuggerOnStart: true, flatten: true }).catch(() => {});
+}
+// Chrome's brand list from the engine's: the placeholder ("greased") brand, "Chromium" and
+// "Google Chrome", in the order Chrome puts them for this major version (Chromium's
+// ShuffleBrandList: one of six fixed orders, chosen by the version).
+function chromeBrands(engineList, ver) {
+  const grease = engineList.find(b => b.brand !== 'Chromium') || { brand: 'Not?A_Brand', version: '24' };
+  const chromium = engineList.find(b => b.brand === 'Chromium') || { brand: 'Chromium', version: String(ENGINE_MAJOR) };
+  const list = [grease, chromium, { brand: 'Google Chrome', version: ver(chromium) }];
+  const orders = [[0, 1, 2], [0, 2, 1], [1, 0, 2], [1, 2, 0], [2, 0, 1], [2, 1, 0]];
+  const order = orders[ENGINE_MAJOR % 6], out = [];
+  list.forEach((b, i) => { out[order[i]] = { brand: b.brand, version: b.version }; });
+  return out;
 }
 // Reads the engine's real platform details once, from Drift's own UI page.
 // Any window's sidebar UI (for small jobs like reading the engine's details or drawing an icon).
@@ -2195,6 +2225,17 @@ async function initIdentity() {
     brands = [{ brand: CLAIM.greaseBrand, version: CLAIM.greaseVersion }, { brand: 'Chromium', version: String(CLAIM.chromeMajor) }];
     full = [{ brand: CLAIM.greaseBrand, version: CLAIM.greaseVersion + '.0.0.0' }, { brand: 'Chromium', version: CLAIM.chromeFull }];
     uaMeta = { brands, fullVersionList: full, fullVersion: CLAIM.chromeFull, platform: real.platform, platformVersion: real.platformVersion || '',
+      architecture: real.architecture || '', model: real.model || '', mobile: false, bitness: real.bitness || '', wow64: !!real.wow64 };
+    for (const w of webContents.getAllWebContents()) if (/^https?:/.test(w.getURL()) && !isSignin(w.getURL())) applyIdentity(w);
+  } else if (!real.brands.some(b => b.brand === 'Google Chrome')) {
+    // Report the brand list Chrome itself reports for this version: "Google Chrome" next to
+    // "Chromium" and the placeholder brand. The engine leaves "Google Chrome" out, and a
+    // Chromium-only list on Windows is what automation tools (Puppeteer, Playwright) show, so
+    // anti-bot services flag it: Twitch then refuses to let you follow or claim points.
+    brands = chromeBrands(real.brands, (b) => b.version);
+    full = chromeBrands(real.fullVersionList || [], (b) => b.version);
+    const chromeFull = (full.find(b => b.brand === 'Chromium') || {}).version || process.versions.chrome;
+    uaMeta = { brands, fullVersionList: full, fullVersion: chromeFull, platform: real.platform, platformVersion: real.platformVersion || '',
       architecture: real.architecture || '', model: real.model || '', mobile: false, bitness: real.bitness || '', wow64: !!real.wow64 };
     for (const w of webContents.getAllWebContents()) if (/^https?:/.test(w.getURL()) && !isSignin(w.getURL())) applyIdentity(w);
   }

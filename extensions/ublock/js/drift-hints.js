@@ -34,6 +34,18 @@ function identity() {
   if (id && id.enabled !== false && engineMajor < id.chromeMajor) {
     brands = [{ brand: id.greaseBrand, version: id.greaseVersion }, { brand: 'Chromium', version: String(id.chromeMajor) }];
     full = [{ brand: id.greaseBrand, version: id.greaseVersion + '.0.0.0' }, { brand: 'Chromium', version: id.chromeFull }];
+  } else if (!brands.some(b => b.brand === 'Google Chrome')) {
+    // The brand list Chrome reports (main.js reports the same to pages): "Google Chrome" next
+    // to "Chromium" and the placeholder, in Chrome's order for this version.
+    const add = (list) => {
+      const grease = list.find(b => b.brand !== 'Chromium'), chromium = list.find(b => b.brand === 'Chromium');
+      if (!grease || !chromium) return list;
+      const src = [grease, chromium, { brand: 'Google Chrome', version: chromium.version }];
+      const order = [[0, 1, 2], [0, 2, 1], [1, 0, 2], [1, 2, 0], [2, 0, 1], [2, 1, 0]][engineMajor % 6], out = [];
+      src.forEach((b, i) => { out[order[i]] = { brand: b.brand, version: b.version }; });
+      return out;
+    };
+    brands = add(brands); full = add(full);
   }
   [low, high] = mk(brands, full);
 })();

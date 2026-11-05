@@ -1,6 +1,9 @@
 // What's new in each release, shown on the What's new page (drift://whatsnew) after an update.
 // Newest first. Kinds: new, faster, fixed, changed. Written for people using Drift.
 module.exports = [
+  { version: '1.22.4', date: '2026-11-05', items: [
+    ['fixed', 'Drift identifies to sites as Google Chrome the way Chrome itself does (it reported only "Chromium", which anti-bot services associate with automation tools; Twitch then refused follows and channel-point claims). Pages, embedded frames, background workers and request headers all agree.'],
+  ] },
   { version: '1.22.3', date: '2026-11-04', items: [
     ['fixed', "Sites see Drift more like Chrome: Chrome's window.chrome details (loadTimes, csi, app) were missing, which bot checks such as Twitch's take as a sign of a fake browser (Twitch then refuses to let you follow)."],
   ] },
