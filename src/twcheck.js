@@ -32,6 +32,7 @@ async function probeIn(opts = {}) {
   const ses = opts.session || session.fromPartition('twcheck-' + Date.now() + Math.random());
   if (opts.ua) ses.setUserAgent(opts.ua);
   if (opts.preload) ses.registerPreloadScript({ id: 'drift-page', type: 'frame', filePath: opts.preload });
+  if (opts.setup) { try { await opts.setup(ses); } catch (e) { return 'ERROR: setting up the test failed: ' + (e && e.message || e); } }
   const w = new BrowserWindow({ width: 1000, height: 700, title: 'Drift: testing Twitch…', autoHideMenuBar: true,
     webPreferences: { session: ses, sandbox: true, contextIsolation: true, nodeIntegration: false } });
   try {
@@ -87,16 +88,17 @@ async function run(ctx) {
   try {
     const go = await dialog.showMessageBox(ctx.parent, { type: 'info', buttons: ['Start', 'Cancel'], defaultId: 0, cancelId: 1, noLink: true,
       title: 'Test Twitch', message: 'Find out what Twitch objects to',
-      detail: 'Drift opens Twitch in a few test windows, one after another (about 2 minutes). They are signed out, so nothing happens to your account. Leave them open until the results appear.' });
+      detail: 'Drift opens Twitch in a few test windows, one after another (about 3 minutes). The test asks Twitch without your sign-in, so nothing happens to your account. Leave them open until the results appear.' });
     if (go.response !== 0) return;
+    // Fresh profiles with one part of your everyday profile added each: the one that fails is it.
+    const fresh = (setup) => () => probeIn({ ua: ctx.ua, preload: ctx.preload, prepare: ctx.applyIdentity, setup });
     const tests = [
       ['Drift as you use it', () => probeIn({ session: session.defaultSession, prepare: ctx.applyIdentity })],
-      ['Drift, fresh profile', () => probeIn({ ua: ctx.ua, preload: ctx.preload, prepare: ctx.applyIdentity })],
-      ['Without Drift\'s identity settings', () => probeIn({ ua: ctx.ua, preload: ctx.preload })],
-      ['Without Drift\'s page script', () => probeIn({ ua: ctx.ua })],
-      ['Engine only, with Drift\'s switches', () => childRun(ctx.ua, ctx.switches)],
-      ['Engine only, Drift\'s switches but WebGPU on', () => childRun(ctx.ua, ctx.switches.replace(/,?WebGPUService/, ''))],
-      ['Engine only, no switches', () => childRun(ctx.ua, '')],
+      ['Drift, fresh profile', fresh()],
+      ['Fresh + your Twitch cookies', fresh(ctx.copyCookies)],
+      ['Fresh + Drift\'s site permission answers', fresh(ctx.addPermissions)],
+      ['Fresh + Drift\'s request headers', fresh(ctx.addHeaders)],
+      ['Fresh + uBlock Origin (standard lists)', fresh(ctx.addUbo)],
     ];
     const lines = [`Drift ${app.getVersion()} (engine ${process.versions.chrome}, ${process.platform}) Twitch check`];
     for (const [name, fn] of tests) lines.push(`${name}: ${await fn()}`);

@@ -3766,7 +3766,28 @@ function setupIPC() {
   });
   on('ext-store', () => createTab('https://chromewebstore.google.com/category/extensions'));
   on('tw-check', () => require('./twcheck.js').run({ parent: win, ua: chromeUA(), switches: ENGINE_SWITCHES.join(' '),
-    preload: path.join(__dirname, 'page-preload.js'), applyIdentity: (wc) => applyIdentity(wc) }));
+    preload: path.join(__dirname, 'page-preload.js'), applyIdentity: (wc) => applyIdentity(wc),
+    // Parts of the everyday profile, each added to a fresh test profile on its own.
+    copyCookies: async (ses) => {
+      for (const c of await session.defaultSession.cookies.get({})) {
+        if (!/(^|\.)(twitch\.tv|ttvnw\.net|twitchcdn\.net)$/i.test(c.domain.replace(/^\./, ''))) continue;
+        const host = c.domain.replace(/^\./, '');
+        await ses.cookies.set({ url: `https://${host}${c.path || '/'}`, name: c.name, value: c.value, domain: c.hostOnly ? undefined : c.domain, path: c.path,
+          secure: c.secure, httpOnly: c.httpOnly, sameSite: c.sameSite, expirationDate: c.expirationDate }).catch(() => {});
+      }
+    },
+    addPermissions: (ses) => setupPermissions(ses),
+    addHeaders: (ses) => ses.webRequest.onBeforeSendHeaders(addHintHeaders),
+    addUbo: async (ses) => {
+      const ext = await (ses.extensions || ses).loadExtension(await ensureUboDir(), { allowFileAccess: true });
+      // Its filter lists load in the background: wait until it blocks (up to 20 s).
+      const prefix = `chrome-extension://${ext.id}/`;
+      for (let t0 = Date.now(); Date.now() - t0 < 20000; await new Promise(r => setTimeout(r, 300))) {
+        const bg = webContents.getAllWebContents().find(w => w.getType() === 'backgroundPage' && w.getURL().startsWith(prefix) && w.session === ses);
+        if (bg && await bg.executeJavaScript('!!(self.µBlock && self.µBlock.readyToFilter)').catch(() => false)) return;
+      }
+    },
+  }));
   on('ext-unpacked', () => loadUnpacked());
   on('force-dark-site', () => toggleForceDarkSite());
   on('split-menu', (x, y) => splitMenu(x, y));

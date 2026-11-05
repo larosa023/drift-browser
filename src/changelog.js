@@ -1,6 +1,9 @@
 // What's new in each release, shown on the What's new page (drift://whatsnew) after an update.
 // Newest first. Kinds: new, faster, fixed, changed. Written for people using Drift.
 module.exports = [
+  { version: '1.22.7', date: '2026-11-05', items: [
+    ['changed', 'Test Twitch now checks each part of your everyday profile on its own (your Twitch cookies, Drift\'s site permission answers, its request headers, uBlock Origin), to find the one Twitch objects to.'],
+  ] },
   { version: '1.22.6', date: '2026-11-05', items: [
     ['new', 'Settings → Privacy → Test Twitch: finds out why Twitch won\'t let you follow channels or claim points. It opens Twitch in a few signed-out test windows, each with less of Drift switched on, and shows which ones Twitch accepts (the results are copied, ready to paste).'],
   ] },
