@@ -1553,7 +1553,7 @@ window.drift.on('toast', (t) => {
     if (!t.action.noOpen) actions.push({ label: 'Open', run: () => send('popup-open', t.action.popup) });
     actions.push({ label: 'Always allow', run: () => send('popup-allow', t.action.popup, t.action.host) });
   }
-  toast(`${icon(t.icon || 'info')}<span>${esc(t.text)}</span>`, 3200, actions);
+  toast(`${icon(t.icon || 'info')}<span>${esc(t.text)}</span>`, t.ms || 3200, actions);
 });
 window.drift.on('bm-edit', (b) => editBookmark(b));
 window.drift.on('layout', (l) => {

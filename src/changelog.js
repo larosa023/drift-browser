@@ -1,6 +1,10 @@
 // What's new in each release, shown on the What's new page (drift://whatsnew) after an update.
 // Newest first. Kinds: new, faster, fixed, changed. Written for people using Drift.
 module.exports = [
+  { version: '1.22.1', date: '2026-11-04', items: [
+    ['fixed', 'Download anyway works: a download held for starting without a click is now paused and kept, not thrown away (files a site makes itself, like an export, could not be fetched again and failed).'],
+    ['changed', 'Only file types that can carry malware (programs, scripts, archives, macro-enabled Office files) need a click to download. Documents, data files, pictures and video download as usual, including ones a site makes for you.'],
+  ] },
   { version: '1.22.0', date: '2026-11-03', items: [
     ['new', 'Stronger protection against malware: downloads a site starts on its own (without you clicking) are blocked, with a notice to download anyway. Program and script files (.exe, .msi, .bat, .ps1, .js, .hta, .lnk, .iso and similar) ask before they are kept.'],
     ['new', 'Pop-up windows a site opens follow the pop-up blocker too, so they can no longer open more pop-ups on their own. Notification requests made without a click are blocked silently (scam pages use them for fake virus alerts).'],

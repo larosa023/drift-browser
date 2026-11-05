@@ -2703,7 +2703,9 @@ async function clearSiteData(origin) {
 // File types that run code when opened. The doubled-extension trick (invoice.pdf.exe) ends in
 // one of these too.
 const RISKY_EXT = /\.(exe|msi|msix|msixbundle|appx|appxbundle|bat|cmd|com|scr|pif|cpl|vbs|vbe|js|jse|wsf|wsh|ps1|psm1|psd1|hta|jar|lnk|url|reg|dll|sys|iso|img|vhd|vhdx|application|gadget|msc|inf|chm)$/i;
-const blockedDownloads = new Map();   // token -> { url, wcId }: downloads blocked for having no click
+// Archives and macro-enabled Office files: common wrappers for malware.
+const ARCHIVE_EXT = /\.(zip|rar|7z|cab|gz|tgz|tar|bz2|xz|ace|arj|apk|docm|dotm|xlsm|xltm|xlam|pptm|potm|ppsm)$/i;
+const blockedDownloads = new Map();   // token -> { item, register, expire }: downloads held for having no click
 function setupDownloads(ses) {
   ses.on('will-download', (e, item, fromWc) => {
     // Belongs to the window whose page started it.
@@ -2722,32 +2724,55 @@ function setupDownloads(ses) {
     }
     if (!(from && useTab(from)) && lastFocused) useWin(lastFocused);
     const dctx = cur;
-    // Downloads a web page starts must follow a click or key press in it (at most a few per
-    // click): drive-by downloads, started by a page or an ad on its own, are how malware lands.
+    // Files that can carry malware (programs, scripts, archives, macro documents) must follow a
+    // click or key press in the page (a few per click): drive-by downloads, started by a page or
+    // an ad on its own, are how malware lands. Such a download is held (paused, not discarded,
+    // since a file the page made itself can't be fetched again) until you choose Download anyway.
+    // Other files (documents, data, pictures, video) download as usual.
     const pageUrl = fromWc && !fromWc.isDestroyed() ? fromWc.getURL() : '';
     const fromWeb = /^(https?|file):/i.test(pageUrl);
     const name = item.getFilename();
-    if (fromWeb && !(fromWc.__driftDl && Date.now() - fromWc.__driftDl < 10000)) {
+    const viaDrift = fromWc && fromWc.__driftDl && Date.now() - fromWc.__driftDl < 10000;
+    let hold = false;
+    if (fromWeb && !viaDrift && (RISKY_EXT.test(name) || ARCHIVE_EXT.test(name))) {
       const clicked = fromWc.__act && Date.now() - fromWc.__act < 5000 && (fromWc.__dlLeft || 0) > 0;
-      if (!clicked) {
-        e.preventDefault();
-        console.log(`[downloads] blocked (no click) from ${hostOf(pageUrl)}: ${name}`);
-        const token = Date.now() + Math.random();
-        blockedDownloads.set(token, { url: item.getURL(), wcId: fromWc.id });
-        if (blockedDownloads.size > 20) blockedDownloads.delete(blockedDownloads.keys().next().value);
-        if (ui && !ui.webContents.isDestroyed()) ui.webContents.send('toast', { text: `Blocked a download ${hostOf(pageUrl)} started on its own: ${name}`, icon: 'shield', action: { dlAllow: token } });
-        return;
-      }
-      fromWc.__dlLeft--;
+      if (clicked) fromWc.__dlLeft--; else hold = true;
     }
-    // Program and script files can take over a PC: ask before keeping one.
-    const risky = RISKY_EXT.test(name) && !(fromWc && fromWc.__driftDl && Date.now() - fromWc.__driftDl < 10000 && fromWc.__driftDlOk);
+    // Program and script files can take over a PC: ask before keeping one (unless you just
+    // chose Download anyway for it).
+    const risky = RISKY_EXT.test(name) && !hold;
     const dir = app.getPath('downloads');
     const ext = path.extname(item.getFilename());
     const base = path.basename(item.getFilename(), ext);
     let target = path.join(dir, item.getFilename()); let n = 1;
     while (fs.existsSync(target)) target = path.join(dir, `${base} (${n++})${ext}`);
     item.setSavePath(target);
+    const register = () => {
+      const d = { id: Date.now() + Math.random(), name: path.basename(target), path: target,
+        received: 0, total: item.getTotalBytes(), state: 'progressing', seen: false, wid: dctx ? dctx.id : 0, item };
+      downloads.unshift(d);
+      if (downloads.length > 30) downloads.pop();
+      let lastPush = 0;
+      item.on('updated', (_ev, state) => {
+        d.received = item.getReceivedBytes(); d.total = item.getTotalBytes(); d.state = state === 'interrupted' ? 'interrupted' : 'progressing';
+        const now = Date.now(); if (now - lastPush > 250) { lastPush = now; push(); }   // progress updates at most 4×/s
+      });
+      item.once('done', (_ev, state) => {
+        d.state = state; d.received = item.getReceivedBytes(); delete d.item; push();
+        const c = windows.includes(dctx) ? dctx : (lastFocused || windows[0]);
+        if (c && c.ui && !c.ui.webContents.isDestroyed()) c.ui.webContents.send('download-done', { id: d.id, name: d.name, state });
+      });
+      push();
+    };
+    if (hold) {
+      item.pause();
+      console.log(`[downloads] held (no click) from ${hostOf(pageUrl)}: ${name}`);
+      const token = Date.now() + Math.random();
+      const expire = setTimeout(() => { if (blockedDownloads.delete(token)) { try { item.cancel(); } catch {} } }, 180000);
+      blockedDownloads.set(token, { item, register, expire });
+      if (ui && !ui.webContents.isDestroyed()) ui.webContents.send('toast', { text: `Held a download ${hostOf(pageUrl)} started on its own: ${name}`, icon: 'shield', action: { dlAllow: token }, ms: 12000 });
+      return;
+    }
     if (risky) {
       item.pause();
       const host = hostOf(pageUrl) || hostOf(item.getURL()) || 'a site';
@@ -2757,21 +2782,7 @@ function setupDownloads(ses) {
         .then(r => { if (r.response === 1) { try { item.resume(); } catch {} } else { try { item.cancel(); } catch {} } })
         .catch(() => { try { item.cancel(); } catch {} });
     }
-    const d = { id: Date.now() + Math.random(), name: path.basename(target), path: target,
-      received: 0, total: item.getTotalBytes(), state: 'progressing', seen: false, wid: dctx ? dctx.id : 0, item };
-    downloads.unshift(d);
-    if (downloads.length > 30) downloads.pop();
-    let lastPush = 0;
-    item.on('updated', (_ev, state) => {
-      d.received = item.getReceivedBytes(); d.total = item.getTotalBytes(); d.state = state === 'interrupted' ? 'interrupted' : 'progressing';
-      const now = Date.now(); if (now - lastPush > 250) { lastPush = now; push(); }   // progress updates at most 4×/s
-    });
-    item.once('done', (_ev, state) => {
-      d.state = state; d.received = item.getReceivedBytes(); delete d.item; push();
-      const c = windows.includes(dctx) ? dctx : (lastFocused || windows[0]);
-      if (c && c.ui && !c.ui.webContents.isDestroyed()) c.ui.webContents.send('download-done', { id: d.id, name: d.name, state });
-    });
-    push();
+    register();
   });
 }
 
@@ -3631,10 +3642,9 @@ function setupIPC() {
   // "Download anyway" on a download blocked for starting without a click.
   on('dl-allow', (token) => {
     const b = blockedDownloads.get(token); if (!b) return;
-    blockedDownloads.delete(token);
-    const w = webContents.fromId(b.wcId); if (!w || w.isDestroyed()) return;
-    w.__driftDl = Date.now(); w.__driftDlOk = false;
-    w.downloadURL(b.url);
+    blockedDownloads.delete(token); clearTimeout(b.expire);
+    b.register();
+    try { b.item.resume(); } catch {}
   });
   on('remove-allow', (host) => { settings.shieldsAllow = settings.shieldsAllow.filter(h => h !== host); saveSettings(); push(); });
   on('clear-data', async () => {
