@@ -3777,6 +3777,17 @@ function setupIPC() {
       }
     },
     addPermissions: (ses) => setupPermissions(ses),
+    addExtSupport: (ses) => { new ElectronChromeExtensions({ session: ses }); ElectronChromeExtensions.handleCRXProtocol(ses); },
+    addWebStore: (ses) => installChromeWebStore({ session: ses, beforeInstall: async () => ({ action: 'deny' }) }),
+    addCerts: (ses) => setupCertificates(ses),
+    addAll: async (ses) => {
+      ses.setSpellCheckerLanguages(['en-US']);
+      setupPermissions(ses); setupCertificates(ses);
+      new ElectronChromeExtensions({ session: ses }); ElectronChromeExtensions.handleCRXProtocol(ses);
+      await installChromeWebStore({ session: ses, beforeInstall: async () => ({ action: 'deny' }) }).catch(() => {});
+      ses.webRequest.onBeforeSendHeaders(addHintHeaders);
+      await (ses.extensions || ses).loadExtension(hintsPath(), { allowFileAccess: false }).catch(() => {});
+    },
     addHeaders: (ses) => ses.webRequest.onBeforeSendHeaders(addHintHeaders),
     addUbo: async (ses) => {
       const ext = await (ses.extensions || ses).loadExtension(await ensureUboDir(), { allowFileAccess: true });

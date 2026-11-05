@@ -29,7 +29,8 @@ const verdict = (text) => /IntegrityCheckFailed|failed integrity/i.test(text) ? 
 
 // One test: a visible window (hidden pages behave differently) on a fresh, signed-out session.
 async function probeIn(opts = {}) {
-  const ses = opts.session || session.fromPartition('twcheck-' + Date.now() + Math.random());
+  // Saved-to-disk ("persist:") test profiles are needed for anything with extensions; emptied after.
+  const ses = opts.session || session.fromPartition((opts.persist ? 'persist:' : '') + 'twcheck-' + Date.now() + Math.floor(Math.random() * 1e6));
   if (opts.ua) ses.setUserAgent(opts.ua);
   if (opts.preload) ses.registerPreloadScript({ id: 'drift-page', type: 'frame', filePath: opts.preload });
   if (opts.setup) { try { await opts.setup(ses); } catch (e) { return 'ERROR: setting up the test failed: ' + (e && e.message || e); } }
@@ -44,6 +45,7 @@ async function probeIn(opts = {}) {
     return 'ERROR: ' + (e && e.message || e);
   } finally {
     if (!w.isDestroyed()) w.destroy();
+    if (opts.persist) ses.clearStorageData().catch(() => {});
   }
 }
 
@@ -88,17 +90,20 @@ async function run(ctx) {
   try {
     const go = await dialog.showMessageBox(ctx.parent, { type: 'info', buttons: ['Start', 'Cancel'], defaultId: 0, cancelId: 1, noLink: true,
       title: 'Test Twitch', message: 'Find out what Twitch objects to',
-      detail: 'Drift opens Twitch in a few test windows, one after another (about 3 minutes). The test asks Twitch without your sign-in, so nothing happens to your account. Leave them open until the results appear.' });
+      detail: 'Drift opens Twitch in a few test windows, one after another (about 4 minutes). The test asks Twitch without your sign-in, so nothing happens to your account. Leave them open until the results appear.' });
     if (go.response !== 0) return;
     // Fresh profiles with one part of your everyday profile added each: the one that fails is it.
     const fresh = (setup) => () => probeIn({ ua: ctx.ua, preload: ctx.preload, prepare: ctx.applyIdentity, setup });
+    const saved = (setup) => () => probeIn({ ua: ctx.ua, preload: ctx.preload, prepare: ctx.applyIdentity, setup, persist: true });
     const tests = [
       ['Drift as you use it', () => probeIn({ session: session.defaultSession, prepare: ctx.applyIdentity })],
       ['Drift, fresh profile', fresh()],
-      ['Fresh + your Twitch cookies', fresh(ctx.copyCookies)],
-      ['Fresh + Drift\'s site permission answers', fresh(ctx.addPermissions)],
-      ['Fresh + Drift\'s request headers', fresh(ctx.addHeaders)],
-      ['Fresh + uBlock Origin (standard lists)', fresh(ctx.addUbo)],
+      ['Fresh profile saved to disk', saved()],
+      ['Saved + extension support', saved(ctx.addExtSupport)],
+      ['Saved + Chrome Web Store support', saved(ctx.addWebStore)],
+      ['Saved + certificate viewer', saved(ctx.addCerts)],
+      ['Saved + uBlock Origin', saved(ctx.addUbo)],
+      ['Saved + all of the above and Drift\'s other profile settings', saved(ctx.addAll)],
     ];
     const lines = [`Drift ${app.getVersion()} (engine ${process.versions.chrome}, ${process.platform}) Twitch check`];
     for (const [name, fn] of tests) lines.push(`${name}: ${await fn()}`);

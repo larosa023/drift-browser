@@ -1,6 +1,9 @@
 // What's new in each release, shown on the What's new page (drift://whatsnew) after an update.
 // Newest first. Kinds: new, faster, fixed, changed. Written for people using Drift.
 module.exports = [
+  { version: '1.22.8', date: '2026-11-05', items: [
+    ['changed', 'Test Twitch also checks a saved test profile with Drift\'s extension support, Chrome Web Store support, certificate viewer and uBlock Origin added one at a time.'],
+  ] },
   { version: '1.22.7', date: '2026-11-05', items: [
     ['changed', 'Test Twitch now checks each part of your everyday profile on its own (your Twitch cookies, Drift\'s site permission answers, its request headers, uBlock Origin), to find the one Twitch objects to.'],
   ] },
