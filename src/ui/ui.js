@@ -890,6 +890,7 @@ function renderSettings() {
       <div class="row"><span class="lbl">Export bookmarks<small>As a bookmarks.html file</small></span><button class="mini" id="bm-export">Export</button></div>
     </div>
     <div class="group"><h4>Privacy</h4>
+      <div class="row"><span class="lbl">History<small>Everything you've searched for and the sites you've visited, by day (Ctrl+H)</small></span><button class="mini" id="open-history">Open</button></div>
       <div class="row" style="display:block"><span class="lbl">No-download sites<small>You can still use these sites, but nothing downloads while you're on them or from them, even if you click a download button. Subdomains included. One per line, like site.com</small></span>
         <textarea id="bs-text" spellcheck="false" rows="4" placeholder="site.com" style="width:100%;box-sizing:border-box;margin-top:8px;resize:vertical;background:var(--field, rgba(127,127,127,.1));color:inherit;border:1px solid var(--line, rgba(127,127,127,.25));border-radius:8px;padding:8px;font:13px ui-monospace,Consolas,monospace">${esc((s.blockedSites || []).join('\n'))}</textarea>
         <div style="margin-top:6px"><button class="mini" id="bs-save">Save</button></div></div>
@@ -898,6 +899,7 @@ function renderSettings() {
     </div>
     <div class="group"><h4>Keyboard shortcuts</h4><div class="kbd-list">
       <div><span>Command bar / new tab</span><span><kbd>Ctrl</kbd><kbd>T</kbd></span></div>
+      <div><span>History</span><span><kbd>Ctrl</kbd><kbd>H</kbd></span></div>
       <div><span>Edit address</span><span><kbd>Ctrl</kbd><kbd>L</kbd></span></div>
       <div><span>Close tab</span><span><kbd>Ctrl</kbd><kbd>W</kbd></span></div>
       <div><span>Reopen closed tab</span><span><kbd>Ctrl</kbd><kbd>Shift</kbd><kbd>T</kbd></span></div>
@@ -941,6 +943,7 @@ $('#settings-body').addEventListener('click', (e) => {
   if (e.target.id === 'bs-save') send('blocked-sites', $('#bs-text').value);
   if (e.target.id === 'upd-check') send('update-check');
   if (e.target.id === 'whats-new') { send('whats-new'); togglePanel(null); }
+  if (e.target.id === 'open-history') { send('open-history'); togglePanel(null); }
   if (e.target.id === 'default-browser') send('default-browser');
   if (e.target.id === 'upd-install') send('update-install');
   if (e.target.closest('[data-uboopts]')) send('ext-options', S.uboId);

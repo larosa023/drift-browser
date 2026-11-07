@@ -319,6 +319,7 @@ function chromeUA() {
 
 let settings;
 let history;            // Map url -> {url,title,visits,last}
+let searches = [];       // search history, newest first: [{ q, engine, url, t }] (drift://history)
 // Per-window state. Drift can have several windows; the variables below always describe the
 // window being handled right now (the "current" window). Every entry point — a message from a
 // window's sidebar UI, an event from one of its tabs, a window event — switches to the right
@@ -394,6 +395,7 @@ const saveHistory = debounceSave(() => {
   const arr = [...history.values()].sort((a, b) => b.last - a.last).slice(0, 4000);
   writeJSON('history.json', arr);
 }, 2000);
+const saveSearches = debounceSave(() => writeJSON('searches.json', searches.slice(0, 5000)), 2000);
 const saveEssentials = debounceSave(() => writeJSON('essentials.json', essentials), 300);
 const saveSession = debounceSave(() => { if (windows.length) writeJSON('session.json', sessionSnapshot()); }, 800);
 
@@ -1823,6 +1825,7 @@ function handleShortcut(input) {
       case 'p': if (wc) wc.print(); return true;
       case 'o': openFileDialog(); return true;
       case 'd': toggleBookmarkActive(); return true;
+      case 'h': openHistory(); return true;
       case 'Tab': cycle(1); return true;
       case 'PageDown': cycle(1); return true;
       case 'PageUp': cycle(-1); return true;
@@ -2003,8 +2006,57 @@ function toggleMute(id) {
 // History & suggestions
 // ---------------------------------------------------------------------------
 
+// Searches you make, on any of these sites (address bar searches included): recognised from the
+// results page's address, so searches on Google, YouTube, Amazon and the rest all count.
+const SEARCH_SITES = [
+  [/(^|\.)google\.[a-z.]+$/, /^\/search$/, 'q', 'Google'],
+  [/(^|\.)bing\.com$/, /^\/search$/, 'q', 'Bing'],
+  [/(^|\.)duckduckgo\.com$/, /^\/$/, 'q', 'DuckDuckGo'],
+  [/^search\.brave\.com$/, /^\/search$/, 'q', 'Brave Search'],
+  [/(^|\.)startpage\.com$/, /^\/(do\/|sp\/)?search$/, 'q', 'Startpage'],
+  [/(^|\.)search\.yahoo\.com$/, /^\/search/, 'p', 'Yahoo'],
+  [/(^|\.)ecosia\.org$/, /^\/search$/, 'q', 'Ecosia'],
+  [/(^|\.)youtube\.com$/, /^\/results$/, 'search_query', 'YouTube'],
+  [/(^|\.)amazon\.[a-z.]+$/, /^\/s$/, 'k', 'Amazon'],
+  [/(^|\.)reddit\.com$/, /^\/search\/?$/, 'q', 'Reddit'],
+  [/(^|\.)twitch\.tv$/, /^\/search$/, 'term', 'Twitch'],
+  [/^(x|twitter)\.com$/, /^\/search$/, 'q', 'X'],
+  [/(^|\.)wikipedia\.org$/, /^\/w\/index\.php$/, 'search', 'Wikipedia'],
+  [/(^|\.)github\.com$/, /^\/search$/, 'q', 'GitHub'],
+  [/(^|\.)ebay\.com$/, /^\/sch\//, '_nkw', 'eBay'],
+  [/(^|\.)tiktok\.com$/, /^\/search/, 'q', 'TikTok'],
+  [/(^|\.)perplexity\.ai$/, /^\/search/, 'q', 'Perplexity'],
+];
+function parseSearch(url) {
+  let u; try { u = new URL(url); } catch { return null; }
+  const host = u.hostname.toLowerCase().replace(/^www\./, '');
+  for (const [h, p, key, engine] of SEARCH_SITES) {
+    if (!h.test(host) || !p.test(u.pathname)) continue;
+    const q = (u.searchParams.get(key) || '').trim();
+    return q ? { q: q.slice(0, 300), engine } : null;
+  }
+  return null;
+}
+function addSearch(url) {
+  const s0 = parseSearch(url); if (!s0) return;
+  const last = searches[0];
+  // The same search again within a few minutes (paging through results, coming back): once.
+  if (last && last.q.toLowerCase() === s0.q.toLowerCase() && last.engine === s0.engine && Date.now() - last.t < 10 * 60e3) { last.t = Date.now(); last.url = url; }
+  else searches.unshift({ q: s0.q, engine: s0.engine, url, t: Date.now() });
+  if (searches.length > 5000) searches.length = 5000;
+  saveSearches();
+}
+
+// History page: switch to it if it's open in this window, else open it (fresh) in a new tab.
+function openHistory() {
+  const open = tabs.find(t => inWs(t) && (t.url || '').startsWith('drift://history'));
+  if (open) { activate(open.id); if (open.view) open.view.webContents.reload(); return; }
+  createTab('drift://history/');
+}
+
 function addHistory(url, title) {
   if (isInternal(url) || !/^https?:/.test(url)) return;
+  addSearch(url);
   const h = history.get(url) || { url, title: '', visits: 0, last: 0 };
   h.visits++; h.last = Date.now(); if (title) h.title = title;
   history.set(url, h); histVer++;
@@ -2827,6 +2879,27 @@ function setupProtocol() {
       }
       return new Response(null, { status: 204 });
     }
+    // History (Ctrl+H): your searches and the sites you visited. Changes need the page's own
+    // header, so other pages can't send them.
+    if (u.hostname === 'history' && u.pathname === '/delete') {
+      if (req.method !== 'POST' || req.headers.get('x-drift-history') !== '1') return new Response('', { status: 403 });
+      let b = {}; try { b = JSON.parse(await req.text()); } catch {}
+      if (b.all === 'searches') searches = [];
+      if (b.all === 'sites') { history.clear(); }
+      if (Array.isArray(b.searches)) { const del = new Set(b.searches.map(Number)); searches = searches.filter(x => !del.has(x.t)); }
+      if (Array.isArray(b.sites)) for (const url of b.sites) history.delete(String(url));
+      if (Array.isArray(b.hosts)) { const hs = new Set(b.hosts.map(String)); for (const k of [...history.keys()]) if (hs.has(hostOf(k))) history.delete(k); }
+      histVer++; topCache = null; saveSearches(); saveHistory();
+      return new Response(null, { status: 204 });
+    }
+    if (u.hostname === 'history') {
+      let html = await fs.promises.readFile(path.join(PAGES_DIR, 'history.html'), 'utf8');
+      const sites = [...history.values()].sort((a, b) => b.last - a.last).slice(0, 4000).map(h => ({ url: h.url, title: h.title || '', last: h.last, visits: h.visits }));
+      const data = { searches, sites, accent: settings.accent, dark: isDark(), tab: u.searchParams.get('tab') || 'searches' };
+      const json = JSON.stringify(data).replace(/</g, '\\u003c');
+      html = html.replace('/*__DATA__*/null', () => json);   // (a function: "$&" in a search mustn't be a pattern)
+      return new Response(html, { headers: { 'content-type': 'text/html; charset=utf-8', 'cache-control': 'no-store' } });
+    }
     if (u.hostname === 'whatsnew') {
       let html = await fs.promises.readFile(path.join(PAGES_DIR, 'whatsnew.html'), 'utf8');
       const data = { entries: CHANGELOG, current: app.getVersion(), from: (u.searchParams.get('from') || '').replace(/[^\d.]/g, ''), accent: settings.accent, dark: isDark() };
@@ -3605,6 +3678,7 @@ function setupIPC() {
   });
   on('tab-drag-start', (id) => perfNote(`tab drag start: tab ${id}`));
   on('whats-new', () => createTab('drift://whatsnew/'));
+  on('open-history', () => openHistory());
   on('open-files', (paths) => { if (Array.isArray(paths)) openFiles(paths.slice(0, 20)); });
   on('default-browser', () => openDefaultAppsSettings());
   on('new-window', () => newWindow());
@@ -3668,6 +3742,7 @@ function setupIPC() {
       message: 'Clear browsing data?', detail: 'This removes history, cookies, site data, cache and saved site permissions. You will be signed out of websites.' });
     if (r.response !== 0) return;
     history.clear(); histVer++; writeJSON('history.json', []);
+    searches = []; writeJSON('searches.json', []);
     settings.permissions = {}; saveSettings();
     await session.defaultSession.clearStorageData();
     await session.defaultSession.clearCache();
@@ -4137,6 +4212,7 @@ if (!app.requestSingleInstanceLock(launchRequest)) {
     if (settings.lastVersion !== app.getVersion()) { settings.lastVersion = app.getVersion(); writeJSON('settings.json', settings); }
     nativeTheme.themeSource = settings.theme;
     history = new Map(readJSON('history.json', []).map(h => [h.url, h]));
+    searches = readJSON('searches.json', []).filter(x => x && typeof x.q === 'string');
     bookmarks = new Bookmarks(() => readJSON('bookmarks.json', null), (d) => writeJSON('bookmarks.json', d));
     passwords = new Passwords(file('passwords.json'));
     faviconStore = readJSON('favicons.json', {});

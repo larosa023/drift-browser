@@ -1,0 +1,175 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>History</title>
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; connect-src drift:; style-src 'unsafe-inline'; script-src 'unsafe-inline'">
+<style>
+  :root { --accent: #ff6a3d; }
+  body.dark { --bg: #1b1b20; --fg: #ececf1; --muted: #8d8d99; --card: #222228; --hover: rgba(255,255,255,.045); --line: rgba(255,255,255,.07); --chip: rgba(255,255,255,.06); --field: rgba(255,255,255,.05); }
+  body.light { --bg: #fafafb; --fg: #1c1c22; --muted: #6b6b76; --card: #ffffff; --hover: rgba(0,0,0,.04); --line: rgba(0,0,0,.07); --chip: rgba(0,0,0,.05); --field: rgba(0,0,0,.04); }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; }
+  body { font: 14px/1.5 "Segoe UI Variable Text", "Segoe UI", system-ui, sans-serif; color: var(--fg); background: var(--bg); min-height: 100vh; }
+  .wrap { width: min(820px, 92vw); margin: 0 auto; padding: 6vh 0 80px; }
+  header { display: flex; align-items: center; gap: 16px; flex-wrap: wrap; margin-bottom: 18px; }
+  h1 { font-size: 28px; font-weight: 600; letter-spacing: -.4px; margin: 0; flex: 1; }
+  .tabs { display: flex; gap: 4px; background: var(--chip); padding: 3px; border-radius: 10px; }
+  .tabs button { font: inherit; font-weight: 600; font-size: 13px; border: 0; background: none; color: var(--muted); padding: 6px 14px; border-radius: 8px; cursor: pointer; }
+  .tabs button.on { background: var(--card); color: var(--fg); box-shadow: 0 1px 3px rgba(0,0,0,.15); }
+  .tabs .n { font-weight: 400; opacity: .7; margin-left: 4px; }
+  .bar { display: flex; gap: 10px; align-items: center; margin-bottom: 12px; flex-wrap: wrap; }
+  #q { flex: 1; min-width: 200px; font: inherit; color: inherit; background: var(--field); border: 1px solid var(--line); border-radius: 10px; padding: 9px 12px; outline: none; }
+  #q:focus { border-color: color-mix(in srgb, var(--accent) 60%, transparent); }
+  .ghost { font: inherit; font-size: 13px; border: 1px solid var(--line); background: none; color: var(--muted); border-radius: 9px; padding: 8px 12px; cursor: pointer; }
+  .ghost:hover { color: var(--fg); background: var(--hover); }
+  .ghost.danger.armed { color: #fff; background: #d64545; border-color: #d64545; }
+  .chips { display: flex; gap: 6px; flex-wrap: wrap; margin-bottom: 14px; }
+  .chips button { font: inherit; font-size: 12.5px; border: 0; border-radius: 999px; padding: 4px 11px; cursor: pointer; background: var(--chip); color: var(--muted); }
+  .chips button.on { background: color-mix(in srgb, var(--accent) 20%, transparent); color: var(--accent); font-weight: 600; }
+  .day { margin-top: 22px; }
+  .day h2 { font-size: 12.5px; font-weight: 600; letter-spacing: .04em; text-transform: uppercase; color: var(--muted); margin: 0 0 6px 6px; }
+  .card { background: var(--card); border-radius: 14px; box-shadow: 0 0 0 1px var(--line); padding: 4px; }
+  .row { display: grid; grid-template-columns: 58px 26px 1fr auto 28px; align-items: center; gap: 10px; padding: 6px 8px; border-radius: 10px; color: inherit; text-decoration: none; }
+  .row:hover { background: var(--hover); }
+  .time { color: var(--muted); font-size: 12px; font-variant-numeric: tabular-nums; }
+  .badge { width: 26px; height: 26px; border-radius: 8px; display: grid; place-items: center; font-size: 12px; font-weight: 700; color: #fff; }
+  .main { min-width: 0; }
+  .main b { font-weight: 600; display: block; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .main small { display: block; color: var(--muted); font-size: 12px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .meta { color: var(--muted); font-size: 12px; white-space: nowrap; }
+  .x { width: 26px; height: 26px; border: 0; border-radius: 7px; background: none; color: var(--muted); cursor: pointer; font-size: 16px; line-height: 1; opacity: 0; }
+  .row:hover .x, .x:focus-visible { opacity: 1; }
+  .x:hover { background: var(--chip); color: var(--fg); }
+  .empty { color: var(--muted); text-align: center; padding: 60px 0; }
+  .more { display: block; margin: 18px auto 0; }
+  mark { background: color-mix(in srgb, var(--accent) 30%, transparent); color: inherit; border-radius: 3px; }
+  @media (max-width: 560px) { .row { grid-template-columns: 26px 1fr 28px; } .time, .meta { display: none; } }
+</style>
+</head>
+<body class="dark">
+<div class="wrap">
+  <header>
+    <h1>History</h1>
+    <div class="tabs" id="tabs">
+      <button data-tab="searches">Searches<span class="n" id="n-searches"></span></button>
+      <button data-tab="sites">Sites<span class="n" id="n-sites"></span></button>
+    </div>
+  </header>
+  <div class="bar">
+    <input id="q" type="search" placeholder="Search your history" autocomplete="off" spellcheck="false">
+    <button class="ghost danger" id="clear"></button>
+  </div>
+  <div class="chips" id="chips"></div>
+  <div id="list"></div>
+</div>
+<script>
+  const D = /*__DATA__*/null || { searches: [], sites: [], accent: '#ff6a3d', dark: true, tab: 'searches' };
+  document.body.className = D.dark ? 'dark' : 'light';
+  document.documentElement.style.setProperty('--accent', D.accent || '#ff6a3d');
+  const $ = (s) => document.querySelector(s);
+  const esc = (s) => String(s ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+  const hostOf = (u) => { try { return new URL(u).hostname.replace(/^www\./, ''); } catch { return u; } };
+  D.searches.sort((a, b) => b.t - a.t); D.sites.sort((a, b) => b.last - a.last);
+  let tab = D.tab === 'sites' ? 'sites' : 'searches', filter = '', engine = '', limit = 300;
+
+  const ENGINE_COLORS = { Google: '#4285f4', YouTube: '#ff0033', Bing: '#00809d', DuckDuckGo: '#de5833', 'Brave Search': '#fb542b', Amazon: '#ff9900', Reddit: '#ff4500', Twitch: '#9146ff', X: '#555', Wikipedia: '#777', GitHub: '#6e40c9', eBay: '#e53238', TikTok: '#111', Perplexity: '#20808d', Startpage: '#6573ff', Yahoo: '#6001d2', Ecosia: '#36acb8' };
+  const hue = (s) => { let h = 0; for (const c of s) h = (h * 31 + c.charCodeAt(0)) % 360; return `hsl(${h} 45% 45%)`; };
+
+  function dayLabel(t) {
+    const d = new Date(t), now = new Date();
+    const start = (x) => new Date(x.getFullYear(), x.getMonth(), x.getDate()).getTime();
+    const diff = Math.round((start(now) - start(d)) / 864e5);
+    if (diff === 0) return 'Today';
+    if (diff === 1) return 'Yesterday';
+    if (diff < 7) return d.toLocaleDateString(undefined, { weekday: 'long' });
+    return d.toLocaleDateString(undefined, { weekday: 'long', month: 'long', day: 'numeric', ...(d.getFullYear() !== now.getFullYear() ? { year: 'numeric' } : {}) });
+  }
+  const timeOf = (t) => new Date(t).toLocaleTimeString(undefined, { hour: 'numeric', minute: '2-digit' });
+  function hl(text) {
+    const s = esc(text); if (!filter) return s;
+    const i = String(text).toLowerCase().indexOf(filter);
+    if (i < 0) return s;
+    return esc(text.slice(0, i)) + '<mark>' + esc(text.slice(i, i + filter.length)) + '</mark>' + esc(text.slice(i + filter.length));
+  }
+
+  function items() {
+    if (tab === 'searches') return D.searches.filter(s => (!engine || s.engine === engine) && (!filter || s.q.toLowerCase().includes(filter)));
+    return D.sites.filter(s => (!engine || hostOf(s.url) === engine) && (!filter || (s.title || '').toLowerCase().includes(filter) || s.url.toLowerCase().includes(filter)));
+  }
+
+  function renderChips() {
+    // Searches: by site searched on. Sites: your most visited sites.
+    const counts = new Map();
+    if (tab === 'searches') for (const s of D.searches) counts.set(s.engine, (counts.get(s.engine) || 0) + 1);
+    else for (const s of D.sites) { const h = hostOf(s.url); counts.set(h, (counts.get(h) || 0) + 1); }
+    const top = [...counts.entries()].sort((a, b) => b[1] - a[1]).slice(0, tab === 'searches' ? 12 : 10);
+    $('#chips').innerHTML = top.length < 2 ? '' : [`<button data-eng="" class="${engine ? '' : 'on'}">All</button>`,
+      ...top.map(([k, n]) => `<button data-eng="${esc(k)}" class="${engine === k ? 'on' : ''}">${esc(k)} <span style="opacity:.6">${n}</span></button>`)].join('');
+  }
+
+  function render() {
+    for (const b of document.querySelectorAll('#tabs button')) b.classList.toggle('on', b.dataset.tab === tab);
+    $('#n-searches').textContent = D.searches.length ? ' ' + D.searches.length.toLocaleString() : '';
+    $('#n-sites').textContent = D.sites.length ? ' ' + D.sites.length.toLocaleString() : '';
+    const clear = $('#clear'); clear.classList.remove('armed');
+    clear.textContent = tab === 'searches' ? 'Clear all searches' : 'Clear all sites';
+    clear.hidden = !(tab === 'searches' ? D.searches.length : D.sites.length);
+    $('#q').placeholder = tab === 'searches' ? 'Find a search' : 'Find a site or page';
+    renderChips();
+    const list = items();
+    if (!list.length) {
+      $('#list').innerHTML = `<div class="empty">${filter || engine ? 'Nothing matches.' : tab === 'searches' ? 'Searches you make (in the address bar, on Google, YouTube, Amazon and more) show up here.' : 'Sites you visit show up here.'}</div>`;
+      return;
+    }
+    let html = '', curDay = '';
+    for (const it of list.slice(0, limit)) {
+      const t = tab === 'searches' ? it.t : it.last;
+      const day = dayLabel(t);
+      if (day !== curDay) { html += (curDay ? '</div></div>' : '') + `<div class="day"><h2>${esc(day)}</h2><div class="card">`; curDay = day; }
+      if (tab === 'searches') {
+        html += `<a class="row" href="${esc(it.url)}" title="Search again on ${esc(it.engine)}">
+          <span class="time">${timeOf(t)}</span>
+          <span class="badge" style="background:${ENGINE_COLORS[it.engine] || hue(it.engine)}">${esc(it.engine[0])}</span>
+          <span class="main"><b>${hl(it.q)}</b></span>
+          <span class="meta">${esc(it.engine)}</span>
+          <button class="x" data-del-search="${it.t}" title="Remove">×</button></a>`;
+      } else {
+        const host = hostOf(it.url);
+        html += `<a class="row" href="${esc(it.url)}" title="${esc(it.url)}">
+          <span class="time">${timeOf(t)}</span>
+          <span class="badge" style="background:${hue(host)}">${esc((host[0] || '?').toUpperCase())}</span>
+          <span class="main"><b>${hl(it.title || host)}</b><small>${hl(it.url.replace(/^https?:\/\/(www\.)?/, ''))}</small></span>
+          <span class="meta">${it.visits > 1 ? it.visits + ' visits' : ''}</span>
+          <button class="x" data-del-site="${esc(it.url)}" title="Remove">×</button></a>`;
+      }
+    }
+    html += '</div></div>';
+    if (list.length > limit) html += `<button class="ghost more" id="more">Show more (${(list.length - limit).toLocaleString()} left)</button>`;
+    $('#list').innerHTML = html;
+  }
+
+  async function send(body) {
+    try { await fetch('drift://history/delete', { method: 'POST', headers: { 'x-drift-history': '1' }, body: JSON.stringify(body) }); } catch {}
+  }
+
+  document.addEventListener('click', (e) => {
+    const b = e.target.closest('button'); if (!b) return;
+    if (b.dataset.tab) { tab = b.dataset.tab; engine = ''; limit = 300; render(); return; }
+    if ('eng' in b.dataset) { engine = b.dataset.eng; limit = 300; render(); return; }
+    if (b.id === 'more') { limit += 500; render(); return; }
+    if (b.dataset.delSearch) { e.preventDefault(); const t = Number(b.dataset.delSearch); D.searches = D.searches.filter(s => s.t !== t); send({ searches: [t] }); render(); return; }
+    if (b.dataset.delSite) { e.preventDefault(); const u = b.dataset.delSite; D.sites = D.sites.filter(s => s.url !== u); send({ sites: [u] }); render(); return; }
+    if (b.id === 'clear') {
+      // Two clicks: the first arms it.
+      if (!b.classList.contains('armed')) { b.classList.add('armed'); b.textContent = 'Click again to clear'; setTimeout(() => { if (b.classList.contains('armed')) render(); }, 4000); return; }
+      if (tab === 'searches') { D.searches = []; send({ all: 'searches' }); } else { D.sites = []; send({ all: 'sites' }); }
+      engine = ''; render();
+    }
+  });
+  $('#q').addEventListener('input', (e) => { filter = e.target.value.trim().toLowerCase(); limit = 300; render(); });
+  document.addEventListener('keydown', (e) => { if (e.key === '/' && document.activeElement !== $('#q')) { e.preventDefault(); $('#q').focus(); } });
+  render();
+</script>
+</body>
+</html>
