@@ -1,6 +1,9 @@
 // What's new in each release, shown on the What's new page (drift://whatsnew) after an update.
 // Newest first. Kinds: new, faster, fixed, changed. Written for people using Drift.
 module.exports = [
+  { version: '1.23.1', date: '2026-11-07', items: [
+    ['changed', 'Blocked sites is now No-download sites (Settings → Privacy): you can still use the sites on your list, but nothing downloads while you\'re on them or from them, even if you click a download button. A notice says when a download was stopped.'],
+  ] },
   { version: '1.23.0', date: '2026-11-07', items: [
     ['new', 'Blocked sites (Settings → Privacy): list sites you never want anything from. Their pages are blocked right away; after a restart, Drift won\'t even look them up, so no script, ad or file from them or their subdomains can load, download or land in the cache.'],
   ] },
