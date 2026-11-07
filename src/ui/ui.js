@@ -820,6 +820,7 @@ let rangeHeld = false;
 document.addEventListener('pointerup', () => { rangeHeld = false; }, true);
 function renderSettings() {
   if (rangeHeld) return;   // don't redraw under a slider that's being dragged
+  if (document.activeElement && document.activeElement.id === 'bs-text') return;   // or under typing
   const s = S.settings;
   const sw = (key, on) => `<button class="switch ${on ? 'on' : ''}" data-set="${key}" data-val="${!on}"></button>`;
   $('#settings-body').innerHTML = `
@@ -889,6 +890,9 @@ function renderSettings() {
       <div class="row"><span class="lbl">Export bookmarks<small>As a bookmarks.html file</small></span><button class="mini" id="bm-export">Export</button></div>
     </div>
     <div class="group"><h4>Privacy</h4>
+      <div class="row" style="display:block"><span class="lbl">Blocked sites<small>Nothing loads or downloads from these sites or their subdomains: no pages, scripts, ads or files. One per line, like badsite.com</small></span>
+        <textarea id="bs-text" spellcheck="false" rows="4" placeholder="badsite.com" style="width:100%;box-sizing:border-box;margin-top:8px;resize:vertical;background:var(--field, rgba(127,127,127,.1));color:inherit;border:1px solid var(--line, rgba(127,127,127,.25));border-radius:8px;padding:8px;font:13px ui-monospace,Consolas,monospace">${esc((s.blockedSites || []).join('\n'))}</textarea>
+        <div style="display:flex;gap:8px;align-items:center;margin-top:6px"><button class="mini" id="bs-save">Save</button>${(s.blockedSites || []).length ? '<button class="mini" id="bs-restart">Restart Drift</button><small style="color:var(--muted)">Pages and downloads are blocked now; everything else (scripts, ads, files a site pulls in) after a restart</small>' : ''}</div></div>
       <div class="row"><span class="lbl">Test Twitch<small>Finds out why Twitch won't let you follow or claim points: opens Twitch in a few signed-out test windows (about 2 minutes)</small></span><button class="mini" id="tw-check">Run test</button></div>
       <button class="btn danger" id="clear-data">Clear browsing data…</button>
     </div>
@@ -934,6 +938,8 @@ $('#settings-body').addEventListener('click', (e) => {
   const src = e.target.closest('[data-bmsrc]'); if (src) send('bm-import', src.dataset.bmsrc);
   if (e.target.id === 'clear-data') send('clear-data');
   if (e.target.id === 'tw-check') send('tw-check');
+  if (e.target.id === 'bs-save') send('blocked-sites', $('#bs-text').value);
+  if (e.target.id === 'bs-restart') send('relaunch');
   if (e.target.id === 'upd-check') send('update-check');
   if (e.target.id === 'whats-new') { send('whats-new'); togglePanel(null); }
   if (e.target.id === 'default-browser') send('default-browser');

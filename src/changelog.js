@@ -1,6 +1,9 @@
 // What's new in each release, shown on the What's new page (drift://whatsnew) after an update.
 // Newest first. Kinds: new, faster, fixed, changed. Written for people using Drift.
 module.exports = [
+  { version: '1.23.0', date: '2026-11-07', items: [
+    ['new', 'Blocked sites (Settings → Privacy): list sites you never want anything from. Their pages are blocked right away; after a restart, Drift won\'t even look them up, so no script, ad or file from them or their subdomains can load, download or land in the cache.'],
+  ] },
   { version: '1.22.10', date: '2026-11-06', items: [
     ['fixed', '"Sign in with Google" on sites like Cloudflare no longer drops you back at the login page. Drift now switches back to its normal identity before Google returns you to the site, so the site sees the same browser that started the sign-in.'],
   ] },
