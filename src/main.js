@@ -261,6 +261,22 @@ function guardUserAgent(wc) {
     setMode(wc, url);
     wc.loadURL(url).catch(() => {});
   });
+  // Google sending you back to the site (a redirect, after "Continue"): switch to the Chrome
+  // identity before that request goes out. Otherwise the site's sign-in callback and everything
+  // after it carry the engine identity, a different browser from the one that started the
+  // sign-in, and sites that check (Cloudflare's dashboard) start over at their login page.
+  // Restarting here is safe: the redirect hasn't been followed yet, so its one-time code is
+  // used once, and redirects back from Google are plain GETs. Google's own hops (youtube.com,
+  // google.com cookie setters) are left alone.
+  wc.on('will-redirect', (e) => {
+    if (!wc.__driftSignin || e.isMainFrame === false) return;
+    const url = e.url; if (!/^https?:/.test(url || '') || isSignin(url)) return;
+    let host = ''; try { host = new URL(url).hostname; } catch { return; }
+    if (/(^|\.)(google\.[a-z.]+|youtube\.com|googleusercontent\.com|gstatic\.com)$/i.test(host)) return;
+    e.preventDefault();
+    setMode(wc, url);
+    wc.loadURL(url).catch(() => {});
+  });
   // "Sign in with Google" popups: their first load happens before these hooks can act.
   wc.on('did-create-window', (child, details) => {
     const cwc = child.webContents;
