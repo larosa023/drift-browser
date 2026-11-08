@@ -110,3 +110,25 @@ for (const variant of ['cjs/index.js', 'esm/index.mjs']) {
   fs.writeFileSync(f, s);
   console.log(`patch-deps: patched electron-chrome-extensions ${variant}`);
 }
+
+// electron-chrome-extensions (main process): one "destroyed" listener was added to an
+// extension page per event it listens to (uBlock Origin listens to a dozen), which Node
+// reports as a possible memory leak. Watch each page once.
+for (const variant of ['cjs/index.js', 'esm/index.mjs']) {
+  const f = path.join(__dirname, '..', 'node_modules', 'electron-chrome-extensions', 'dist', ...variant.split('/'));
+  if (!fs.existsSync(f)) continue;
+  let s = fs.readFileSync(f, 'utf8');
+  const MARK3 = '/* drift: observe host once v1 */';
+  if (s.includes(MARK3)) continue;
+  const from = `  observeListenerHost(host) {
+    const hostId = getHostId(host);`;
+  if (!s.includes(from)) throw new Error(`patch-deps: observeListenerHost changed in ${variant}; update scripts/patch-deps.js`);
+  s = s.replace(from, `  observeListenerHost(host) {
+    ${MARK3}
+    this.__observed = this.__observed || new WeakSet();
+    if (this.__observed.has(host)) return;
+    this.__observed.add(host);
+    const hostId = getHostId(host);`);
+  fs.writeFileSync(f, s);
+  console.log(`patch-deps: patched electron-chrome-extensions ${variant} (listener hosts)`);
+}

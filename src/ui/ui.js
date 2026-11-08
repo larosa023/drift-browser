@@ -759,6 +759,8 @@ $('#p-input').addEventListener('keydown', (e) => {
   else if (e.key === 'Enter') {
     e.preventDefault();
     const q = $('#p-input').value.trim();
+    // Ctrl+Enter: "example" → www.example.com (like Chrome).
+    if (e.ctrlKey && /^[a-z0-9-]+$/i.test(q) && paletteMode !== 'ess') { send('navigate', `www.${q}.com`, paletteNewTab || e.altKey); return; }
     const it = paletteItems[paletteSel];
     if (!q && !it) { if (paletteNewTab) send('navigate', '', true); closePalette(); return; }
     if (!it && paletteMode === 'ess') { if (q) send('ess-add', q); paletteMode = null; }
@@ -827,7 +829,9 @@ function renderSettings() {
   if (document.activeElement && document.activeElement.id === 'bs-text') return;   // or under typing
   const s = S.settings;
   const sw = (key, on) => `<button class="switch ${on ? 'on' : ''}" data-set="${key}" data-val="${!on}"></button>`;
-  $('#settings-body').innerHTML = `
+  // Built as text and only redrawn when it changed: a redraw on every update (many a second
+  // while pages load) closed open drop-downs and lost hover.
+  setHTML($('#settings-body'), `
     <div class="group"><h4>Search</h4>
       <div class="row"><span class="lbl">Search engine</span>
         <select data-sel="searchEngine">${Object.entries(S.engines).map(([k, n]) => `<option value="${k}" ${k === s.searchEngine ? 'selected' : ''}>${n}</option>`).join('')}</select></div>
@@ -836,8 +840,8 @@ function renderSettings() {
     <div class="group"><h4>Appearance</h4>
       <div class="row"><span class="lbl">Theme</span><div class="seg">
         ${['system', 'dark', 'light'].map(t => `<button class="${s.theme === t ? 'on' : ''}" data-set="theme" data-val="${t}">${t[0].toUpperCase() + t.slice(1)}</button>`).join('')}</div></div>
-      <div class="row"><span class="lbl">New tabs open your homepage<small>The + button and Ctrl+T open a blank homepage tab instead of the command bar. Either way, Ctrl+Alt+T or right-clicking + opens one</small></span>${sw('homeNewTab', s.homeNewTab)}</div>
-      <div class="row"><span class="lbl">Compact mode<small>The page fills the window. Move the mouse to the left edge for the sidebar, or the top edge for the toolbar · Ctrl+Alt+C</small></span>${sw('compact', s.compact)}</div>
+      <div class="row"><span class="lbl">New tabs open your homepage<small>+ and Ctrl+T open the homepage instead of the command bar (Ctrl+Alt+T always does)</small></span>${sw('homeNewTab', s.homeNewTab)}</div>
+      <div class="row"><span class="lbl">Compact mode<small>The page fills the window; the sidebar and toolbar slide in at the edges · Ctrl+Alt+C</small></span>${sw('compact', s.compact)}</div>
       <div class="row"><span class="lbl">Top toolbar<small>Address bar, window buttons and a drag area at the top</small></span>${sw('titleBar', s.titleBar)}</div>
       <div class="row"><span class="lbl">Bookmarks bar<small>${s.titleBar ? 'Under the address bar' : 'Needs the top toolbar'} · Ctrl+Shift+B</small></span>${sw('bookmarksBar', s.bookmarksBar)}</div>
       <div class="row"><span class="lbl">Icon-only sidebar<small>Or drag the sidebar's edge all the way in</small></span>${sw('sidebarRail', s.sidebarRail)}</div>
@@ -899,7 +903,7 @@ function renderSettings() {
       <div class="row" style="display:block"><span class="lbl">No-download sites<small>You can still use these sites, but nothing downloads while you're on them or from them, even if you click a download button. Subdomains included. One per line, like site.com</small></span>
         <textarea id="bs-text" spellcheck="false" rows="4" placeholder="site.com" style="width:100%;box-sizing:border-box;margin-top:8px;resize:vertical;background:var(--field, rgba(127,127,127,.1));color:inherit;border:1px solid var(--line, rgba(127,127,127,.25));border-radius:8px;padding:8px;font:13px ui-monospace,Consolas,monospace">${esc((s.blockedSites || []).join('\n'))}</textarea>
         <div style="margin-top:6px"><button class="mini" id="bs-save">Save</button></div></div>
-      <div class="row"><span class="lbl">Test Twitch<small>Finds out why Twitch won't let you follow or claim points: opens Twitch in a few signed-out test windows (about 2 minutes)</small></span><button class="mini" id="tw-check">Run test</button></div>
+      <div class="row"><span class="lbl">Test Twitch<small>If Twitch won't let you follow or claim points: finds out why and offers the fix (under a minute)</small></span><button class="mini" id="tw-check">Run test</button></div>
       <button class="btn danger" id="clear-data">Clear browsing data…</button>
     </div>
     <div class="group"><h4>Keyboard shortcuts</h4><div class="kbd-list">
@@ -912,6 +916,12 @@ function renderSettings() {
       <div><span>Next / previous tab</span><span><kbd>Ctrl</kbd><kbd>Tab</kbd></span></div>
       <div><span>Jump to tab 1–9</span><span><kbd>Ctrl</kbd><kbd>1</kbd>…<kbd>9</kbd></span></div>
       <div><span>Find on page</span><span><kbd>Ctrl</kbd><kbd>F</kbd></span></div>
+      <div><span>Downloads</span><span><kbd>Ctrl</kbd><kbd>J</kbd></span></div>
+      <div><span>New window</span><span><kbd>Ctrl</kbd><kbd>N</kbd></span></div>
+      <div><span>Open a file</span><span><kbd>Ctrl</kbd><kbd>O</kbd></span></div>
+      <div><span>Back / forward</span><span><kbd>Alt</kbd><kbd>←</kbd> <kbd>→</kbd></span></div>
+      <div><span>Preview a link (Glance)</span><span><kbd>Alt</kbd>+click</span></div>
+      <div><span>Compact mode</span><span><kbd>Ctrl</kbd><kbd>Alt</kbd><kbd>C</kbd></span></div>
       <div><span>Hide / show sidebar</span><span><kbd>Ctrl</kbd><kbd>Alt</kbd><kbd>S</kbd></span></div>
       <div><span>Bookmark page</span><span><kbd>Ctrl</kbd><kbd>D</kbd></span></div>
       <div><span>Show bookmarks bar</span><span><kbd>Ctrl</kbd><kbd>Shift</kbd><kbd>B</kbd></span></div>
@@ -931,8 +941,33 @@ function renderSettings() {
           : S.update.status !== 'portable' ? `<button class="mini" id="upd-check">Check for updates</button>` : ''}</div>
       ${S.defaultBrowser && S.defaultBrowser !== 'unknown' ? `<div class="row"><span class="lbl">Default browser<small>${S.defaultBrowser === 'yes' ? 'Drift opens links from other apps' : 'Pick Drift under Web browser in Windows Settings'}</small></span>${S.defaultBrowser === 'yes' ? '<span class="mini-ok">✓ Default</span>' : '<button class="mini accent" id="default-browser">Make default</button>'}</div>` : ''}
       <div class="row"><span class="lbl">What's new<small>Changes in recent updates</small></span><button class="mini" id="whats-new">Open</button></div>
-    </div>`;
+    </div>`);
+  filterSettings();
 }
+// Settings search: shows only the rows (and shortcuts) that mention what you type.
+function filterSettings() {
+  const q = ($('#set-q').value || '').trim().toLowerCase();
+  const body = $('#settings-body');
+  const hit = (el) => !q || el.textContent.toLowerCase().includes(q);
+  for (const g of body.querySelectorAll('.group')) {
+    const titleHit = !!q && ((g.querySelector('h4') || {}).textContent || '').toLowerCase().includes(q);
+    let any = false;
+    for (const el of g.querySelectorAll(':scope > :not(h4)')) {
+      if (el.classList.contains('kbd-list')) {
+        let n = 0; for (const k of el.children) { k.hidden = !(titleHit || hit(k)); if (!k.hidden) n++; }
+        el.hidden = n === 0; if (n) any = true; continue;
+      }
+      el.hidden = !(titleHit || hit(el)); if (!el.hidden) any = true;
+    }
+    g.hidden = !any;
+  }
+  const none = !!q && ![...body.querySelectorAll('.group')].some(g => !g.hidden);
+  let empty = body.querySelector('.set-empty');
+  if (none && !empty) { empty = document.createElement('div'); empty.className = 'empty set-empty'; body.appendChild(empty); }
+  if (empty) { empty.hidden = !none; empty.textContent = none ? `No settings match “${q}”` : ''; }
+}
+$('#set-q').addEventListener('input', filterSettings);
+$('#set-q').addEventListener('keydown', (e) => { if (e.key === 'Escape' && e.target.value) { e.stopPropagation(); e.target.value = ''; filterSettings(); } });
 $('#settings-body').addEventListener('click', (e) => {
   const b = e.target.closest('[data-set]');
   if (b) {
@@ -1022,19 +1057,57 @@ function renderDownloadIndicators() {
   } else dlToastHtml = '';
 }
 let dlToastHtml = '';
+// One row per download. Finished files can be opened (click the name), shown in their folder or
+// dragged out to another app; cancelled and failed ones downloaded again.
+function fmtLeft(sec) {
+  if (!isFinite(sec) || sec <= 0) return '';
+  if (sec < 60) return `${Math.max(1, Math.round(sec))} s left`;
+  if (sec < 3600) return `${Math.round(sec / 60)} min left`;
+  return `${Math.floor(sec / 3600)} h ${Math.round(sec % 3600 / 60)} min left`;
+}
+function fmtWhen(t) {
+  if (!t) return '';
+  const d = new Date(t), now = new Date();
+  const time = d.toLocaleTimeString(undefined, { hour: 'numeric', minute: '2-digit' });
+  if (d.toDateString() === now.toDateString()) return time;
+  const y = new Date(now); y.setDate(now.getDate() - 1);
+  if (d.toDateString() === y.toDateString()) return 'Yesterday ' + time;
+  return d.toLocaleDateString(undefined, { month: 'short', day: 'numeric' });
+}
 function dlRows(ds) {
   return ds.map(d => {
-      const pct = d.total ? Math.round(d.received / d.total * 100) : 0;
-      const sub = d.state === 'progressing' ? `${fmtBytes(d.received)}${d.total ? ' of ' + fmtBytes(d.total) + ` · ${pct}%` : ''}`
-        : d.state === 'completed' ? fmtBytes(d.received) : d.state === 'cancelled' ? 'Cancelled' : 'Failed';
-      return `<div class="dl ${d.state === 'completed' ? 'done' : ''}" data-dl="${d.id}">
+    const pct = d.total ? Math.round(d.received / d.total * 100) : 0;
+    const prog = d.state === 'progressing';
+    const ok = d.state === 'completed' && !d.missing;
+    const speed = prog && d.speed > 1024 ? `${fmtBytes(d.speed)}/s` : '';
+    const left = prog && d.total && d.speed > 1024 ? fmtLeft((d.total - d.received) / d.speed) : '';
+    const sub = prog ? [`${fmtBytes(d.received)}${d.total ? ' of ' + fmtBytes(d.total) : ''}`, speed, left].filter(Boolean).join(' · ')
+      : d.state === 'completed' ? (d.missing ? 'Moved or deleted' : [fmtBytes(d.received), fmtWhen(d.finished)].filter(Boolean).join(' · '))
+      : d.state === 'cancelled' ? 'Cancelled' : 'Failed';
+    const canRetry = !prog && (d.state !== 'completed' || d.missing) && /^https?:/i.test(d.url || '');
+    return `<div class="dl ${ok ? 'done' : ''} ${prog ? 'prog' : ''}" data-dl="${d.id}" ${ok ? 'draggable="true" title="Drag to copy it somewhere else"' : ''}>
         <span class="ic">${icon('file', 18)}</span>
-        <div class="meta"><div class="name" data-open title="${d.state === 'completed' ? 'Open' : ''}">${esc(d.name)}</div><div class="sub">${sub}</div>
-          ${d.state === 'progressing' ? `<div class="bar"><i style="width:${pct}%"></i></div>` : ''}</div>
-        ${d.state === 'progressing' ? `<button class="ib" data-cancel title="Cancel">${icon('x', 14)}</button>`
-          : d.state === 'completed' ? `<button class="ib" data-show title="Show in folder">${icon('folder', 15)}</button>` : ''}
+        <div class="meta"><div class="name" data-open title="${ok ? 'Open' : ''}">${esc(d.name)}</div><div class="sub">${esc(sub)}</div>
+          ${prog ? `<div class="bar"><i style="width:${pct}%"></i></div>` : ''}</div>
+        ${prog ? `<button class="ib" data-cancel title="Cancel">${icon('x', 14)}</button>`
+          : `${canRetry ? `<button class="ib" data-retry title="Download again">${icon('reload', 14)}</button>` : ''}${ok ? `<button class="ib" data-show title="Show in folder">${icon('folder', 15)}</button>` : ''}<button class="ib dl-rm" data-remove title="Remove from list">${icon('x', 13)}</button>`}
       </div>`;
   }).join('');
+}
+// Clicks on download rows (the toolbar's menu and the Downloads panel).
+function dlClick(e, after) {
+  const row = e.target.closest('[data-dl]'); if (!row) return;
+  const id = Number(row.dataset.dl);
+  if (e.target.closest('[data-cancel]')) send('cancel-download', id);
+  else if (e.target.closest('[data-retry]')) send('retry-download', id);
+  else if (e.target.closest('[data-remove]')) send('remove-download', id);
+  else if (e.target.closest('[data-show]')) { send('show-download', id); after && after(); }
+  else if (row.classList.contains('done') && (e.target.closest('[data-open]') || after)) { send('open-download', id); after && after(); }
+}
+function dlDragStart(e) {
+  const row = e.target.closest && e.target.closest('.dl.done[data-dl]'); if (!row) return;
+  e.preventDefault();
+  send('dl-drag', Number(row.dataset.dl));
 }
 function renderDlMenu() {
   const ds = (S.downloads || []).slice(0, 6);
@@ -1056,38 +1129,19 @@ $('#tb-dl').addEventListener('click', () => { if (S && S.overlay === 'dlmenu') c
 $('#dlmenu-wrap').addEventListener('mousedown', (e) => { if (e.target.id === 'dlmenu-wrap') closeDlMenu(); });
 document.addEventListener('keydown', (e) => { if (e.key === 'Escape' && S && S.overlay === 'dlmenu') closeDlMenu(); });
 $('#dlmenu-all').addEventListener('click', () => { closeDlMenu(); if (panel !== 'downloads') togglePanel('downloads'); });
-$('#dlmenu-list').addEventListener('click', (e) => {
-  const row = e.target.closest('[data-dl]'); if (!row) return;
-  const id = Number(row.dataset.dl);
-  if (e.target.closest('[data-cancel]')) send('cancel-download', id);
-  else if (e.target.closest('[data-show]')) { send('show-download', id); closeDlMenu(); }
-  else if (row.classList.contains('done')) { send('open-download', id); closeDlMenu(); }
-});
+$('#dlmenu-list').addEventListener('click', (e) => dlClick(e, closeDlMenu));
+$('#dlmenu-list').addEventListener('dragstart', dlDragStart);
 
 function renderDownloads() {
   const ds = S.downloads;
-  $('#downloads-body').innerHTML = !ds.length ? `<div class="empty">${icon('download', 22)}<br>Files you download appear here.</div>` :
-    ds.map(d => {
-      const pct = d.total ? Math.round(d.received / d.total * 100) : 0;
-      const sub = d.state === 'progressing' ? `${fmtBytes(d.received)}${d.total ? ' of ' + fmtBytes(d.total) : ''}`
-        : d.state === 'completed' ? fmtBytes(d.received) : d.state === 'cancelled' ? 'Cancelled' : 'Failed';
-      return `<div class="dl ${d.state === 'completed' ? 'done' : ''}" data-dl="${d.id}">
-        <span class="ic">${icon('file', 18)}</span>
-        <div class="meta"><div class="name" data-open>${esc(d.name)}</div><div class="sub">${sub}</div>
-          ${d.state === 'progressing' ? `<div class="bar"><i style="width:${pct}%"></i></div>` : ''}</div>
-        ${d.state === 'progressing' ? `<button class="ib" data-cancel title="Cancel">${icon('x', 14)}</button>`
-          : d.state === 'completed' ? `<button class="ib" data-show title="Show in folder">${icon('folder', 15)}</button>` : ''}
-      </div>`;
-    }).join('') + `<button class="link" id="dl-clear" style="margin-top:6px">Clear list</button>`;
+  setHTML($('#downloads-body'), !ds.length ? `<div class="empty">${icon('download', 22)}<br>Files you download appear here.</div>` :
+    dlRows(ds) + `<button class="link" id="dl-clear" style="margin-top:6px">Clear list</button>`);
 }
 $('#downloads-body').addEventListener('click', (e) => {
   if (e.target.id === 'dl-clear') return send('clear-downloads');
-  const row = e.target.closest('[data-dl]'); if (!row) return;
-  const id = Number(row.dataset.dl);
-  if (e.target.closest('[data-cancel]')) send('cancel-download', id);
-  else if (e.target.closest('[data-show]')) send('show-download', id);
-  else if (e.target.closest('[data-open]') && row.classList.contains('done')) send('open-download', id);
+  dlClick(e);
 });
+$('#downloads-body').addEventListener('dragstart', dlDragStart);
 
 // ---------------------------------------------------------------------- extensions
 // The extension buttons come from <browser-action-list> (electron-chrome-extensions).
@@ -1588,7 +1642,7 @@ window.drift.on('layout', (l) => {
   applyHole();
 });
 window.drift.on('palette', ({ newTab }) => { preparePalette(newTab, !newTab); raiseOverlay('palette'); });
-window.drift.on('panel', (name) => { if (panel !== name) togglePanel(name); });
+window.drift.on('panel', (name) => { if (panel !== name) togglePanel(name); if (name === 'downloads') send('downloads-seen'); });
 window.drift.on('find-open', () => {
   $('#findbar').hidden = false;
   const i = $('#find-input'); setTimeout(() => { i.focus(); i.select(); if (i.value) send('find', i.value, true, false); }, 0);

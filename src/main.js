@@ -14,8 +14,6 @@ const {
 const { components } = require('electron');
 const path = require('path');
 const fs = require('fs');
-// A Twitch check test window (twcheck.js) runs as its own bare process: hand over at once.
-if (process.argv.some(x => x.startsWith('--drift-twcheck='))) { require('./twcheck.js').child(); return; }
 // Chrome extension support (tabs/popups/action APIs + Chrome Web Store installs).
 // Must be required before the app is ready: it registers the crx:// scheme.
 const { ElectronChromeExtensions } = require('electron-chrome-extensions');
@@ -64,6 +62,7 @@ const DEFAULT_SETTINGS = {
   forceDark: false,          // darken every site (Chromium's auto dark mode, like Opera)
   forceDarkOff: [],          // hostnames excluded from force dark
   offerPasswords: true,
+  zoomLevels: {},            // { host: zoom factor } for sites you zoomed
   blockedSites: [],          // no-download sites: nothing downloads while you're on them (or from them), subdomains included
   webgpu: false,             // offer WebGPU to sites (off: requesting it froze the window for seconds on some PCs)
   blockPopups: true,         // pop-up blocker (see popupVerdict)
@@ -83,8 +82,8 @@ const DEFAULT_SETTINGS = {
   sleepMinutes: 20,
   permissions: {},           // { "origin|perm": true/false }
   hiddenActions: [],         // (old setting, no longer used)
-  pinnedActions: [],
-  hiddenSites: [],           // sites removed from the new tab page's tiles         // extension ids whose buttons stay in the toolbar; the rest are under the puzzle button
+  pinnedActions: [],         // extension ids whose buttons stay in the toolbar; the rest are under the puzzle button
+  hiddenSites: [],           // sites removed from the new tab page's tiles
   unpacked: [],              // folders of extensions loaded with "Load unpacked"
   bounds: null,
   maximized: false,
@@ -169,15 +168,6 @@ function searchUrl(q) {
   return eng.url.replace('%s', encodeURIComponent(q));
 }
 
-// A Chrome-like user agent so sites don't treat us as an "embedded" app.
-// Google's sign-in pages refuse browsers that look tampered with. Since mid-2026 the
-// old trick (claiming to be Firefox) fails, because Chromium still sends its client-hint
-// headers and JS features. A clean, consistent Chrome identity everywhere passes.
-// On Google's sign-in pages (accounts.google.com) Drift shows its true, untouched identity:
-// Chromium as Electron ships it, with no version claim, no DevTools-protocol session and no
-// page patches. Claiming to be Chrome there makes Google run Chrome-only checks that an
-// embedded engine fails ("This browser or app may not be secure"); the honest engine passes.
-// Every other site sees the Chrome identity below.
 // No-download sites (settings.blockedSites): "https://www.bad.com/x" → "bad.com".
 function normalizeBlockHost(v) {
   let h = String(v || '').trim().toLowerCase();
@@ -191,6 +181,15 @@ function isBlockedUrl(url) {
   let h = ''; try { h = new URL(url).hostname.toLowerCase(); } catch { return false; }
   return settings.blockedSites.some(b => h === b || h.endsWith('.' + b));
 }
+// A Chrome-like user agent so sites don't treat us as an "embedded" app.
+// Google's sign-in pages refuse browsers that look tampered with. Since mid-2026 the
+// old trick (claiming to be Firefox) fails, because Chromium still sends its client-hint
+// headers and JS features. A clean, consistent Chrome identity everywhere passes.
+// On Google's sign-in pages (accounts.google.com) Drift shows its true, untouched identity:
+// Chromium as Electron ships it, with no version claim, no DevTools-protocol session and no
+// page patches. Claiming to be Chrome there makes Google run Chrome-only checks that an
+// embedded engine fails ("This browser or app may not be secure"); the honest engine passes.
+// Every other site sees the Chrome identity below.
 const GOOGLE_SIGNIN = /^accounts\.google\.[a-z.]+$/i;
 function isSignin(url) { try { return GOOGLE_SIGNIN.test(new URL(url).hostname); } catch { return false; } }
 function engineUA() {
@@ -400,6 +399,23 @@ const saveSearches = debounceSave(() => writeJSON('searches.json', searches.slic
 const saveEssentials = debounceSave(() => writeJSON('essentials.json', essentials), 300);
 const saveSession = debounceSave(() => { if (windows.length) writeJSON('session.json', sessionSnapshot()); }, 800);
 
+// A tab's back/forward history, small enough to save: addresses and titles, at most `max`
+// entries around the current one. null when there's nothing to go back or forward to.
+function tabHist(tab, max = 12) {
+  let h = tab.sleepHistory;
+  if (tab.view && !tab.view.webContents.isDestroyed()) {
+    try { const nh = tab.view.webContents.navigationHistory; h = { entries: nh.getAllEntries(), index: nh.getActiveIndex() }; } catch {}
+  }
+  if (!h || !h.entries || h.entries.length < 2) return null;
+  const ok = (u) => /^(https?|file|drift):/i.test(u || '');
+  let entries = h.entries.map(e => ({ url: e.url, title: (e.title || '').slice(0, 200) }));
+  let index = Math.max(0, Math.min(h.index, entries.length - 1));
+  const from = Math.max(0, Math.min(index - Math.floor(max * 2 / 3), entries.length - max));
+  entries = entries.slice(from, from + max); index -= from;
+  if (!entries.every(e => ok(e.url)) || index < 0 || index >= entries.length) return null;
+  return { entries, index };
+}
+
 // Session: every open window with its tabs. The first window's tabs are also stored at the top
 // level, the format older versions of Drift read.
 function windowSnapshot(c) {
@@ -408,7 +424,7 @@ function windowSnapshot(c) {
   let bounds = null;
   try { if (c.win && !c.win.isDestroyed()) bounds = c.win.isMaximized() || c.win.isFullScreen() ? c.win.getNormalBounds() : c.win.getBounds(); } catch {}
   return {
-    tabs: kept.map(t => ({ url: t.url, title: t.title, favicon: (t.favicon || '').length < 12000 ? t.favicon : '', ...(t.ws ? { ws: t.ws } : {}) })),
+    tabs: kept.map(t => { const hist = tabHist(t); return { url: t.url, title: t.title, favicon: (t.favicon || '').length < 12000 ? t.favicon : '', ...(t.ws ? { ws: t.ws } : {}), ...(hist ? { hist } : {}) }; }),
     ws: c.ws || null,
     active: Math.max(0, idx(c.activeId)),
     splits: c.splits.map(sp => [idx(sp.a), idx(sp.b), sp.ratio, sp.dir]).filter(x => x[0] >= 0 && x[1] >= 0),
@@ -689,6 +705,8 @@ function createTab(url = NEWTAB, opts = {}) {
     volume: 1, hadAudio: false,
     blocked: 0, lastActive: Date.now(), crashed: false,
   };
+  // Back/forward history to come back with (a restored session, a reopened tab).
+  if (opts.hist && Array.isArray(opts.hist.entries) && opts.hist.entries.length) tab.sleepHistory = opts.hist;
   let index = opts.index;
   if (index === undefined) {
     if (tab.pinned) index = tabs.filter(t => t.pinned).length;
@@ -864,6 +882,7 @@ function wireTab(tab, wc) {
     if (hostOf(url) !== tab.iconHost) tab.iconHost = '';
     if (hostOf(url) !== hostOf(tab.url)) tab.favicon = faviconStore[hostOf(url)] || '';
     tab.url = url; addHistory(url, wc.getTitle()); upd();
+    if (/^https?:/.test(url)) applySiteZoom(wc, url);
     if (wantsDark(url) !== !!tab.dark && !isInternal(url)) setImmediate(() => { if (useTab(tab)) rebuildView(tab); });
     if (pendingLogin && pendingLogin.wcId === wc.id) offerSavePassword();
   });
@@ -1157,7 +1176,8 @@ function showErrorPage(wc, url, code, desc) {
   <style>html{color-scheme:light dark}body{font:15px/1.5 "Segoe UI",system-ui,sans-serif;display:grid;place-items:center;min-height:100vh;margin:0;background:Canvas;color:CanvasText}
   main{max-width:520px;padding:32px}h1{font-size:22px;margin:0 0 8px}p{opacity:.7;margin:0 0 4px;word-break:break-all}code{opacity:.5;font-size:12px}
   a{display:inline-block;margin-top:20px;padding:9px 18px;border-radius:999px;background:${settings.accent};color:#fff;text-decoration:none;font-weight:600}</style>
-  <main><h1>${msg}</h1><p>${escapeHtml(url)}</p><code>${escapeHtml(desc)} (${code})</code><br><a href="${escapeHtml(url)}">Try again</a></main>`;
+  <main><h1>${msg}</h1><p>${escapeHtml(url)}</p><code>${escapeHtml(desc)} (${code})</code><br><a href="${escapeHtml(url)}">Try again</a></main>
+  <script>addEventListener('online', () => location.reload())</script>`;
   wc.executeJavaScript(`document.open();document.write(${JSON.stringify(html)});document.close();`).catch(() => {});
 }
 function escapeHtml(s) { return String(s).replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c])); }
@@ -1201,7 +1221,7 @@ function closeTab(id, opts = {}) {
   const tab = tabs[i];
   if (tab.pinned && !opts.remove) { unloadEssential(tab); return; }
   if (!isInternal(tab.url)) {
-    closedTabs.push({ url: tab.url, title: tab.title, favicon: tab.favicon, index: i, pinned: tab.pinned });
+    closedTabs.push({ url: tab.url, title: tab.title, favicon: tab.favicon, index: i, ws: tab.ws, hist: tabHist(tab, 25) });
     if (closedTabs.length > 25) closedTabs.shift();
   }
   const sp = splitOf(id);
@@ -1217,7 +1237,7 @@ function closeTab(id, opts = {}) {
     const next = after || before || (wsOn() ? null : tabs[0]);
     if (next) activate(next.id);
     else if (wsOn() && tabs.length) { activeId = null; createTab(NEWTAB); }
-    else if (windows.length > 1) { activeId = null; const w = win; setImmediate(() => { if (w && !w.isDestroyed()) w.close(); }); }   // its last tab: close this window
+    else if (windows.length > 1) { activeId = null; cur.closingEmpty = true; const w = win; setImmediate(() => { if (w && !w.isDestroyed()) w.close(); }); }   // its last tab: close this window
     else { activeId = null; createTab(NEWTAB); }
   }
   layout(); push(); saveSession();
@@ -1240,7 +1260,11 @@ function destroyView(tab) {
 
 function reopenClosed() {
   const c = closedTabs.pop();
-  if (c) createTab(c.url, { title: c.title, favicon: c.favicon, index: Math.min(c.index, tabs.length) });
+  if (!c) return;
+  if (c.window) { createWindow({ snapshot: { ...c.window, bounds: c.window.bounds } }); return; }
+  // Into its workspace if that still exists, with its back/forward history.
+  if (c.ws && wsOn() && settings.wsList.some(w => w.id === c.ws) && c.ws !== curWs()) cur.ws = c.ws;
+  createTab(c.url, { title: c.title, favicon: c.favicon, index: Math.min(c.index, tabs.length), ws: c.ws, hist: c.hist });
 }
 
 function cycle(dir) {
@@ -1748,7 +1772,19 @@ function zoom(dir) {
   if (dir > 0) next = steps.find(s => s > cur + 0.001) || 5;
   else if (dir < 0) next = [...steps].reverse().find(s => s < cur - 0.001) || 0.25;
   wc.setZoomFactor(next);
+  // Remembered for the site (Chromium keeps it only until Drift closes).
+  const h = hostOf(t.url);
+  if (h && /^https?:/.test(t.url)) {
+    if (Math.abs(next - 1) < 0.001) delete settings.zoomLevels[h]; else settings.zoomLevels[h] = next;
+    const keys = Object.keys(settings.zoomLevels); if (keys.length > 300) delete settings.zoomLevels[keys[0]];
+    saveSettings();
+  }
   push();
+}
+// A site you zoomed before opens at that zoom again (after a restart, too).
+function applySiteZoom(wc, url) {
+  const z = settings.zoomLevels[hostOf(url)];
+  if (z && Math.abs(wc.getZoomFactor() - z) > 0.001) wc.setZoomFactor(z);
 }
 
 function openFind() {
@@ -1803,6 +1839,13 @@ function toggleSidebar() {
 // Keyboard shortcuts (work whether the page or the sidebar has focus)
 // ---------------------------------------------------------------------------
 
+// Page source (the page's right-click menu), in a new tab next to it. (Not Ctrl+U: editors
+// on the web use it for underline.)
+function viewSource(tab) {
+  if (!tab || !/^https?:/i.test(tab.url || '')) return;
+  createTab('view-source:' + tab.url, { openerId: tab.id });
+}
+
 // New tab (+, Ctrl+T): the command bar, or with "New tabs open your homepage" on, the homepage.
 function newTabAction() {
   if (settings.homeNewTab) createTab(NEWTAB);
@@ -1833,6 +1876,7 @@ function handleShortcut(input) {
       case 'o': openFileDialog(); return true;
       case 'd': toggleBookmarkActive(); return true;
       case 'h': openHistory(); return true;
+      case 'j': ui.webContents.send('panel', 'downloads'); return true;
       case 'Tab': cycle(1); return true;
       case 'PageDown': cycle(1); return true;
       case 'PageUp': cycle(-1); return true;
@@ -1896,8 +1940,10 @@ function pageContextMenu(tab, wc, p) {
     m.push({ label: 'Open link in new tab', click: () => createTab(p.linkURL, { activate: false, openerId: tab.id }) });
     if (/^https?:/i.test(p.linkURL)) m.push({ label: 'Glance (Alt+click)', click: () => openGlance(p.linkURL, tab) });
     m.push({ label: 'Open link in new window', click: () => newWindow([p.linkURL]) });
-    m.push({ label: 'Open link here', click: () => wc.loadURL(p.linkURL) });
+    m.push({ label: 'Open link here', click: () => { tab.url = p.linkURL; loadIn(wc, p.linkURL); } });
+    m.push({ label: 'Save link as…', click: () => { wc.__driftDl = Date.now(); wc.downloadURL(p.linkURL); } });
     m.push({ label: 'Copy link address', click: () => copyLink(p.linkURL) });
+    if (p.linkText && p.linkText.trim()) m.push({ label: 'Copy link text', click: () => clipboard.writeText(p.linkText.trim()) });
     sep();
   }
   if (p.mediaType === 'video') {
@@ -1931,6 +1977,8 @@ function pageContextMenu(tab, wc, p) {
     sep();
     m.push({ label: 'Print…', click: () => wc.print() });
     m.push({ label: 'Find on page', click: openFind });
+    m.push({ label: 'Copy page link', click: () => copyLink(tab.url) });
+    if (/^https?:/i.test(tab.url)) m.push({ label: 'View page source', click: () => viewSource(tab) });
     sep();
   }
   if (extensions) {
@@ -1948,7 +1996,7 @@ function tabContextMenu(id) {
   const wc = tab.view ? tab.view.webContents : null;
   popupMenu([
     { label: 'Reload', enabled: !!wc, click: () => wc && wc.reload() },
-    { label: 'Duplicate', click: () => createTab(tab.url, { openerId: tab.id }) },
+    { label: 'Duplicate', click: () => createTab(tab.url, { openerId: tab.id, hist: tabHist(tab, 25) }) },
     { label: tab.pinned ? 'Remove from Essentials' : 'Add to Essentials', click: () => togglePin(id) },
     ...(tab.pinned && tab.home && tab.url !== tab.home && /^(https?|file):/i.test(tab.url) ? [{ label: 'Make this page its site', click: () => {
       const e = essOf(tab); if (!e) return;
@@ -1972,8 +2020,9 @@ function tabContextMenu(id) {
     }) }] : []),
     { type: 'separator' },
     tab.pinned ? { label: 'Unload', enabled: !!tab.view, click: () => closeTab(id) } : { label: 'Close tab', click: () => closeTab(id) },
-    { label: 'Close other tabs', click: () => tabs.filter(t => t.id !== id && !t.pinned).forEach(t => closeTab(t.id)) },
-    { label: 'Close tabs below', click: () => { const i = tabs.indexOf(tab); tabs.slice(i + 1).filter(t => !t.pinned).forEach(t => closeTab(t.id)); } },
+    // (Only tabs in this workspace: the others aren't on screen.)
+    { label: 'Close other tabs', click: () => tabs.filter(t => t.id !== id && !t.pinned && inWs(t)).forEach(t => closeTab(t.id)) },
+    { label: 'Close tabs below', click: () => { const i = tabs.indexOf(tab); tabs.slice(i + 1).filter(t => !t.pinned && inWs(t)).forEach(t => closeTab(t.id)); } },
   ]);
 }
 
@@ -2762,6 +2811,22 @@ async function clearSiteData(origin) {
 const RISKY_EXT = /\.(exe|msi|msix|msixbundle|appx|appxbundle|bat|cmd|com|scr|pif|cpl|vbs|vbe|js|jse|wsf|wsh|ps1|psm1|psd1|hta|jar|lnk|url|reg|dll|sys|iso|img|vhd|vhdx|application|gadget|msc|inf|chm)$/i;
 // Archives and macro-enabled Office files: common wrappers for malware.
 const ARCHIVE_EXT = /\.(zip|rar|7z|cab|gz|tgz|tar|bz2|xz|ace|arj|apk|docm|dotm|xlsm|xltm|xlam|pptm|potm|ppsm)$/i;
+const dlReserved = new Set();   // file names given to downloads that haven't finished
+// The downloads list survives restarts (finished, cancelled and failed ones; not the file data).
+const saveDownloads = debounceSave(() => writeJSON('downloads.json', downloads.filter(d => d.state !== 'progressing').slice(0, 60)
+  .map(d => ({ id: d.id, name: d.name, path: d.path, url: d.url || '', received: d.received, total: d.total, state: d.state, started: d.started || 0, finished: d.finished || 0 }))), 1000);
+function loadDownloads() {
+  for (const d of readJSON('downloads.json', [])) {
+    if (!d || typeof d.path !== 'string' || typeof d.name !== 'string') continue;
+    downloads.push({ ...d, seen: true, wid: 0, missing: d.state === 'completed' && !fs.existsSync(d.path) });
+  }
+}
+// Has a finished file been moved or deleted since? (Checked when you look at the list.)
+function checkDownloadFiles() {
+  let changed = false;
+  for (const d of downloads) if (d.state === 'completed') { const m = !fs.existsSync(d.path); if (m !== !!d.missing) { d.missing = m; changed = true; } }
+  return changed;
+}
 const blockedDownloads = new Map();   // token -> { item, register, expire }: downloads held for having no click
 function setupDownloads(ses) {
   ses.on('will-download', (e, item, fromWc) => {
@@ -2815,21 +2880,29 @@ function setupDownloads(ses) {
     const dir = app.getPath('downloads');
     const ext = path.extname(item.getFilename());
     const base = path.basename(item.getFilename(), ext);
+    // A free name: not on disk, and not taken by another download still in progress.
+    const taken = (p) => fs.existsSync(p) || downloads.some(x => x.state === 'progressing' && x.path === p) || dlReserved.has(p);
     let target = path.join(dir, item.getFilename()); let n = 1;
-    while (fs.existsSync(target)) target = path.join(dir, `${base} (${n++})${ext}`);
+    while (taken(target)) target = path.join(dir, `${base} (${n++})${ext}`);
     item.setSavePath(target);
+    dlReserved.add(target);
+    item.once('done', () => dlReserved.delete(target));
     const register = () => {
-      const d = { id: Date.now() + Math.random(), name: path.basename(target), path: target,
-        received: 0, total: item.getTotalBytes(), state: 'progressing', seen: false, wid: dctx ? dctx.id : 0, item };
+      const d = { id: Date.now() + Math.random(), name: path.basename(target), path: target, url: item.getURL(),
+        received: 0, total: item.getTotalBytes(), state: 'progressing', seen: false, wid: dctx ? dctx.id : 0, item,
+        started: Date.now(), speed: 0 };
       downloads.unshift(d);
-      if (downloads.length > 30) downloads.pop();
-      let lastPush = 0;
+      if (downloads.length > 60) downloads.pop();
+      let lastPush = 0, lastBytes = 0, lastAt = Date.now();
       item.on('updated', (_ev, state) => {
         d.received = item.getReceivedBytes(); d.total = item.getTotalBytes(); d.state = state === 'interrupted' ? 'interrupted' : 'progressing';
-        const now = Date.now(); if (now - lastPush > 250) { lastPush = now; push(); }   // progress updates at most 4×/s
+        // Speed, smoothed over the last few seconds (for "3.2 MB/s · 9 s left").
+        const now = Date.now(), dt = now - lastAt;
+        if (dt >= 500) { const inst = (d.received - lastBytes) * 1000 / dt; d.speed = d.speed ? d.speed * 0.6 + inst * 0.4 : inst; lastBytes = d.received; lastAt = now; }
+        if (now - lastPush > 250) { lastPush = now; push(); }   // progress updates at most 4×/s
       });
       item.once('done', (_ev, state) => {
-        d.state = state; d.received = item.getReceivedBytes(); delete d.item; push();
+        d.state = state; d.received = item.getReceivedBytes(); d.finished = Date.now(); d.speed = 0; delete d.item; push(); saveDownloads();
         const c = windows.includes(dctx) ? dctx : (lastFocused || windows[0]);
         if (c && c.ui && !c.ui.webContents.isDestroyed()) c.ui.webContents.send('download-done', { id: d.id, name: d.name, state });
       });
@@ -3722,7 +3795,7 @@ function setupIPC() {
   on('site-shields', () => toggleSiteShields());
   on('zoom', (d) => zoom(d));
   on('set', (key, value) => {
-    if (!(key in DEFAULT_SETTINGS) || ['permissions', 'bounds', 'shieldsAllow', 'popupAllow', 'wsList', 'hiddenActions', 'pinnedActions', 'hiddenSites', 'unpacked', 'forceDarkOff', 'blockedSites'].includes(key)) return;
+    if (!(key in DEFAULT_SETTINGS) || ['permissions', 'bounds', 'shieldsAllow', 'popupAllow', 'wsList', 'hiddenActions', 'pinnedActions', 'hiddenSites', 'unpacked', 'forceDarkOff', 'blockedSites', 'zoomLevels'].includes(key)) return;
     if (key === 'shields') return setShieldsGlobal(!!value);
     if (key === 'shieldsEngine') return setShieldsEngine(value === 'builtin' ? 'builtin' : 'ubo');
     setSetting(key, value);
@@ -3762,7 +3835,7 @@ function setupIPC() {
     else if (action === 'max') win.isMaximized() ? win.unmaximize() : win.maximize();
     else if (action === 'close') win.close();
   });
-  on('open-download', (id) => { const d = downloads.find(x => x.id === id); if (d) shell.openPath(d.path); });
+  on('open-download', (id) => { const d = downloads.find(x => x.id === id); if (d && !(d.missing = !fs.existsSync(d.path))) shell.openPath(d.path); else push(); });
   on('show-download', (id) => { const d = downloads.find(x => x.id === id); if (d) shell.showItemInFolder(d.path); });
   on('toast-float', (t) => { if (t && typeof t.html === 'string') showFloatingToast(t); });
   on('toast-hide', () => hideFloatingToast());
@@ -3778,9 +3851,27 @@ function setupIPC() {
     if (ui && !ui.webContents.isDestroyed()) ui.webContents.send('toast-action', { token: toastToken, index: Number(i) });
     hideFloatingToast();
   });
-  on('downloads-seen', () => { let changed = false; for (const d of downloads) if (!d.seen && d.state !== 'progressing') { d.seen = true; changed = true; } if (changed) push(); });
+  on('downloads-seen', () => { let changed = checkDownloadFiles(); for (const d of downloads) if (!d.seen && d.state !== 'progressing') { d.seen = true; changed = true; } if (changed) push(); });
+  // Download it again (cancelled, failed, or deleted since).
+  on('retry-download', (id) => {
+    const i = downloads.findIndex(x => x.id === id); if (i < 0) return;
+    const d = downloads[i]; if (d.state === 'progressing' || !/^https?:/i.test(d.url || '')) return;
+    downloads.splice(i, 1); saveDownloads();
+    const t = activeTab(); const wc = t && t.view ? t.view.webContents : null;
+    if (wc) { wc.__driftDl = Date.now(); wc.downloadURL(d.url); } else session.defaultSession.downloadURL(d.url);
+    push();
+  });
+  on('remove-download', (id) => { const i = downloads.findIndex(x => x.id === id && x.state !== 'progressing'); if (i >= 0) { downloads.splice(i, 1); saveDownloads(); push(); } });
   on('cancel-download', (id) => { const d = downloads.find(x => x.id === id); if (d && d.item) d.item.cancel(); });
-  on('clear-downloads', () => { for (let i = downloads.length - 1; i >= 0; i--) if (downloads[i].state !== 'progressing') downloads.splice(i, 1); push(); });
+  on('clear-downloads', () => { for (let i = downloads.length - 1; i >= 0; i--) if (downloads[i].state !== 'progressing') downloads.splice(i, 1); saveDownloads(); push(); });
+  // Drag a finished download out of the list (into a folder, an email, another app).
+  let dragIcon = null;
+  ipcMain.on('dl-drag', (e, id) => {
+    if (!ctxOfUi(e.sender)) return;
+    const d = downloads.find(x => x.id === id); if (!d || d.state !== 'completed' || !fs.existsSync(d.path)) return;
+    if (!dragIcon) { try { dragIcon = nativeImage.createFromPath(path.join(__dirname, '..', 'build', 'icon.png')).resize({ width: 32, height: 32 }); } catch {} }
+    try { e.sender.startDrag({ file: d.path, icon: dragIcon && !dragIcon.isEmpty() ? dragIcon : nativeImage.createEmpty() }); } catch (err) { console.error('[downloads] drag', err.message); }
+  });
   on('open-downloads-folder', () => shell.openPath(app.getPath('downloads')));
   on('devtools-ui', () => ui.webContents.openDevTools({ mode: 'detach' }));
   handle('suggest', (q) => suggest(q));
@@ -3793,38 +3884,13 @@ function setupIPC() {
     saveSettings(); sendExtensions();
   });
   on('ext-store', () => createTab('https://chromewebstore.google.com/category/extensions'));
-  on('tw-check', () => require('./twcheck.js').run({ parent: win, ua: chromeUA(), switches: ENGINE_SWITCHES.join(' '),
+  on('tw-check', () => require('./twcheck.js').run({ parent: win, ua: chromeUA(),
     preload: path.join(__dirname, 'page-preload.js'), applyIdentity: (wc) => applyIdentity(wc),
-    // Parts of the everyday profile, each added to a fresh test profile on its own.
-    copyCookies: async (ses) => {
-      for (const c of await session.defaultSession.cookies.get({})) {
-        if (!/(^|\.)(twitch\.tv|ttvnw\.net|twitchcdn\.net)$/i.test(c.domain.replace(/^\./, ''))) continue;
-        const host = c.domain.replace(/^\./, '');
-        await ses.cookies.set({ url: `https://${host}${c.path || '/'}`, name: c.name, value: c.value, domain: c.hostOnly ? undefined : c.domain, path: c.path,
-          secure: c.secure, httpOnly: c.httpOnly, sameSite: c.sameSite, expirationDate: c.expirationDate }).catch(() => {});
-      }
-    },
-    addPermissions: (ses) => setupPermissions(ses),
-    addExtSupport: (ses) => { new ElectronChromeExtensions({ session: ses }); ElectronChromeExtensions.handleCRXProtocol(ses); },
-    addWebStore: (ses) => installChromeWebStore({ session: ses, beforeInstall: async () => ({ action: 'deny' }) }),
-    addCerts: (ses) => setupCertificates(ses),
-    addAll: async (ses) => {
-      ses.setSpellCheckerLanguages(['en-US']);
-      setupPermissions(ses); setupCertificates(ses);
-      new ElectronChromeExtensions({ session: ses }); ElectronChromeExtensions.handleCRXProtocol(ses);
-      await installChromeWebStore({ session: ses, beforeInstall: async () => ({ action: 'deny' }) }).catch(() => {});
-      ses.webRequest.onBeforeSendHeaders(addHintHeaders);
-      await (ses.extensions || ses).loadExtension(hintsPath(), { allowFileAccess: false }).catch(() => {});
-    },
-    addHeaders: (ses) => ses.webRequest.onBeforeSendHeaders(addHintHeaders),
-    addUbo: async (ses) => {
-      const ext = await (ses.extensions || ses).loadExtension(await ensureUboDir(), { allowFileAccess: true });
-      // Its filter lists load in the background: wait until it blocks (up to 20 s).
-      const prefix = `chrome-extension://${ext.id}/`;
-      for (let t0 = Date.now(); Date.now() - t0 < 20000; await new Promise(r => setTimeout(r, 300))) {
-        const bg = webContents.getAllWebContents().find(w => w.getType() === 'backgroundPage' && w.getURL().startsWith(prefix) && w.session === ses);
-        if (bg && await bg.executeJavaScript('!!(self.µBlock && self.µBlock.readyToFilter)').catch(() => false)) return;
-      }
+    // The fix when only your profile fails: what Twitch stored, and the cache.
+    clearTwitch: async () => {
+      for (const o of ['https://www.twitch.tv', 'https://twitch.tv', 'https://passport.twitch.tv', 'https://gql.twitch.tv']) await clearSiteData(o);
+      await session.defaultSession.clearCache().catch(() => {});
+      for (const t of allTabs()) if (t.view && /(^|\.)twitch\.tv$/.test(hostOf(t.url))) t.view.webContents.reload();
     },
   }));
   on('ext-unpacked', () => loadUnpacked());
@@ -4012,6 +4078,11 @@ function createWindow(opts = {}) {
   // window closes its tabs (like Chrome).
   win.on('close', W(() => {
     if (windows.length === 1 && !quitting) { writeJSONSync('session.json', sessionSnapshot()); writeJSONSync('settings.json', settings); }
+    // Another window stays open: this one can come back with Ctrl+Shift+T (like Chrome).
+    else if (!quitting && !ctx.closingEmpty) {
+      saveCtx(); const snap = windowSnapshot(ctx);
+      if (snap.tabs.length) { closedTabs.push({ window: snap }); if (closedTabs.length > 25) closedTabs.shift(); }
+    }
   }));
   win.on('closed', () => closeWindowCtx(ctx));
 
@@ -4020,7 +4091,7 @@ function createWindow(opts = {}) {
   if (snap && snap.tabs && snap.tabs.length) {
     // (Pinned tabs in sessions from before 1.19.1 became Essentials at startup.)
     if (snap.ws && settings.wsList.some(w => w.id === snap.ws)) ctx.ws = snap.ws;
-    snap.tabs.filter(t => !t.pinned).forEach((t) => createTab(t.url, { title: t.title, favicon: t.favicon, ws: t.ws, lazy: true, activate: false }));
+    snap.tabs.filter(t => !t.pinned).forEach((t) => createTab(t.url, { title: t.title, favicon: t.favicon, ws: t.ws, hist: t.hist, lazy: true, activate: false }));
     for (const [i, j, ratio, dir] of snap.splits || []) {
       if (tabs[i] && tabs[j] && !splitOf(tabs[i].id) && !splitOf(tabs[j].id)) splits.push({ a: tabs[i].id, b: tabs[j].id, ratio: ratio || 0.5, dir: dir === 'col' ? 'col' : 'row' });
     }
@@ -4087,7 +4158,7 @@ function moveTabToWindow(tab, target, index) {
   const sp = splitOf(tab.id); if (sp) splits = splits.filter(x => x !== sp);
   const i = tabs.indexOf(tab); if (i >= 0) tabs.splice(i, 1);
   if (tab.view) { try { win.contentView.removeChildView(tab.view); } catch {} }
-  if (!tabs.length) setImmediate(() => { if (src.win && !src.win.isDestroyed()) src.win.close(); });
+  if (!tabs.length) { src.closingEmpty = true; setImmediate(() => { if (src.win && !src.win.isDestroyed()) src.win.close(); }); }
   else { if (wasActive) activate((tabs[i] || tabs[i - 1] || tabs[0]).id); else layout(); }
   useWin(target);
   tab.wid = target.id;
@@ -4151,19 +4222,14 @@ if (process.platform === 'win32') app.setAppUserModelId('com.drift.browser');
 // graphics adapter" at once, as Chrome does on PCs without WebGPU support, without changing
 // the page's functions: anti-bot checks (Twitch's, Google sign-in's) treat changed built-in
 // functions as a bot and then refuse things like following a channel.
-// The engine switches below, as one line (the Twitch check starts test windows with them).
-const ENGINE_SWITCHES = [];
 {
   let gpuOn = false;
   try { gpuOn = !!JSON.parse(fs.readFileSync(path.join(app.getPath('userData'), 'settings.json'), 'utf8')).webgpu; } catch {}
-  const off = ['HardwareMediaKeyHandling', ...(gpuOn ? [] : ['WebGPUService'])].join(',');
-  app.commandLine.appendSwitch('disable-features', off);
-  ENGINE_SWITCHES.push('disable-features=' + off);
+  app.commandLine.appendSwitch('disable-features', ['HardwareMediaKeyHandling', ...(gpuOn ? [] : ['WebGPUService'])].join(','));
 }
 // Faster downloads: fetch large files over several connections at once (Chromium's parallel
 // downloading). Servers that don't support it fall back to a normal single download.
 app.commandLine.appendSwitch('enable-features', 'ParallelDownloading:parallel_request_count/6/min_slice_size/1048576/parallel_request_delay/0');
-ENGINE_SWITCHES.push('enable-features=ParallelDownloading:parallel_request_count/6/min_slice_size/1048576/parallel_request_delay/0');
 
 function setupWidevine() {
   if (!components || typeof components.whenReady !== 'function') return Promise.resolve();
@@ -4225,6 +4291,7 @@ if (!app.requestSingleInstanceLock(launchRequest)) {
     bookmarks = new Bookmarks(() => readJSON('bookmarks.json', null), (d) => writeJSON('bookmarks.json', d));
     passwords = new Passwords(file('passwords.json'));
     faviconStore = readJSON('favicons.json', {});
+    loadDownloads();
     loadEssentials();
     Menu.setApplicationMenu(null);
     const ses = session.defaultSession;
@@ -4243,6 +4310,8 @@ if (!app.requestSingleInstanceLock(launchRequest)) {
     });
     // Diagnostic traces from earlier versions (hundreds of MB each) and partial trace files.
     fs.promises.readdir(file('logs')).then(fs_ => { for (const f of fs_) if (/^(freeze-)?trace-\d+\.json$|\.tmp$/.test(f)) fs.promises.unlink(path.join(file('logs'), f)).catch(() => {}); }).catch(() => {});
+    // Test profiles the Twitch check in 1.22.8–1.24.1 saved to disk (it no longer does).
+    fs.promises.readdir(file('Partitions')).then(ds => { for (const d of ds) if (/^twcheck-/.test(d)) fs.promises.rm(path.join(file('Partitions'), d), { recursive: true, force: true }).catch(() => {}); }).catch(() => {});
     // Temp files from background saves cut off by a crash.
     fs.promises.readdir(userData()).then(fs_ => { for (const f of fs_) if (/\.\d+-\d+\.tmp$/.test(f)) fs.promises.unlink(file(f)).catch(() => {}); }).catch(() => {});
     PERF('setup done');
@@ -4276,17 +4345,6 @@ if (!app.requestSingleInstanceLock(launchRequest)) {
     setupUpdates();
     updateCompactWatch();
     startPerfLog();
-
-
-
-
-
-
-
-
-
-
-
     // Taskbar right-click menu (Windows jump list).
     if (process.platform === 'win32') {
       try {

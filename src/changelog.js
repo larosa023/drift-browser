@@ -1,6 +1,23 @@
 // What's new in each release, shown on the What's new page (drift://whatsnew) after an update.
 // Newest first. Kinds: new, faster, fixed, changed. Written for people using Drift.
 module.exports = [
+  { version: '1.25.0', date: '2026-11-08', items: [
+    ['new', 'Tabs keep their Back and Forward history after Drift restarts, when you reopen a closed tab (Ctrl+Shift+T), and when you duplicate one.'],
+    ['new', 'Closed a window by mistake? Ctrl+Shift+T brings the whole window back, with its tabs.'],
+    ['new', 'Sites remember their zoom level, even after a restart.'],
+    ['new', 'Downloads: the list is kept after a restart; shows speed and time left; download again a failed, cancelled or deleted file; remove single entries; drag a finished file straight into a folder or another app. Ctrl+J opens the list.'],
+    ['new', 'Settings has a search box.'],
+    ['new', 'Right-click a link for Save link as… and Copy link text; right-click a page for Copy page link and View page source.'],
+    ['new', 'Ctrl+Enter in the address bar turns "example" into www.example.com.'],
+    ['new', 'History: in Sites, pick a site and remove everything from it in one go.'],
+    ['changed', 'Test Twitch is quicker (two test windows, under a minute) and, when only your profile is flagged, offers to clear what Twitch stored. Leftover test profiles from earlier versions are deleted.'],
+    ['fixed', 'Settings no longer redraws many times a second while pages load (drop-downs could close on their own).'],
+    ['fixed', 'Two downloads with the same name at the same time no longer write to the same file.'],
+    ['fixed', '"Close other tabs" and "Close tabs below" only close tabs in the workspace you\'re looking at.'],
+    ['fixed', '"Open link here" uses the right identity and dark-mode setting for the site.'],
+    ['fixed', 'A page that failed to load because you were offline reloads itself when the connection comes back.'],
+    ['fixed', 'The new tab page clock changes on the minute.'],
+  ] },
   { version: '1.24.1', date: '2026-11-08', items: [
     ['new', 'Open a blank homepage tab any time: Ctrl+Alt+T, or right-click (or middle-click) the + button.'],
     ['new', 'Settings → New tabs open your homepage: makes + and Ctrl+T open the homepage instead of the command bar.'],

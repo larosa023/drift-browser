@@ -145,6 +145,7 @@
       }
     }
     html += '</div></div>';
+    if (tab === 'sites' && engine) html = `<div style="margin:4px 6px 0"><button class="ghost danger" id="del-host">Remove everything from ${esc(engine)}</button></div>` + html;
     if (list.length > limit) html += `<button class="ghost more" id="more">Show more (${(list.length - limit).toLocaleString()} left)</button>`;
     $('#list').innerHTML = html;
   }
@@ -158,6 +159,10 @@
     if (b.dataset.tab) { tab = b.dataset.tab; engine = ''; limit = 300; render(); return; }
     if ('eng' in b.dataset) { engine = b.dataset.eng; limit = 300; render(); return; }
     if (b.id === 'more') { limit += 500; render(); return; }
+    if (b.id === 'del-host') {
+      if (!b.classList.contains('armed')) { b.classList.add('armed'); b.textContent = 'Click again to remove'; return; }
+      const h = engine; D.sites = D.sites.filter(s => hostOf(s.url) !== h); send({ hosts: [h] }); engine = ''; render(); return;
+    }
     if (b.dataset.delSearch) { e.preventDefault(); const t = Number(b.dataset.delSearch); D.searches = D.searches.filter(s => s.t !== t); send({ searches: [t] }); render(); return; }
     if (b.dataset.delSite) { e.preventDefault(); const u = b.dataset.delSite; D.sites = D.sites.filter(s => s.url !== u); send({ sites: [u] }); render(); return; }
     if (b.id === 'clear') {

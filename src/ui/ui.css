@@ -265,6 +265,10 @@ kbd {
 .dl .bar i { display: block; height: 100%; background: var(--accent); }
 .dl.done .name { cursor: pointer; }
 .dl.done .name:hover { text-decoration: underline; }
+.dl .ib { flex: none; }
+.dl .dl-rm { opacity: 0; transition: opacity .12s; }
+.dl:hover .dl-rm, .dl .dl-rm:focus-visible { opacity: 1; }
+.dl[draggable="true"] { cursor: grab; }
 .empty { color: var(--muted); text-align: center; padding: 30px 10px; }
 
 /* ------------------------------------------------------------------ find bar */
@@ -854,3 +858,8 @@ body.rail:not(.rail-open) #ws-bar .ws .wn { display: none; }
 .wsi { all: unset; height: 30px; border-radius: 8px; display: grid; place-items: center; cursor: pointer; font-size: 16px; }
 .wsi:hover { background: var(--hover); }
 .wsi.on { background: color-mix(in srgb, var(--accent) 18%, transparent); box-shadow: inset 0 0 0 1.5px var(--accent); }
+
+/* Settings search */
+.set-search { padding: 0 4px 8px 2px; }
+.set-search input { width: 100%; box-sizing: border-box; font: inherit; font-size: 13px; color: var(--fg); background: var(--hover); border: 1px solid transparent; border-radius: 9px; padding: 7px 10px; outline: none; }
+.set-search input:focus { border-color: color-mix(in srgb, var(--accent) 55%, transparent); }

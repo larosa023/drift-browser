@@ -102,7 +102,9 @@
       (h < 5 ? 'Up late' : h < 12 ? 'Good morning' : h < 17 ? 'Good afternoon' : 'Good evening') + ' · ' +
       d.toLocaleDateString([], { weekday: 'long', month: 'long', day: 'numeric' });
   }
-  tick(); setInterval(tick, 1000 * 15);
+  // Changes right on the minute (it used to be up to 15 s behind).
+  const next = () => setTimeout(() => { tick(); next(); }, 60000 - Date.now() % 60000 + 50);
+  tick(); next();
 
   document.getElementById('f').addEventListener('submit', (e) => {
     e.preventDefault();

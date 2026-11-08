@@ -1,16 +1,11 @@
-// Twitch check (Settings → Privacy → Test Twitch): finds which part of Drift makes Twitch's
-// anti-bot check fail (Twitch then refuses follows and channel-point claims).
+// Twitch check (Settings → Privacy → Test Twitch): when Twitch refuses follows and channel-point
+// claims ("failed integrity check"), finds out whether Drift itself or data stored in your
+// profile is the cause, and offers the fix.
 //
-// Each test loads Twitch in a fresh, signed-out window and asks Twitch's own check for a
-// verdict: the follow request it sends carries no sign-in, so nothing happens to any account.
-// A browser Twitch trusts gets "unauthenticated"; one it doesn't gets "failed integrity check".
-// The tests strip Drift down step by step (its page script, its identity settings, its engine
-// switches), so the first one that passes shows what Twitch objects to.
+// Each test loads Twitch and asks Twitch's own anti-bot check for a verdict: the follow request
+// it sends carries no sign-in, so nothing happens to any account. A browser Twitch trusts gets
+// "unauthenticated"; one it doesn't gets "failed integrity check".
 const { app, BrowserWindow, session, dialog, clipboard } = require('electron');
-const path = require('path');
-const fs = require('fs');
-const os = require('os');
-const { spawn } = require('child_process');
 
 const URL_ = 'https://www.twitch.tv/';
 // Runs in the Twitch page (as the page's own code would): waits for Twitch's anti-bot script,
@@ -27,13 +22,12 @@ const PROBE = `(async () => {
 
 const verdict = (text) => /IntegrityCheckFailed|failed integrity/i.test(text) ? 'FAIL' : /nauthenticated/.test(text) ? 'PASS' : 'OTHER: ' + String(text).slice(0, 140);
 
-// One test: a visible window (hidden pages behave differently) on a fresh, signed-out session.
+// One test in a visible window (hidden pages behave differently): your profile, or a fresh,
+// signed-out one that lives only in memory.
 async function probeIn(opts = {}) {
-  // Saved-to-disk ("persist:") test profiles are needed for anything with extensions; emptied after.
-  const ses = opts.session || session.fromPartition((opts.persist ? 'persist:' : '') + 'twcheck-' + Date.now() + Math.floor(Math.random() * 1e6));
+  const ses = opts.session || session.fromPartition('twcheck-' + Date.now() + Math.floor(Math.random() * 1e6));
   if (opts.ua) ses.setUserAgent(opts.ua);
   if (opts.preload) ses.registerPreloadScript({ id: 'drift-page', type: 'frame', filePath: opts.preload });
-  if (opts.setup) { try { await opts.setup(ses); } catch (e) { return 'ERROR: setting up the test failed: ' + (e && e.message || e); } }
   const w = new BrowserWindow({ width: 1000, height: 700, title: 'Drift: testing Twitch…', autoHideMenuBar: true,
     webPreferences: { session: ses, sandbox: true, contextIsolation: true, nodeIntegration: false } });
   try {
@@ -45,75 +39,40 @@ async function probeIn(opts = {}) {
     return 'ERROR: ' + (e && e.message || e);
   } finally {
     if (!w.isDestroyed()) w.destroy();
-    if (opts.persist) ses.clearStorageData().catch(() => {});
   }
 }
 
-// A separate Drift process with nothing of Drift's but the version it reports (and, if asked,
-// Drift's engine switches): tells Drift's own changes apart from the engine underneath.
-function childRun(ua, switches) {
-  return new Promise((resolve) => {
-    const out = path.join(os.tmpdir(), `drift-twcheck-${process.pid}-${Date.now()}.json`);
-    const args = [...(process.defaultApp ? [app.getAppPath()] : []), `--drift-twcheck=${out}`, `--drift-twcheck-ua=${encodeURIComponent(ua)}`];
-    if (switches) args.push(`--drift-twcheck-switches=${encodeURIComponent(switches)}`);
-    if (app.commandLine.hasSwitch('no-sandbox')) args.push('--no-sandbox');
-    let done = false;
-    const finish = (r) => { if (done) return; done = true; try { fs.unlinkSync(out); } catch {} resolve(r); };
-    // The engine's own settings for its helper processes must not carry over to a new browser.
-    const env = { ...process.env }; for (const k of Object.keys(env)) if (/^(ELECTRON_|CHROME_|GOOGLE_)/.test(k) && k !== 'ELECTRON_OVERRIDE_DIST_PATH') delete env[k];
-    const p = spawn(process.execPath, args, { env, stdio: 'ignore' });
-    const timer = setTimeout(() => { try { p.kill(); } catch {} finish('ERROR: test window took too long'); }, 120000);
-    p.on('exit', () => { clearTimeout(timer); try { finish(JSON.parse(fs.readFileSync(out, 'utf8')).result); } catch { finish('ERROR: no result'); } });
-    p.on('error', (e) => { clearTimeout(timer); finish('ERROR: ' + e.message); });
-  });
-}
-
-// The separate process's side (started with --drift-twcheck=<file>; main.js hands over at once).
-function child() {
-  const arg = (k) => { const a = process.argv.find(x => x.startsWith(`--${k}=`)); return a ? a.slice(k.length + 3) : ''; };
-  const out = arg('drift-twcheck'), ua = decodeURIComponent(arg('drift-twcheck-ua')), sw = decodeURIComponent(arg('drift-twcheck-switches'));
-  if (sw) for (const part of sw.split(' ')) { const i = part.indexOf('='); if (i > 0) app.commandLine.appendSwitch(part.slice(0, i), part.slice(i + 1)); else if (part) app.commandLine.appendSwitch(part); }
-  app.setPath('userData', fs.mkdtempSync(path.join(os.tmpdir(), 'drift-twcheck-')));
-  app.whenReady().then(async () => {
-    const result = await probeIn({ ua: ua || undefined });
-    try { fs.writeFileSync(out, JSON.stringify({ result })); } catch {}
-    try { fs.rmSync(app.getPath('userData'), { recursive: true, force: true }); } catch {}
-    app.exit(0);
-  });
-}
-
-// Settings → Test Twitch. ctx: { ua, switches, preload, applyIdentity, parent }.
+// Settings → Test Twitch. ctx: { ua, preload, applyIdentity, parent, clearTwitch }.
 let running = false;
 async function run(ctx) {
   if (running) return;
   running = true;
   try {
     const go = await dialog.showMessageBox(ctx.parent, { type: 'info', buttons: ['Start', 'Cancel'], defaultId: 0, cancelId: 1, noLink: true,
-      title: 'Test Twitch', message: 'Find out what Twitch objects to',
-      detail: 'Drift opens Twitch in a few test windows, one after another (about 4 minutes). The test asks Twitch without your sign-in, so nothing happens to your account. Leave them open until the results appear.' });
+      title: 'Test Twitch', message: 'Find out why Twitch won\'t let you follow',
+      detail: 'Drift opens Twitch in two test windows, one after the other (under a minute). The test asks Twitch without your sign-in, so nothing happens to your account.' });
     if (go.response !== 0) return;
-    // Fresh profiles with one part of your everyday profile added each: the one that fails is it.
-    const fresh = (setup) => () => probeIn({ ua: ctx.ua, preload: ctx.preload, prepare: ctx.applyIdentity, setup });
-    const saved = (setup) => () => probeIn({ ua: ctx.ua, preload: ctx.preload, prepare: ctx.applyIdentity, setup, persist: true });
-    const tests = [
-      ['Drift as you use it', () => probeIn({ session: session.defaultSession, prepare: ctx.applyIdentity })],
-      ['Drift, fresh profile', fresh()],
-      ['Fresh profile saved to disk', saved()],
-      ['Saved + extension support', saved(ctx.addExtSupport)],
-      ['Saved + Chrome Web Store support', saved(ctx.addWebStore)],
-      ['Saved + certificate viewer', saved(ctx.addCerts)],
-      ['Saved + uBlock Origin', saved(ctx.addUbo)],
-      ['Saved + all of the above and Drift\'s other profile settings', saved(ctx.addAll)],
-    ];
-    const lines = [`Drift ${app.getVersion()} (engine ${process.versions.chrome}, ${process.platform}) Twitch check`];
-    for (const [name, fn] of tests) lines.push(`${name}: ${await fn()}`);
-    const text = lines.join('\n');
+    const mine = await probeIn({ session: session.defaultSession, prepare: ctx.applyIdentity });
+    const fresh = await probeIn({ ua: ctx.ua, preload: ctx.preload, prepare: ctx.applyIdentity });
+    const text = [`Drift ${app.getVersion()} (engine ${process.versions.chrome}, ${process.platform}) Twitch check`,
+      `Your profile: ${mine}`, `Fresh profile: ${fresh}`].join('\n');
     clipboard.writeText(text);
-    await dialog.showMessageBox(ctx.parent, { type: 'info', buttons: ['OK'], noLink: true, title: 'Test Twitch',
-      message: 'Twitch check finished (results copied)', detail: text + '\n\nPASS = Twitch accepts it, FAIL = Twitch rejects it.' });
+    if (mine === 'PASS') {
+      await dialog.showMessageBox(ctx.parent, { type: 'info', buttons: ['OK'], noLink: true, title: 'Test Twitch',
+        message: 'Twitch accepts Drift', detail: text + '\n\nIf following still fails, sign out of Twitch and back in. (Results copied.)' });
+    } else if (fresh === 'PASS') {
+      // Drift is fine; data Twitch stored in your profile was flagged. Clearing it fixed this before.
+      const r = await dialog.showMessageBox(ctx.parent, { type: 'warning', buttons: ['Clear Twitch data', 'Not now'], defaultId: 0, cancelId: 1, noLink: true, title: 'Test Twitch',
+        message: 'Twitch has flagged data stored in your profile',
+        detail: text + '\n\nDrift itself passes. Clearing what Twitch stored (and Drift\'s cache) usually fixes it. You\'ll be signed out of Twitch only. (Results copied.)' });
+      if (r.response === 0 && ctx.clearTwitch) await ctx.clearTwitch();
+    } else {
+      await dialog.showMessageBox(ctx.parent, { type: 'warning', buttons: ['OK'], noLink: true, title: 'Test Twitch',
+        message: 'Twitch rejects Drift right now', detail: text + '\n\nThis can be temporary on Twitch\'s side; try again later. The results are copied, ready to paste.' });
+    }
   } finally {
     running = false;
   }
 }
 
-module.exports = { run, child };
+module.exports = { run };
