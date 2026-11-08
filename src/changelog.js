@@ -1,6 +1,9 @@
 // What's new in each release, shown on the What's new page (drift://whatsnew) after an update.
 // Newest first. Kinds: new, faster, fixed, changed. Written for people using Drift.
 module.exports = [
+  { version: '1.25.2', date: '2026-11-08', items: [
+    ['new', 'Blocked sites (Settings → Privacy), next to No-download sites: nothing from the sites you list loads at all, not even inside other pages (like a shady video player on a stream site), so nothing from them can reach your cache. Pages from them are blocked as soon as you save; click Restart Drift to block everything else they load.'],
+  ] },
   { version: '1.25.1', date: '2026-11-08', items: [
     ['new', 'Right-click a video or audio player: Save video as…, Open in new tab and Copy address, when it\'s a plain file. Streamed video (most big sites) says it can\'t be saved.'],
   ] },

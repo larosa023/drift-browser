@@ -826,7 +826,7 @@ let rangeHeld = false;
 document.addEventListener('pointerup', () => { rangeHeld = false; }, true);
 function renderSettings() {
   if (rangeHeld) return;   // don't redraw under a slider that's being dragged
-  if (document.activeElement && document.activeElement.id === 'bs-text') return;   // or under typing
+  if (document.activeElement && /^(bs|bl)-text$/.test(document.activeElement.id)) return;   // or under typing
   const s = S.settings;
   const sw = (key, on) => `<button class="switch ${on ? 'on' : ''}" data-set="${key}" data-val="${!on}"></button>`;
   // Built as text and only redrawn when it changed: a redraw on every update (many a second
@@ -900,6 +900,9 @@ function renderSettings() {
     </div>
     <div class="group"><h4>Privacy</h4>
       <div class="row"><span class="lbl">History<small>Everything you've searched for and the sites you've visited, by day (Ctrl+H)</small></span><button class="mini" id="open-history">Open</button></div>
+      <div class="row" style="display:block"><span class="lbl">Blocked sites<small>Nothing from these sites loads at all, not even inside other pages (like a video player on a stream site), so nothing from them reaches your cache. Subdomains included. One per line</small></span>
+        <textarea id="bl-text" spellcheck="false" rows="4" placeholder="badsite.com" style="width:100%;box-sizing:border-box;margin-top:8px;resize:vertical;background:var(--field, rgba(127,127,127,.1));color:inherit;border:1px solid var(--line, rgba(127,127,127,.25));border-radius:8px;padding:8px;font:13px ui-monospace,Consolas,monospace">${esc((s.blockSites || []).join('\n'))}</textarea>
+        <div style="display:flex;gap:8px;align-items:center;margin-top:6px"><button class="mini" id="bl-save">Save</button>${S.blockRestart ? '<button class="mini" id="bl-restart">Restart Drift</button><small style="color:var(--muted)">Pages from them are blocked now; restart to block everything else</small>' : ''}</div></div>
       <div class="row" style="display:block"><span class="lbl">No-download sites<small>You can still use these sites, but nothing downloads while you're on them or from them, even if you click a download button. Subdomains included. One per line, like site.com</small></span>
         <textarea id="bs-text" spellcheck="false" rows="4" placeholder="site.com" style="width:100%;box-sizing:border-box;margin-top:8px;resize:vertical;background:var(--field, rgba(127,127,127,.1));color:inherit;border:1px solid var(--line, rgba(127,127,127,.25));border-radius:8px;padding:8px;font:13px ui-monospace,Consolas,monospace">${esc((s.blockedSites || []).join('\n'))}</textarea>
         <div style="margin-top:6px"><button class="mini" id="bs-save">Save</button></div></div>
@@ -982,6 +985,8 @@ $('#settings-body').addEventListener('click', (e) => {
   if (e.target.id === 'clear-data') send('clear-data');
   if (e.target.id === 'tw-check') send('tw-check');
   if (e.target.id === 'bs-save') send('blocked-sites', $('#bs-text').value);
+  if (e.target.id === 'bl-save') send('block-sites', $('#bl-text').value);
+  if (e.target.id === 'bl-restart') send('relaunch');
   if (e.target.id === 'upd-check') send('update-check');
   if (e.target.id === 'whats-new') { send('whats-new'); togglePanel(null); }
   if (e.target.id === 'open-history') { send('open-history'); togglePanel(null); }

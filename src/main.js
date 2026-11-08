@@ -63,6 +63,7 @@ const DEFAULT_SETTINGS = {
   forceDarkOff: [],          // hostnames excluded from force dark
   offerPasswords: true,
   zoomLevels: {},            // { host: zoom factor } for sites you zoomed
+  blockSites: [],            // blocked sites: nothing from them loads at all, not even inside other pages
   blockedSites: [],          // no-download sites: nothing downloads while you're on them (or from them), subdomains included
   webgpu: false,             // offer WebGPU to sites (off: requesting it froze the window for seconds on some PCs)
   blockPopups: true,         // pop-up blocker (see popupVerdict)
@@ -175,6 +176,12 @@ function normalizeBlockHost(v) {
   try { h = new URL(/^[a-z][a-z0-9+.-]*:\/\//.test(h) ? h : 'http://' + h).hostname; } catch { return ''; }
   h = h.replace(/^www\./, '').replace(/\.$/, '');
   return /^[a-z0-9-]+(\.[a-z0-9-]+)+$/.test(h) ? h : '';
+}
+// Blocked sites (settings.blockSites): is this address on one of them (or a subdomain)?
+function isBlockSiteUrl(url) {
+  if (!settings.blockSites || !settings.blockSites.length) return false;
+  let h = ''; try { h = new URL(url).hostname.toLowerCase(); } catch { return false; }
+  return settings.blockSites.some(b => h === b || h.endsWith('.' + b));
 }
 function isBlockedUrl(url) {
   if (!settings.blockedSites || !settings.blockedSites.length) return false;
@@ -497,6 +504,7 @@ function pushOne() {
         zoom: wc ? Math.round(wc.getZoomFactor() * 100) : 100,
       },
       settings: { ...settings, permissions: undefined, bounds: undefined },
+      blockRestart: JSON.stringify(settings.blockSites || []) !== BLOCK_AT_START,
       passwordCount: passwords ? passwords.entries.length : 0,
       appVersion: app.getVersion(), update: updateState,
       wallpaperCss: wallpaperCss(),
@@ -2846,7 +2854,7 @@ function setupDownloads(ses) {
       const pageOf = (w) => { try { return w && !w.isDestroyed() ? w.getURL() : ''; } catch { return ''; } };
       const t = fromWc && wcToTab.get(fromWc.id);
       const urls = [pageOf(fromWc), t ? t.url : '', item.getURL(), ...(item.getURLChain ? item.getURLChain() : [])];
-      const hit = urls.find(isBlockedUrl);
+      const hit = urls.find(u => isBlockedUrl(u) || isBlockSiteUrl(u));
       if (hit) {
         e.preventDefault();
         const c = (t && ctxOfTab(t)) || cur;
@@ -3805,12 +3813,19 @@ function setupIPC() {
   on('site-shields', () => toggleSiteShields());
   on('zoom', (d) => zoom(d));
   on('set', (key, value) => {
-    if (!(key in DEFAULT_SETTINGS) || ['permissions', 'bounds', 'shieldsAllow', 'popupAllow', 'wsList', 'hiddenActions', 'pinnedActions', 'hiddenSites', 'unpacked', 'forceDarkOff', 'blockedSites', 'zoomLevels'].includes(key)) return;
+    if (!(key in DEFAULT_SETTINGS) || ['permissions', 'bounds', 'shieldsAllow', 'popupAllow', 'wsList', 'hiddenActions', 'pinnedActions', 'hiddenSites', 'unpacked', 'forceDarkOff', 'blockedSites', 'blockSites', 'zoomLevels'].includes(key)) return;
     if (key === 'shields') return setShieldsGlobal(!!value);
     if (key === 'shieldsEngine') return setShieldsEngine(value === 'builtin' ? 'builtin' : 'ubo');
     setSetting(key, value);
   });
   // No-download sites: one site per line from Settings.
+  // Blocked sites: one per line. Pages and frames from them stop right away; everything else
+  // (scripts, ads, files they pull in) after a restart (see the startup block).
+  on('block-sites', (text) => {
+    settings.blockSites = [...new Set(String(text || '').split(/[\s,]+/).map(normalizeBlockHost).filter(Boolean))];
+    saveSettings(); push();
+  });
+  on('relaunch', () => { saveSettings(); app.relaunch(); app.quit(); });
   on('blocked-sites', (text) => {
     const list = [...new Set(String(text || '').split(/[\s,]+/).map(normalizeBlockHost).filter(Boolean))];
     settings.blockedSites = list; saveSettings(); push();
@@ -4232,6 +4247,19 @@ if (process.platform === 'win32') app.setAppUserModelId('com.drift.browser');
 // graphics adapter" at once, as Chrome does on PCs without WebGPU support, without changing
 // the page's functions: anti-bot checks (Twitch's, Google sign-in's) treat changed built-in
 // functions as a bot and then refuse things like following a channel.
+// Your blocked sites (Settings → Privacy): their names don't resolve at all, so no page, player,
+// script, ad or file from them (or their subdomains) reaches Drift or its cache. Set at startup.
+let BLOCK_AT_START = '[]';   // the list in force since startup (Settings offers a restart when it changed)
+{
+  let list = [];
+  try { list = JSON.parse(fs.readFileSync(path.join(app.getPath('userData'), 'settings.json'), 'utf8')).blockSites || []; } catch {}
+  const rules = list.filter(h => typeof h === 'string' && /^[a-z0-9.-]+$/i.test(h)).flatMap(h => [`MAP ${h} ~NOTFOUND`, `MAP *.${h} ~NOTFOUND`]);
+  BLOCK_AT_START = JSON.stringify(list);
+  if (rules.length) {
+    const prev = app.commandLine.getSwitchValue('host-resolver-rules');
+    app.commandLine.appendSwitch('host-resolver-rules', [...rules, prev].filter(Boolean).join(', '));   // first match wins: blocks first
+  }
+}
 {
   let gpuOn = false;
   try { gpuOn = !!JSON.parse(fs.readFileSync(path.join(app.getPath('userData'), 'settings.json'), 'utf8')).webgpu; } catch {}
@@ -4384,6 +4412,16 @@ if (!app.requestSingleInstanceLock(launchRequest)) {
       wc.on('before-input-event', (_e2, ie) => { if (ie.type === 'keyDown') { wc.__act = Date.now(); wc.__dlLeft = 3; } });
       wc.on('input-event', (_e2, ie) => { if (ie.type === 'touchStart' || ie.type === 'gestureTap') { wc.__act = Date.now(); wc.__dlLeft = 3; } });
     }
+    // Blocked sites, before the restart that blocks them completely: no page or frame (a video
+    // player inside a stream site, say) from them loads, typed, clicked or redirected to.
+    wc.on('will-frame-navigate', (e) => { if (isBlockSiteUrl(e.url)) e.preventDefault(); });
+    wc.on('will-redirect', (e) => { if (isBlockSiteUrl(e.url)) e.preventDefault(); });
+    wc.on('did-start-navigation', (e) => {
+      if (!e.isMainFrame || e.isSameDocument || !isBlockSiteUrl(e.url)) return;
+      let host = ''; try { host = new URL(e.url).hostname; } catch {}
+      const page = `<!doctype html><meta charset=utf-8><title>Blocked</title><body style="font:15px system-ui;background:#1b1b1d;color:#ddd;display:grid;place-items:center;height:90vh;margin:0"><div><h2 style="margin:0 0 8px">${host.replace(/[<>&"]/g, '')} is blocked</h2><p style="color:#999;margin:0">It's on your blocked sites list (Settings → Privacy).</p></div>`;
+      setImmediate(() => { if (!wc.isDestroyed()) wc.loadURL('data:text/html;charset=utf-8,' + encodeURIComponent(page)).catch(() => {}); });
+    });
     // Tabs and sign-in popups both need the Google sign-in user agent switch.
     if (wc.getType() === 'window' || wc.getType() === 'browserView') guardUserAgent(wc);
     // Web pages (tabs and their popups) get the reported Chrome identity on their first web load.
