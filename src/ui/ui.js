@@ -185,6 +185,12 @@ function renderAddr() {
   setHTML(dk, icon(S.nav.dark ? 'moonfill' : 'moon', 14));
   dk.classList.toggle('on', S.nav.dark);
   dk.title = S.nav.darkSite ? `Force dark is on for ${hostOf(url)} — click to turn it off for this site` : `Force dark is off for ${hostOf(url)} — click to turn it on`;
+  // Downloads on this site: allowed (plain arrow) or blocked (crossed out, lit).
+  const nd = $('#a-nodl');
+  nd.hidden = internal || !/^https?:/i.test(url) || !/\./.test(hostOf(url));   // (not for localhost)
+  setHTML(nd, icon(S.nav.noDl ? 'nodownload' : 'download', 14));
+  nd.classList.toggle('on', !!S.nav.noDl);
+  nd.title = S.nav.noDl ? `Downloads are blocked on ${hostOf(url)} — click to allow them` : `Block downloads on ${hostOf(url)}`;
   const sh = $('#a-shield');
   sh.hidden = internal;
   sh.classList.toggle('off', !S.nav.shieldsOn);
@@ -486,6 +492,7 @@ $('#addr').addEventListener('click', (e) => {
 });
 $('#a-star').onclick = () => send('bm-toggle');
 $('#a-dark').onclick = () => send('force-dark-site');
+$('#a-nodl').onclick = () => send('toggle-nodl-site');
 // Zoom popover under the address bar's zoom button.
 function openZoomPop() {
   const r = $('#a-zoom').getBoundingClientRect(), m = $('#zoompop');

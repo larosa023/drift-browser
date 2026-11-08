@@ -863,3 +863,6 @@ body.rail:not(.rail-open) #ws-bar .ws .wn { display: none; }
 .set-search { padding: 0 4px 8px 2px; }
 .set-search input { width: 100%; box-sizing: border-box; font: inherit; font-size: 13px; color: var(--fg); background: var(--hover); border: 1px solid transparent; border-radius: 9px; padding: 7px 10px; outline: none; }
 .set-search input:focus { border-color: color-mix(in srgb, var(--accent) 55%, transparent); }
+
+/* Address bar: downloads blocked on this site */
+.a-btn.a-nodl.on { color: #e5484d; }

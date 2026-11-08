@@ -501,6 +501,7 @@ function pushOne() {
         bookmarked: !!(t && bookmarks && bookmarks.findByUrl(t.url)),
         dark: !!(t && t.dark),
         darkSite: t ? !settings.forceDarkOff.includes(hostOf(t.url)) : true,
+        noDl: t ? isBlockedUrl(t.url) : false,
         zoom: wc ? Math.round(wc.getZoomFactor() * 100) : 100,
       },
       settings: { ...settings, permissions: undefined, bounds: undefined },
@@ -3920,6 +3921,19 @@ function setupIPC() {
   }));
   on('ext-unpacked', () => loadUnpacked());
   on('force-dark-site', () => toggleForceDarkSite());
+  // The address bar's download button: block or allow downloads on this site (the No-download
+  // sites list in Settings → Privacy).
+  on('toggle-nodl-site', () => {
+    const t = activeTab(); if (!t || !/^https?:/i.test(t.url)) return;
+    const h = normalizeBlockHost(t.url); if (!h) return;
+    const list = settings.blockedSites || [];
+    // Allowing: drop the entry that covers this site (it may be a parent domain).
+    const covering = list.filter(b => { const host = new URL(t.url).hostname.toLowerCase(); return host === b || host.endsWith('.' + b); });
+    settings.blockedSites = covering.length ? list.filter(b => !covering.includes(b)) : [...list, h];
+    saveSettings();
+    if (ui && !ui.webContents.isDestroyed()) ui.webContents.send('toast', { text: covering.length ? `Downloads allowed on ${covering.join(', ')}` : `Downloads blocked on ${h}`, icon: covering.length ? 'download' : 'shield', ms: 3000 });
+    push();
+  });
   on('split-menu', (x, y) => splitMenu(x, y));
   on('split-ratio', (r) => { const sp = splitOf(activeId); if (!sp) return; sp.ratio = Math.max(0.15, Math.min(0.85, Number(r) || 0.5)); layout(); saveSession(); });
   on('unsplit', () => unsplit());
