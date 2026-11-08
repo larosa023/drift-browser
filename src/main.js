@@ -63,6 +63,7 @@ const DEFAULT_SETTINGS = {
   forceDarkOff: [],          // hostnames excluded from force dark
   offerPasswords: true,
   zoomLevels: {},            // { host: zoom factor } for sites you zoomed
+  removedExtensions: [],     // removed extensions whose folder couldn't be deleted yet
   blockSites: [],            // blocked sites: nothing from them loads at all, not even inside other pages
   blockedSites: [],          // no-download sites: nothing downloads while you're on them (or from them), subdomains included
   webgpu: false,             // offer WebGPU to sites (off: requesting it froze the window for seconds on some PCs)
@@ -2622,8 +2623,22 @@ function tidyExtensionData() {
   } catch (e) { console.error('[ext] uBO settings migration failed:', e.message); }
 }
 
+// Extensions you removed whose folder Windows wouldn't let go of at the time (a file still in
+// use): deleted before extensions load, or they'd come back at the next start.
+function finishRemovals() {
+  const left = [];
+  for (const id of settings.removedExtensions || []) {
+    if (!/^[a-p]{32}$/.test(id)) continue;
+    const dir = path.join(app.getPath('userData'), 'Extensions', id);
+    try { fs.rmSync(dir, { recursive: true, force: true, maxRetries: 3 }); } catch (e) { console.error('[extensions] still can\'t delete', id, e.message); }
+    if (fs.existsSync(dir)) left.push(id);
+  }
+  if ((settings.removedExtensions || []).length !== left.length) { settings.removedExtensions = left; saveSettings(); }
+}
+
 async function setupExtensions(ses) {
   try { tidyExtensionData(); } catch (e) { console.error('[ext] housekeeping', e.message); }
+  try { finishRemovals(); } catch (e) { console.error('[ext] removals', e.message); }
   extensions = new ElectronChromeExtensions({
     session: ses,
     // chrome.tabs.create → a Drift tab
@@ -2696,6 +2711,8 @@ async function removeExtension(id) {
   } else {
     try { await uninstallExtension(id, { session: session.defaultSession }); }
     catch (e) { console.error('[extensions] uninstall failed', e.message); extApi().removeExtension(id); }
+    // Folder still there (Windows held on to a file): finish at the next start, before loading.
+    if (fs.existsSync(path.join(app.getPath('userData'), 'Extensions', id)) && !settings.removedExtensions.includes(id)) { settings.removedExtensions.push(id); saveSettings(); }
   }
   settings.hiddenActions = settings.hiddenActions.filter(x => x !== id);
   settings.pinnedActions = settings.pinnedActions.filter(x => x !== id); saveSettings();
@@ -3814,7 +3831,7 @@ function setupIPC() {
   on('site-shields', () => toggleSiteShields());
   on('zoom', (d) => zoom(d));
   on('set', (key, value) => {
-    if (!(key in DEFAULT_SETTINGS) || ['permissions', 'bounds', 'shieldsAllow', 'popupAllow', 'wsList', 'hiddenActions', 'pinnedActions', 'hiddenSites', 'unpacked', 'forceDarkOff', 'blockedSites', 'blockSites', 'zoomLevels'].includes(key)) return;
+    if (!(key in DEFAULT_SETTINGS) || ['permissions', 'bounds', 'shieldsAllow', 'popupAllow', 'wsList', 'hiddenActions', 'pinnedActions', 'hiddenSites', 'unpacked', 'forceDarkOff', 'blockedSites', 'blockSites', 'zoomLevels', 'removedExtensions'].includes(key)) return;
     if (key === 'shields') return setShieldsGlobal(!!value);
     if (key === 'shieldsEngine') return setShieldsEngine(value === 'builtin' ? 'builtin' : 'ubo');
     setSetting(key, value);

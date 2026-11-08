@@ -1,6 +1,9 @@
 // What's new in each release, shown on the What's new page (drift://whatsnew) after an update.
 // Newest first. Kinds: new, faster, fixed, changed. Written for people using Drift.
 module.exports = [
+  { version: '1.25.4', date: '2026-11-08', items: [
+    ['fixed', 'Removed extensions could come back after a restart, when Windows hadn\'t let go of one of their files at the time. Drift now finishes removing them at the next start, before extensions load.'],
+  ] },
   { version: '1.25.3', date: '2026-11-08', items: [
     ['new', 'A download button in the address bar: click it to block all downloads on the site you\'re on (it turns red and crossed out), click again to allow them. It uses the No-download sites list in Settings → Privacy.'],
   ] },
