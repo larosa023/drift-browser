@@ -60,6 +60,7 @@ const DEFAULT_SETTINGS = {
   sidebarRail: false,        // icon-only sidebar
   titleBar: true,
   bookmarksBar: true,
+  homeNewTab: false,         // + and Ctrl+T open the homepage (new tab page) instead of the command bar
   forceDark: false,          // darken every site (Chromium's auto dark mode, like Opera)
   forceDarkOff: [],          // hostnames excluded from force dark
   offerPasswords: true,
@@ -1802,6 +1803,12 @@ function toggleSidebar() {
 // Keyboard shortcuts (work whether the page or the sidebar has focus)
 // ---------------------------------------------------------------------------
 
+// New tab (+, Ctrl+T): the command bar, or with "New tabs open your homepage" on, the homepage.
+function newTabAction() {
+  if (settings.homeNewTab) createTab(NEWTAB);
+  else ui.webContents.send('palette', { newTab: true });
+}
+
 function handleShortcut(input) {
   if (input.type !== 'keyDown') return false;
   const mod = process.platform === 'darwin' ? input.meta : input.control;
@@ -1816,7 +1823,7 @@ function handleShortcut(input) {
 
   if (mod && !input.shift && !input.alt) {
     switch (k) {
-      case 't': ui.webContents.send('palette', { newTab: true }); return true;
+      case 't': newTabAction(); return true;
       case 'n': newWindow(); return true;
       case 'l': ui.webContents.send('palette', { newTab: false }); return true;
       case 'w': if (t) closeTab(t.id); return true;
@@ -1855,6 +1862,7 @@ function handleShortcut(input) {
   }
   if (mod && input.alt && !input.shift && k === 's') { toggleSidebar(); return true; }
   if (mod && input.alt && !input.shift && k === 'c') { toggleCompact(); return true; }
+  if (mod && input.alt && !input.shift && k === 't') { createTab(NEWTAB); return true; }   // always the homepage
   if (input.alt && !mod && !input.shift) {
     if (k === 'ArrowLeft') { if (wc && wc.navigationHistory.canGoBack()) wc.navigationHistory.goBack(); return true; }
     if (k === 'ArrowRight') { if (wc && wc.navigationHistory.canGoForward()) wc.navigationHistory.goForward(); return true; }
@@ -3628,7 +3636,8 @@ function setupIPC() {
   on('activate', (id, noFocus) => activate(id, { noFocus: !!noFocus }));
   on('focus-page', () => { if (!overlay) focusPage(); });
   on('close-tab', (id) => closeTab(id));
-  on('new-tab', () => { ui.webContents.send('palette', { newTab: true }); });
+  on('new-tab', () => newTabAction());
+  on('home-tab', () => createTab(NEWTAB));
   on('tab-menu', (id) => tabContextMenu(id));
   on('move-tab', (id, idx, pinned) => moveTab(id, idx, pinned));
   on('ws-switch', (id) => switchWs(id));

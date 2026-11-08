@@ -527,7 +527,11 @@ if (window.browserAction) window.browserAction.addEventListener('update', () => 
 $('#a-shield').onclick = (e) => openShields(e.currentTarget);
 document.addEventListener('dblclick', (e) => { if (e.target.closest('#titlebar') && !e.target.closest('button, #addr')) send('win', 'max'); });
 document.querySelectorAll('[data-win]').forEach(b => b.onclick = () => send('win', b.dataset.win));
-$('#btn-newtab').onclick = () => openPalette(true);
+// + : the command bar (or the homepage, if you chose that in Settings). Middle- or right-click:
+// always a blank homepage tab.
+$('#btn-newtab').onclick = () => S && S.settings && S.settings.homeNewTab ? send('home-tab') : openPalette(true);
+$('#btn-newtab').addEventListener('auxclick', (e) => { if (e.button === 1) { e.preventDefault(); send('home-tab'); } });
+$('#btn-newtab').addEventListener('contextmenu', (e) => { e.preventDefault(); send('home-tab'); });
 $('#urlbar').onclick = (e) => { if (!e.target.closest('#btn-shield')) openPalette(false); };
 $('#btn-shield').onclick = (e) => openShields(e.currentTarget);
 let bmSources = null;
@@ -832,6 +836,7 @@ function renderSettings() {
     <div class="group"><h4>Appearance</h4>
       <div class="row"><span class="lbl">Theme</span><div class="seg">
         ${['system', 'dark', 'light'].map(t => `<button class="${s.theme === t ? 'on' : ''}" data-set="theme" data-val="${t}">${t[0].toUpperCase() + t.slice(1)}</button>`).join('')}</div></div>
+      <div class="row"><span class="lbl">New tabs open your homepage<small>The + button and Ctrl+T open a blank homepage tab instead of the command bar. Either way, Ctrl+Alt+T or right-clicking + opens one</small></span>${sw('homeNewTab', s.homeNewTab)}</div>
       <div class="row"><span class="lbl">Compact mode<small>The page fills the window. Move the mouse to the left edge for the sidebar, or the top edge for the toolbar · Ctrl+Alt+C</small></span>${sw('compact', s.compact)}</div>
       <div class="row"><span class="lbl">Top toolbar<small>Address bar, window buttons and a drag area at the top</small></span>${sw('titleBar', s.titleBar)}</div>
       <div class="row"><span class="lbl">Bookmarks bar<small>${s.titleBar ? 'Under the address bar' : 'Needs the top toolbar'} · Ctrl+Shift+B</small></span>${sw('bookmarksBar', s.bookmarksBar)}</div>
@@ -899,6 +904,7 @@ function renderSettings() {
     </div>
     <div class="group"><h4>Keyboard shortcuts</h4><div class="kbd-list">
       <div><span>Command bar / new tab</span><span><kbd>Ctrl</kbd><kbd>T</kbd></span></div>
+      <div><span>Blank homepage tab</span><span><kbd>Ctrl</kbd><kbd>Alt</kbd><kbd>T</kbd></span></div>
       <div><span>History</span><span><kbd>Ctrl</kbd><kbd>H</kbd></span></div>
       <div><span>Edit address</span><span><kbd>Ctrl</kbd><kbd>L</kbd></span></div>
       <div><span>Close tab</span><span><kbd>Ctrl</kbd><kbd>W</kbd></span></div>

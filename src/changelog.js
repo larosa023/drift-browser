@@ -1,6 +1,10 @@
 // What's new in each release, shown on the What's new page (drift://whatsnew) after an update.
 // Newest first. Kinds: new, faster, fixed, changed. Written for people using Drift.
 module.exports = [
+  { version: '1.24.1', date: '2026-11-08', items: [
+    ['new', 'Open a blank homepage tab any time: Ctrl+Alt+T, or right-click (or middle-click) the + button.'],
+    ['new', 'Settings → New tabs open your homepage: makes + and Ctrl+T open the homepage instead of the command bar.'],
+  ] },
   { version: '1.24.0', date: '2026-11-07', items: [
     ['new', 'History (Ctrl+H, or Settings → Privacy): everything you search for, grouped by day, from the address bar and on Google, YouTube, Amazon, Twitch, Reddit and more. Filter by where you searched, find old searches, click one to search again, or remove it.'],
     ['new', 'History also lists the sites you\'ve visited, by day, with a filter for each site.'],
