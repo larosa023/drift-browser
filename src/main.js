@@ -1946,8 +1946,18 @@ function pageContextMenu(tab, wc, p) {
     if (p.linkText && p.linkText.trim()) m.push({ label: 'Copy link text', click: () => clipboard.writeText(p.linkText.trim()) });
     sep();
   }
-  if (p.mediaType === 'video') {
-    m.push({ label: 'Picture in picture', click: () => pipAt(wc, p) });
+  if (p.mediaType === 'video' || p.mediaType === 'audio') {
+    const kind = p.mediaType;
+    if (kind === 'video') m.push({ label: 'Picture in picture', click: () => pipAt(wc, p) });
+    // Saving: only for a plain file. Most big sites stream video in pieces (a "blob:" source),
+    // which can't be saved as one file.
+    if (/^https?:/i.test(p.srcURL || '')) {
+      m.push({ label: `Save ${kind} as…`, click: () => { wc.__driftDl = Date.now(); wc.downloadURL(p.srcURL); } });
+      m.push({ label: `Open ${kind} in new tab`, click: () => createTab(p.srcURL, { activate: false, openerId: tab.id }) });
+      m.push({ label: `Copy ${kind} address`, click: () => clipboard.writeText(p.srcURL) });
+    } else if (p.srcURL) {
+      m.push({ label: `This ${kind} streams in pieces and can't be saved`, enabled: false });
+    }
     sep();
   }
   if (p.mediaType === 'image' && p.srcURL) {

@@ -1,6 +1,9 @@
 // What's new in each release, shown on the What's new page (drift://whatsnew) after an update.
 // Newest first. Kinds: new, faster, fixed, changed. Written for people using Drift.
 module.exports = [
+  { version: '1.25.1', date: '2026-11-08', items: [
+    ['new', 'Right-click a video or audio player: Save video as…, Open in new tab and Copy address, when it\'s a plain file. Streamed video (most big sites) says it can\'t be saved.'],
+  ] },
   { version: '1.25.0', date: '2026-11-08', items: [
     ['new', 'Tabs keep their Back and Forward history after Drift restarts, when you reopen a closed tab (Ctrl+Shift+T), and when you duplicate one.'],
     ['new', 'Closed a window by mistake? Ctrl+Shift+T brings the whole window back, with its tabs.'],
