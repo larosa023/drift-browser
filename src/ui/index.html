@@ -9,7 +9,7 @@
 <body class="dark">
   <div id="wash"><div id="wp"></div><div id="wp-tint"></div></div>
   <header id="titlebar">
-    <div class="tb-left"><button class="ib" id="tb-sidebar" data-i="sidebar" title="Collapse sidebar"></button></div>
+    <div class="tb-left"><button class="ib" id="tb-sidebar" data-i="sidebar" title="Collapse sidebar"></button><span id="tb-private" hidden title="Private window: no history, cookies or site data are kept after you close it">Private</span></div>
     <div class="tb-main">
       <div class="tb-nav">
         <button class="ib" data-nav="back" title="Back (Alt+←)" data-i="back"></button>
@@ -27,6 +27,7 @@
         <button class="shield a-shield" id="a-shield" title="Shields"><span></span><b id="a-shield-count"></b></button>
       </div>
       <div class="tb-right">
+        <button class="ib" id="tb-side" data-i="sidepanel" title="Side panel (Ctrl+Alt+P)"></button>
         <button class="ib tb-dl" id="tb-dl" hidden title="Downloads"><span class="dl-ring"></span><span data-i="download"></span><i class="dot" id="tb-dl-dot" hidden></i></button>
         <div id="tb-actions"></div>
       </div>
@@ -39,6 +40,23 @@
   </header>
   <nav id="bmbar"><div class="bm-items" id="bm-items"></div><button class="bm-more" id="bm-more" hidden title="More bookmarks"></button></nav>
   <div id="page-frame"></div>
+  <div id="side-head" hidden>
+    <span class="sh-ic" id="sh-ic"></span>
+    <button class="sh-title" id="sh-title" title="Change the side panel's site"></button>
+    <button class="ib" id="sh-back" data-i="back" title="Back"></button>
+    <button class="ib" id="sh-reload" data-i="reload" title="Reload"></button>
+    <button class="ib" id="sh-tab" data-i="popout" title="Open in a tab"></button>
+    <button class="ib" id="sh-close" data-i="x" title="Close side panel (Ctrl+Alt+P)"></button>
+  </div>
+  <div id="side-empty" hidden>
+    <div class="se-in">
+      <b>Keep a site beside your tabs</b>
+      <small>Chat, a stream schedule, a feed… it stays open while you browse.</small>
+      <input id="se-url" type="text" placeholder="Type a site, like twitch.tv" spellcheck="false" autocomplete="off">
+      <div class="se-row"><button class="mini" id="se-go">Open</button><button class="link" id="se-cur">Use this tab's site</button></div>
+    </div>
+  </div>
+  <div id="side-grip" hidden title="Drag to resize"></div>
   <div id="panes"></div>
   <div id="split-divider" hidden><i></i></div>
 

@@ -72,6 +72,7 @@ function render() {
   b.classList.toggle('over-top', !!S.settings.compact && ['peektop', 'extmenu', 'dlmenu', 'bmpop', 'siteinfo', 'zoompop'].includes(S.overlay));
   if (!wasTop && b.classList.contains('over-top')) requestAnimationFrame(() => renderBookmarks());   // it measured nothing while hidden
   b.classList.toggle('no-titlebar', !S.settings.titleBar);
+  renderSide();
   const act = S.tabs.find(t => t.id === S.activeId);
   document.title = act ? (tabTitle(act) + ' — Drift') : 'Drift';
   if (!b.classList.contains('platform-' + S.platform)) { [...b.classList].filter(c => c.startsWith('platform-')).forEach(c => b.classList.remove(c)); b.classList.add('platform-' + S.platform); }
@@ -239,6 +240,8 @@ function syncKeyed(container, items) {
     if (!el) { el = document.createElement('div'); el.dataset.id = String(it.id); }
     else have.delete(String(it.id));
     if (el.className !== it.cls) el.className = it.cls;
+    if ((el.dataset.f || '') !== (it.f || '')) el.dataset.f = it.f || '';
+    if ((el.__fc || '') !== (it.fc || '')) { el.__fc = it.fc || ''; if (it.fc) el.style.setProperty('--fc', it.fc); else el.style.removeProperty('--fc'); }
     if (el.title !== it.title) el.title = it.title;
     if (el.__html !== it.html) { el.innerHTML = it.html; el.__html = it.html; }
     const at = container.children[i];
@@ -279,12 +282,43 @@ function renderTabs() {
     const shown = sp.a === S.activeId || sp.b === S.activeId;
     return 'in-split' + (shown ? ' split-shown' : '') + (nextIs ? ' split-first' : prevIs ? ' split-last' : '');
   };
-  syncKeyed(list, normal.map(t => ({
-    id: t.id, cls: `tab ${t.id === S.activeId ? 'active' : ''} ${t.asleep ? 'asleep' : ''} ${splitClass(t)}`.replace(/\s+/g, ' ').trim(),
+  tabRow.split = splitClass;
+  // Folders: a header before each folder's tabs; a folded-away folder shows only the tab you're on.
+  const fmap = new Map((S.folders || []).map(f => [f.id, f]));
+  const rows = [];
+  normal.forEach((t, i) => {
+    const f = t.folder && fmap.get(t.folder);
+    if (f && (i === 0 || normal[i - 1].folder !== f.id)) {
+      const n = normal.filter(x => x.folder === f.id).length;
+      rows.push({ id: 'f:' + f.id, f: f.id, fc: FOLDER_HEX[f.color] || FOLDER_HEX.blue, cls: `folder ${f.collapsed ? 'collapsed' : ''}`.trim(), title: f.name + (f.collapsed ? ' (click to open)' : ''),
+        html: `<span class="fchev">${icon('chev', 10)}</span><span class="fic">${icon('folder', 15)}</span><span class="fname">${esc(f.name)}</span><span class="fcount">${n}</span><button class="fadd" data-act="fadd" title="New tab in this folder">${icon('plus', 11)}</button>` });
+    }
+    if (f && f.collapsed && t.id !== S.activeId) return;
+    const last = f && !(normal[i + 1] && normal[i + 1].folder === f.id);
+    rows.push({ t, f: f ? f.id : '', fc: f ? FOLDER_HEX[f.color] || FOLDER_HEX.blue : '', inF: f ? ' in-folder' + (last ? ' folder-last' : '') : '' });
+  });
+  syncKeyed(list, rows.map(r => r.t ? { ...tabRow(r.t, r.inF), f: r.f, fc: r.fc } : r));
+}
+function tabRow(t, extra) {
+  const splitClass = tabRow.split;
+  return {
+    id: t.id, cls: `tab ${t.id === S.activeId ? 'active' : ''} ${t.asleep ? 'asleep' : ''} ${splitClass(t)}${extra || ''}`.replace(/\s+/g, ' ').trim(),
     title: S.settings.tabPreviews ? '' : tabTitle(t) + (t.asleep ? ' (sleeping)' : ''),   // the preview card replaces the tooltip
     html: `${favHTML(t)}<span class="title">${esc(tabTitle(t))}</span>${t.audible || t.muted || t.volume !== 1 ? `<button class="audio" data-act="mute" title="${t.muted ? 'Unmute' : 'Mute'} · volume ${Math.round(t.volume * 100)}% (scroll to adjust)">${icon(t.muted ? 'muted' : 'sound', 18)}</button>` : ''}<button class="close" data-act="close" title="Close (Ctrl+W)">${icon('x', 9)}</button>`,
-  })));
+  };
 }
+const FOLDER_HEX = { blue: '#3b82f6', purple: '#8b5cf6', pink: '#ec4899', red: '#ef4444', orange: '#f97316', yellow: '#eab308', green: '#22c55e', teal: '#14b8a6', grey: '#94a3b8' };
+function editFolder(fid, isNew) {
+  const f = (S.folders || []).find(x => x.id === fid); if (!f) return;
+  openModal(`
+    <h3>${isNew ? 'New folder' : 'Edit folder'}</h3>
+    <label>Name<input name="name" value="${isNew ? '' : esc(f.name)}" placeholder="${esc(f.name)}" spellcheck="false" maxlength="40"></label>
+    <input type="hidden" name="color" value="${esc(f.color)}">
+    <div class="f-colors">${Object.entries(FOLDER_HEX).map(([c, h]) => `<button type="button" class="fcol ${c === f.color ? 'on' : ''}" data-fcol="${c}" title="${c}" style="--fc:${h}"></button>`).join('')}</div>
+    <div class="actions"><span class="grow"></span><button type="button" data-m="cancel">Cancel</button><button type="submit" class="primary">Save</button></div>`,
+  (d) => send('folder-edit', fid, (d.name || '').trim() || f.name, d.color));
+}
+window.drift.on('folder-edit', (fid, isNew) => editFolder(fid, isNew));
 
 // Workspace switcher (Settings → Workspaces): one button per workspace, the current one with
 // its name; + adds one. Right-click a workspace to rename or delete it.
@@ -315,6 +349,7 @@ function editWorkspace(w) {
 $('#modal').addEventListener('click', (e) => {
   const ic = e.target.closest('.wsi'); if (ic) { $('#modal [name=icon]').value = ic.dataset.icon; document.querySelectorAll('#modal .wsi').forEach(b => b.classList.toggle('on', b === ic)); }
   const del = e.target.closest('[data-m="ws-delete"]'); if (del) { closeModal(); send('ws-delete', del.dataset.ws); }
+  const fc = e.target.closest('.fcol'); if (fc) { $('#modal [name=color]').value = fc.dataset.fcol; document.querySelectorAll('#modal .fcol').forEach(b => b.classList.toggle('on', b === fc)); }
 });
 $('#ws-bar').addEventListener('click', (e) => {
   const b = e.target.closest('.ws'); if (!b) return;
@@ -328,6 +363,7 @@ window.drift.on('ws-edit', (w) => editWorkspace(w));
 function tabEvents(container) {
   container.addEventListener('mousedown', (e) => {
     const el = e.target.closest('[data-id]'); if (!el) return;
+    if (el.classList.contains('folder')) { if (e.button === 1) e.preventDefault(); return; }
     const id = Number(el.dataset.id);
     if (e.button === 1) { e.preventDefault(); send('close-tab', id); return; }
     if (e.button !== 0) return;
@@ -336,6 +372,7 @@ function tabEvents(container) {
   });
   container.addEventListener('click', (e) => {
     const el = e.target.closest('[data-id]'); if (!el) return;
+    if (el.classList.contains('folder')) { if (e.target.closest('[data-act=fadd]')) send('folder-new-tab', el.dataset.f); else send('folder-toggle', el.dataset.f); return; }
     const id = Number(el.dataset.id);
     const act = e.target.closest('[data-act]');
     if (act && act.dataset.act === 'close') send('close-tab', id);
@@ -344,13 +381,14 @@ function tabEvents(container) {
   });
   container.addEventListener('contextmenu', (e) => {
     const el = e.target.closest('[data-id]'); if (!el) return;
+    if (el.classList.contains('folder')) { e.preventDefault(); send('folder-menu', el.dataset.f); return; }
     e.preventDefault(); send('tab-menu', Number(el.dataset.id));
   });
   // Dragging is done here with the pointer, not the browser's drag-and-drop: on Windows that
   // was cancelled the moment it started (see startTabDrag).
   container.addEventListener('pointerdown', (e) => {
     if (e.button !== 0) return;
-    const el = e.target.closest('[data-id]'); if (!el || e.target.closest('[data-act]')) return;
+    const el = e.target.closest('[data-id]'); if (!el || e.target.closest('[data-act]') || el.classList.contains('folder')) return;
     tabPtr = { id: Number(el.dataset.id), el, x: e.clientX, y: e.clientY, pid: e.pointerId, container, dragging: false };
     try { container.setPointerCapture(e.pointerId); } catch {}
   });
@@ -369,7 +407,7 @@ function hoverTab(el) {
   send('tab-hover', id, { x: r.left, y: r.top, width: r.width, height: r.height });
 }
 for (const c of [$('#tablist'), $('#essentials')]) {
-  c.addEventListener('pointerover', (e) => { if (dragId != null || tabPtr) return; hoverTab(e.target.closest('[data-id]')); });
+  c.addEventListener('pointerover', (e) => { if (dragId != null || tabPtr) return; const el = e.target.closest('[data-id]'); hoverTab(el && el.classList.contains('folder') ? null : el); });
   c.addEventListener('pointerleave', () => hoverTab(null));
 }
 document.addEventListener('pointerdown', () => hoverTab(null), true);
@@ -410,16 +448,33 @@ function showTabDrop(e) {
     const before = essBefore(e, tabPtr && tabPtr.id);
     $('#essentials').insertBefore(mark, before || $('#essentials .ess-add'));
   } else if (d.kind === 'list') {
-    const rows = [...$('#tablist').querySelectorAll('.tab')];
-    const before = rows.find(r => e.clientY < r.getBoundingClientRect().top + r.offsetHeight / 2);
-    const line = document.createElement('div'); line.className = 'drop-line';
-    before ? before.before(line) : $('#tablist').append(line);
+    document.querySelectorAll('.folder.drop-into').forEach(x => x.classList.remove('drop-into'));
+    const L = listDrop(e, tabPtr && tabPtr.id);
+    if (L.into) L.into.classList.add('drop-into');
+    else {
+      const line = document.createElement('div'); line.className = 'drop-line' + (L.folder ? ' in-folder' : '');
+      if (L.folder) line.style.setProperty('--fc', (L.before || L.prev).style.getPropertyValue('--fc'));
+      L.before ? L.before.before(line) : $('#tablist').append(line);
+    }
   } else if (d.kind === 'bm') {
     $('#bmbar').classList.add('drop-target');
     const folder = bmFolderUnder({ target: d.el, clientX: e.clientX });
     if (folder) folder.classList.add('drop-into');
     else { const { before } = bmDropIndex(e.clientX); const line = document.createElement('i'); line.className = 'bm-drop'; before ? before.before(line) : $('#bm-items').append(line); }
   }
+}
+// Where a tab dropped in the list goes: onto a folder's header (into it, at the end), or
+// between two rows: inside a folder when both sides are that folder (or just below its header).
+function listDrop(e, id) {
+  const rows = [...$('#tablist').querySelectorAll('.tab, .folder')].filter(r => r.dataset.id !== String(id));
+  const into = rows.find(r => { if (!r.classList.contains('folder')) return false; const b = r.getBoundingClientRect(); return e.clientY >= b.top + b.height * 0.25 && e.clientY < b.bottom - b.height * 0.25; });
+  if (into) return { into };
+  const bi = rows.findIndex(r => e.clientY < r.getBoundingClientRect().top + r.offsetHeight / 2);
+  const before = bi >= 0 ? rows[bi] : null, prev = bi < 0 ? rows[rows.length - 1] : rows[bi - 1] || null;
+  let folder = null;
+  if (prev && prev.classList.contains('folder') && !prev.classList.contains('collapsed')) folder = prev.dataset.f;
+  else if (prev && before && prev.dataset.f && !before.classList.contains('folder') && prev.dataset.f === before.dataset.f) folder = prev.dataset.f;
+  return { before, prev, folder };
 }
 function endTabDrag(e, cancelled) {
   const p = tabPtr; tabPtr = null;
@@ -430,11 +485,18 @@ function endTabDrag(e, cancelled) {
   if (!cancelled) {
     const d = tabDropAt(e.clientX, e.clientY);
     if (d.kind === 'list') {
-      const rows = [...$('#tablist').querySelectorAll('.tab')].filter(r => Number(r.dataset.id) !== id);
-      const before = rows.find(r => e.clientY < r.getBoundingClientRect().top + r.offsetHeight / 2);
-      const pinnedCount = S.tabs.filter(t => t.pinned && t.id !== id).length;
-      const idx = before ? S.tabs.filter(t => t.id !== id).findIndex(t => t.id === Number(before.dataset.id)) : S.tabs.length;
-      send('move-tab', id, Math.max(idx, pinnedCount), false);
+      const L = listDrop(e, id);
+      const others = S.tabs.filter(t => t.id !== id);
+      const pinnedCount = others.filter(t => t.pinned).length;
+      let idx;
+      if (L.into) { const fid = L.into.dataset.f; let last = -1; others.forEach((t, i) => { if (t.folder === fid) last = i; }); idx = last + 1; send('move-tab', id, Math.max(idx, pinnedCount), false, fid); }
+      else {
+        const b = L.before;
+        const bid = !b ? null : b.classList.contains('folder') ? (others.find(t => t.folder === b.dataset.f) || {}).id : Number(b.dataset.id);
+        idx = bid != null ? others.findIndex(t => t.id === bid) : others.length;
+        if (idx < 0) idx = others.length;
+        send('move-tab', id, Math.max(idx, pinnedCount), false, L.folder || null);
+      }
     } else if (d.kind === 'pin') {
       const tiles = [...$('#essentials').querySelectorAll('.ess')].filter(r => Number(r.dataset.id) !== id);
       const before = essBefore(e, id);
@@ -453,6 +515,7 @@ function endTabDrag(e, cancelled) {
   document.body.classList.remove('tab-dragging', 'tab-out');
   document.querySelectorAll('.tab.dragging, .ess.dragging').forEach(x => x.classList.remove('dragging'));
   document.querySelectorAll('.drop-line, .ess-drop').forEach(x => x.remove());
+  document.querySelectorAll('.folder.drop-into').forEach(x => x.classList.remove('drop-into'));
   $('#essentials').classList.remove('drop-target');
   clearBmDrop();
   send('focus-page');
@@ -923,11 +986,14 @@ function renderSettings() {
       <div><span>Edit address</span><span><kbd>Ctrl</kbd><kbd>L</kbd></span></div>
       <div><span>Close tab</span><span><kbd>Ctrl</kbd><kbd>W</kbd></span></div>
       <div><span>Reopen closed tab</span><span><kbd>Ctrl</kbd><kbd>Shift</kbd><kbd>T</kbd></span></div>
+      <div><span>Private window</span><span><kbd>Ctrl</kbd><kbd>Shift</kbd><kbd>N</kbd></span></div>
+      <div><span>Side panel</span><span><kbd>Ctrl</kbd><kbd>Alt</kbd><kbd>P</kbd></span></div>
       <div><span>Next / previous tab</span><span><kbd>Ctrl</kbd><kbd>Tab</kbd></span></div>
       <div><span>Jump to tab 1–9</span><span><kbd>Ctrl</kbd><kbd>1</kbd>…<kbd>9</kbd></span></div>
       <div><span>Find on page</span><span><kbd>Ctrl</kbd><kbd>F</kbd></span></div>
       <div><span>Downloads</span><span><kbd>Ctrl</kbd><kbd>J</kbd></span></div>
       <div><span>New window</span><span><kbd>Ctrl</kbd><kbd>N</kbd></span></div>
+      <div><span>New private window</span><span><kbd>Ctrl</kbd><kbd>Shift</kbd><kbd>N</kbd></span></div>
       <div><span>Open a file</span><span><kbd>Ctrl</kbd><kbd>O</kbd></span></div>
       <div><span>Back / forward</span><span><kbd>Alt</kbd><kbd>←</kbd> <kbd>→</kbd></span></div>
       <div><span>Preview a link (Glance)</span><span><kbd>Alt</kbd>+click</span></div>
@@ -1616,6 +1682,7 @@ window.drift.on('toast-action', ({ token, index }) => { if (token === toastSeq &
 // An overlay opened here is shown before Drift confirms it; a state update sent just before
 // the confirmation still says "no overlay" and must not close it.
 window.drift.on('state', (s) => {
+  document.body.classList.toggle('private', !!s.private); $('#tb-private').hidden = !s.private;
   if (pendingOverlay) {
     if (s.overlay === pendingOverlay.mode || Date.now() - pendingOverlay.at > 1000) pendingOverlay = null;
     else s.overlay = pendingOverlay.mode;
@@ -1652,7 +1719,66 @@ window.drift.on('layout', (l) => {
   layoutBookmarks();
   placeFind();
   applyHole();
+  placeSide();
 });
+// ---------------------------------------------------------------------- side panel
+// Main places the panel's page below this header; with no site chosen yet, the empty state
+// shows where the page would be.
+function placeSide() {
+  const sd = lastLayout && lastLayout.side, st = S && S.side;
+  const head = $('#side-head'), empty = $('#side-empty'), grip = $('#side-grip');
+  head.hidden = !sd; grip.hidden = !sd;
+  empty.hidden = !sd || !st || (!!st.url && !st.editing);
+  if (!sd) return;
+  Object.assign(head.style, { left: sd.x + 'px', top: sd.y + 'px', width: sd.width + 'px', height: sd.head + 'px' });
+  Object.assign(empty.style, { left: sd.x + 'px', top: (sd.y + sd.head) + 'px', width: sd.width + 'px', height: Math.max(0, sd.height - sd.head) + 'px' });
+  Object.assign(grip.style, { left: (sd.x - 4) + 'px', top: sd.y + 'px', height: sd.height + 'px' });
+}
+function renderSide() {
+  const st = S.side;
+  $('#tb-side').classList.toggle('on', !!st);
+  if (!st) { placeSide(); return; }
+  setHTML($('#sh-ic'), st.url ? (st.favicon ? `<img src="${esc(st.favicon)}" alt="">` : icon('globe', 14)) : icon('sidepanel', 15));
+  const title = st.url ? (st.loading ? 'Loading…' : st.title || hostOf(st.url)) : 'Side panel';
+  if ($('#sh-title').textContent !== title) $('#sh-title').textContent = title;
+  $('#sh-back').disabled = !st.canBack;
+  $('#sh-back').hidden = $('#sh-reload').hidden = $('#sh-tab').hidden = !st.url;
+  placeSide();
+  if (!st.url && !st.editing && document.activeElement !== $('#se-url')) setTimeout(() => { if (S.side && !S.side.url) $('#se-url').focus(); }, 0);
+}
+$('#tb-side').onclick = () => send('side-toggle');
+$('#sh-close').onclick = () => send('side-close');
+$('#sh-back').onclick = () => send('side-nav', 'back');
+$('#sh-reload').onclick = () => send('side-nav', 'reload');
+$('#sh-tab').onclick = () => send('side-to-tab');
+$('#sh-title').onclick = () => {
+  // Change the site: the empty state again, with the current site filled in.
+  const v = (S.side && S.side.url) || '';
+  send('side-edit', true);
+  const i = $('#se-url'); i.value = v.replace(/^https?:\/\//, ''); setTimeout(() => { i.focus(); i.select(); }, 30);
+};
+const sideGo = () => { const v = $('#se-url').value.trim(); if (v) { send('side-set', v); $('#se-url').value = ''; } };
+$('#se-go').onclick = sideGo;
+$('#se-url').addEventListener('keydown', (e) => {
+  if (e.key === 'Enter') sideGo();
+  if (e.key === 'Escape' && S.side && S.side.url) send('side-edit', false);
+});
+$('#se-cur').onclick = () => { const t = S.tabs.find(x => x.id === S.activeId); if (t && /^https?:/.test(t.url)) send('side-set', t.url); };
+// Resize: dragging the panel's left edge (the UI comes on top while dragging, to see the mouse).
+$('#side-grip').addEventListener('mousedown', (e) => {
+  e.preventDefault();
+  document.body.classList.add('side-resizing');
+  send('side-resize-start');
+  let w = 0, raf = 0;
+  const move = (ev) => { w = window.innerWidth - ev.clientX; if (!raf) raf = requestAnimationFrame(() => { raf = 0; send('side-width', w, false); }); };
+  const up = (ev) => {
+    document.removeEventListener('mousemove', move); document.removeEventListener('mouseup', up);
+    document.body.classList.remove('side-resizing');
+    send('side-width', window.innerWidth - ev.clientX, true);
+  };
+  document.addEventListener('mousemove', move); document.addEventListener('mouseup', up);
+});
+
 window.drift.on('palette', ({ newTab }) => { preparePalette(newTab, !newTab); raiseOverlay('palette'); });
 window.drift.on('panel', (name) => { if (panel !== name) togglePanel(name); if (name === 'downloads') send('downloads-seen'); });
 window.drift.on('find-open', () => {

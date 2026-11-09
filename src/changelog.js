@@ -1,7 +1,10 @@
 // What's new in each release, shown on the What's new page (drift://whatsnew) after an update.
 // Newest first. Kinds: new, faster, fixed, changed. Written for people using Drift.
 module.exports = [
-  { version: '1.25.4', date: '2026-11-08', items: [
+  { version: '1.26.0', date: '2026-11-09', items: [
+    ['new', 'Private windows (Ctrl+Shift+N, or right-click a link or tab): sites can\'t see your normal cookies or sign-ins, nothing goes into History or search history, and everything the sites stored is wiped when you close the last private window. Ad blocking still works; extensions don\'t run there.'],
+    ['new', 'Side panel (Ctrl+Alt+P, or the button next to Downloads): keep a site open beside your tabs, like Twitch chat, a schedule or a feed. Drag its edge to resize; it stays across restarts. Right-click a link or tab for "Open in side panel".'],
+    ['new', 'Tab folders: right-click a tab → Add to new folder. Click a folder to fold it away, right-click it to rename, recolour, ungroup or close it, drag tabs onto it to add them. Folders are kept after a restart.'],
     ['fixed', 'Removed extensions could come back after a restart, when Windows hadn\'t let go of one of their files at the time. Drift now finishes removing them at the next start, before extensions load.'],
   ] },
   { version: '1.25.3', date: '2026-11-08', items: [
