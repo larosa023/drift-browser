@@ -1,6 +1,19 @@
 // What's new in each release, shown on the What's new page (drift://whatsnew) after an update.
 // Newest first. Kinds: new, faster, fixed, changed. Written for people using Drift.
 module.exports = [
+  { version: '1.27.0', date: '2026-11-10', items: [
+    ['new', 'Right-click in the address bar, the find box or any text field in the sidebar for Cut, Copy and Paste, plus "Paste and go" (or "Paste and search") in the address bar.'],
+    ['new', 'Ctrl+Shift+C copies the page\'s link, Ctrl+M mutes or unmutes the tab, Ctrl+Shift+PgUp / PgDn moves the tab up or down the list (stepping over folders), and Ctrl+Shift+W closes the window.'],
+    ['new', 'Right-click a link → "Open link in split view". Right-click a tab → "Close duplicate tabs". Copying a link now says "Link copied".'],
+    ['improved', 'The address bar shows your open tabs, bookmarks and history the moment you type; the web\'s search suggestions join a moment later instead of holding everything up.'],
+    ['improved', 'The sidebar does less work while pages load: site icons are sent to it only when they change, and updates that change nothing are skipped.'],
+    ['improved', 'Ctrl+Tab, and closing a tab, skip tabs tucked away in a folded-up folder.'],
+    ['fixed', 'Rename… on a tab folder (and naming a new folder) did nothing. So did Rename / change icon… on a workspace.'],
+    ['fixed', 'A copied password is now really cleared from the clipboard after 30 seconds (it stayed there).'],
+    ['fixed', 'Private windows: the new tab page no longer shows your top sites, your normal tabs no longer appear in the address bar\'s suggestions (or the other way round), "Open link in new window" opens a private one, site info and its permissions and "Clear data" apply to the private window, the shield button works there (uBlock doesn\'t run in private windows; the built-in blocker does, and now follows the main Shields switch), and private downloads only show in private windows.'],
+    ['fixed', 'Clear browsing data now also empties the list Ctrl+Shift+T reopens from.'],
+    ['fixed', 'The shortcuts list in Settings showed "Private window" twice.'],
+  ] },
   { version: '1.26.1', date: '2026-11-09', items: [
     ['fixed', 'Folders on the bookmarks bar showed only their arrow, without their name, when the sidebar was narrow (1.26.0).'],
   ] },

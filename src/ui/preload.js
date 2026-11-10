@@ -425,10 +425,11 @@ var require_browser_action = __commonJS({
 // src/ui/preload.src.js
 var { contextBridge, ipcRenderer, webUtils } = require("electron");
 var { injectBrowserAction } = require_browser_action();
-var IN = ["state", "layout", "palette", "panel", "find-open", "find-result", "download-started", "extensions", "bookmarks", "passwords", "toast", "bm-edit", "download-done", "toast-action"];
+var IN = ["state", "layout", "palette", "panel", "find-open", "find-result", "download-started", "extensions", "bookmarks", "passwords", "toast", "bm-edit", "download-done", "toast-action", "ws-edit", "folder-edit", "paste-go"];
 contextBridge.exposeInMainWorld("drift", {
   send: (ch, ...args) => ipcRenderer.send(ch, ...args),
   suggest: (q) => ipcRenderer.invoke("suggest", q),
+  suggestRemote: (q) => ipcRenderer.invoke("suggest-remote", q),
   invoke: (ch, ...a) => ["pw-reveal", "bm-sources", "site-info", "site-clear"].includes(ch) ? ipcRenderer.invoke(ch, ...a) : Promise.resolve(null),
   on: (ch, fn) => {
     if (IN.includes(ch)) ipcRenderer.on(ch, (_e, ...a) => fn(...a));

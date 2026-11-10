@@ -485,14 +485,29 @@ function pushOne() {
     tidyFolders();
     const t = activeTab();
     const wc = t && t.view ? t.view.webContents : null;
-    ui.webContents.send('state', {
+    // What this sidebar already has: site icons (data URLs, often a few KB each) are sent only
+    // when they change, the fixed lists once, and an update identical to the last isn't sent.
+    const sent = cur.sent || (cur.sent = { icons: new Map(), statics: false, last: '' });
+    if (sent.icons.size > tabs.length + 100) { const live = new Set(tabs.map(x => x.id)); for (const k of sent.icons.keys()) if (!live.has(k)) sent.icons.delete(k); }
+    const statics = sent.statics ? {} : {
+      wallpapers: WALLPAPERS.map(w => ({ id: w.id, name: w.name, css: w.css })),
+      engines: Object.fromEntries(Object.entries(SEARCH_ENGINES).map(([k, v]) => [k, v.name])),
+      platform: process.platform, chrome: process.versions.chrome, appVersion: app.getVersion(),
+    };
+    const { permissions: _p, bounds: _b, zoomLevels: _z, removedExtensions: _r, hiddenActions: _h, unpacked: _u, hiddenSites: _hs, ...uiSettings } = settings;
+    const state = {
+      ...statics,
       folders: (cur.folders || []).map(f => ({ id: f.id, name: f.name, color: f.color, collapsed: !!f.collapsed })),
-      tabs: tabs.map(x => ({
-        id: x.id, url: x.url, title: x.title, favicon: x.favicon, pinned: x.pinned, ws: x.ws, folder: x.folder || null,
-        loading: x.loading, audible: x.audible, muted: x.muted, asleep: !x.view,
-        volume: x.volume, hadAudio: x.hadAudio,
-        crashed: x.crashed,
-      })),
+      tabs: tabs.map(x => {
+        const o = {
+          id: x.id, url: x.url, title: x.title, pinned: x.pinned, ws: x.ws, folder: x.folder || null,
+          loading: x.loading, audible: x.audible, muted: x.muted, asleep: !x.view,
+          volume: x.volume, hadAudio: x.hadAudio,
+          crashed: x.crashed,
+        };
+        if (sent.icons.get(x.id) !== (x.favicon || '')) { o.favicon = x.favicon || ''; sent.icons.set(x.id, o.favicon); }
+        return o;
+      }),
       activeId,
       activeWcId: wc ? wc.id : -1,
       ws: wsOn() ? curWs() : null,
@@ -504,37 +519,40 @@ function pushOne() {
         loading: t ? t.loading : false,
         secure: t ? t.url.startsWith('https:') : false,
         blocked: t ? t.blocked : 0,
-        shieldsOn: t ? shieldsOnFor(t.url) : settings.shields,
+        shieldsOn: t ? shieldsOnFor(t.url, !!cur.private) : settings.shields,
         bookmarked: !!(t && bookmarks && bookmarks.findByUrl(t.url)),
         dark: !!(t && t.dark),
         darkSite: t ? !settings.forceDarkOff.includes(hostOf(t.url)) : true,
         noDl: t ? isBlockedUrl(t.url) : false,
         zoom: wc ? Math.round(wc.getZoomFactor() * 100) : 100,
       },
-      settings: { ...settings, permissions: undefined, bounds: undefined },
+      settings: uiSettings,
       blockRestart: JSON.stringify(settings.blockSites || []) !== BLOCK_AT_START,
       private: !!(cur && cur.private),
       side: sideState(),
       passwordCount: passwords ? passwords.entries.length : 0,
-      appVersion: app.getVersion(), update: updateState,
+      update: updateState,
       wallpaperCss: wallpaperCss(),
-      wallpapers: WALLPAPERS.map(w => ({ id: w.id, name: w.name, css: w.css })),
       desktopWallpaper: !!desktopWallpaperPath(),
       passwordsEncrypted: passwords ? passwords.canEncrypt() : false,
-      engines: Object.fromEntries(Object.entries(SEARCH_ENGINES).map(([k, v]) => [k, v.name])),
       blockedTotal,
-      uboId,
-      downloads: downloads.map(d => ({ ...d, item: undefined })),
+      uboId: cur.private ? null : uboId,   // (extensions don't run in private windows)
+      // A private window lists only its own downloads, a normal one never shows those.
+      downloads: downloads.filter(d => !!d.private === !!cur.private).map(d => ({ ...d, item: undefined })),
       overlay, findOpen,
       maximized: win ? win.isMaximized() : false,
-      platform: process.platform,
-      chrome: process.versions.chrome,
       dark: isDark(),
       windowCount: windows.length, windowId: cur ? cur.id : 0,
       defaultBrowser,
-    });
+    };
+    const json = JSON.stringify(state);
+    if (json === sent.last) return;
+    sent.last = json; sent.statics = true;
+    ui.webContents.send('state', state);
   }
 }
+// The sidebar page (re)loaded: it has nothing yet, so the next update is sent in full.
+function resetSent(c) { if (c) c.sent = null; }
 // Send the same message to every window's sidebar UI.
 function sendAll(ch, ...args) {
   saveCtx();
@@ -1309,8 +1327,9 @@ function closeTab(id, opts = {}) {
   else if (activeId === id) {
     // The next tab in the same place (and the same workspace); an Essential only if nothing else.
     const vis = (t) => t && !t.pinned && inWs(t);
-    const after = tabs.slice(i).find(vis), before = [...tabs.slice(0, i)].reverse().find(vis);
-    const next = after || before || (wsOn() ? null : tabs[0]);
+    const open = (t) => vis(t) && !folded(t);
+    const after = tabs.slice(i).find(open) || tabs.slice(i).find(vis), before = [...tabs.slice(0, i)].reverse().find(open) || [...tabs.slice(0, i)].reverse().find(vis);
+    const next = (tabs.slice(i).find(open) || [...tabs.slice(0, i)].reverse().find(open)) || after || before || (wsOn() ? null : tabs[0]);
     if (next) activate(next.id);
     else if (wsOn() && tabs.length) { activeId = null; createTab(NEWTAB); }
     else if (windows.length > 1) { activeId = null; cur.closingEmpty = true; const w = win; setImmediate(() => { if (w && !w.isDestroyed()) w.close(); }); }   // its last tab: close this window
@@ -1343,8 +1362,10 @@ function reopenClosed() {
   createTab(c.url, { title: c.title, favicon: c.favicon, index: Math.min(c.index, tabs.length), ws: c.ws, hist: c.hist, folder: c.folder && folderOf(c.folder) ? c.folder : null });
 }
 
+// Is this tab tucked inside a folded-away folder (and not the one you're on)?
+function folded(t) { const f = t && t.folder && folderOf(t.folder); return !!(f && f.collapsed && t.id !== activeId); }
 function cycle(dir) {
-  const list = tabs.filter(inWs);
+  const list = tabs.filter(t => inWs(t) && !folded(t));
   if (!list.length) return;
   const i = list.findIndex(t => t.id === activeId);
   activate(list[(i + dir + list.length) % list.length].id);
@@ -2061,6 +2082,7 @@ function handleShortcut(input) {
       case '-': zoom(-1); return true;
       case '0': zoom(0); return true;
       case 'F5': if (wc) wc.reloadIgnoringCache(); return true;
+      case 'm': if (t && t.view) toggleMute(t.id); return true;
     }
     if (/^[1-9]$/.test(k)) {
       const n = Number(k);
@@ -2079,6 +2101,10 @@ function handleShortcut(input) {
       case 'Delete': ui.webContents.send('panel', 'settings'); return true;
       case 'b': setSetting('bookmarksBar', !settings.bookmarksBar); return true;
       case '+': case '=': zoom(1); return true;
+      case 'c': if (t && /^(https?|file):/i.test(t.url)) copyLinkToast(t.url); return true;   // copy this page's link (like Zen)
+      case 'w': if (win && !win.isDestroyed()) win.close(); return true;
+      case 'PageUp': nudgeTab(-1); return true;
+      case 'PageDown': nudgeTab(1); return true;
     }
   }
   if (mod && input.alt && !input.shift && k === 's') { toggleSidebar(); return true; }
@@ -2118,12 +2144,14 @@ function pageContextMenu(tab, wc, p) {
   if (p.linkURL) {
     m.push({ label: 'Open link in new tab', click: () => createTab(p.linkURL, { activate: false, openerId: tab.id }) });
     if (/^https?:/i.test(p.linkURL)) m.push({ label: 'Glance (Alt+click)', click: () => openGlance(p.linkURL, tab) });
-    m.push({ label: 'Open link in new window', click: () => newWindow([p.linkURL]) });
+    const priv = isPrivateTab(tab);
+    m.push({ label: priv ? 'Open link in new private window' : 'Open link in new window', click: () => priv ? newPrivateWindow([p.linkURL]) : newWindow([p.linkURL]) });
     m.push({ label: 'Open link here', click: () => { tab.url = p.linkURL; loadIn(wc, p.linkURL); } });
-    m.push({ label: 'Open link in private window', click: () => newPrivateWindow([p.linkURL]) });
+    if (!priv) m.push({ label: 'Open link in private window', click: () => newPrivateWindow([p.linkURL]) });
     if (/^https?:/i.test(p.linkURL)) m.push({ label: 'Open link in side panel', click: () => setSidePanel(true, p.linkURL) });
     m.push({ label: 'Save link as…', click: () => { wc.__driftDl = Date.now(); wc.downloadURL(p.linkURL); } });
-    m.push({ label: 'Copy link address', click: () => copyLink(p.linkURL) });
+    if (!tab.pinned && !splitOf(tab.id) && tab.id === activeId) m.push({ label: 'Open link in split view', click: () => { const o = createTab(p.linkURL, { activate: false, openerId: tab.id }); useTab(tab); splitWith(o.id); } });
+    m.push({ label: 'Copy link address', click: () => copyLinkToast(p.linkURL) });
     if (p.linkText && p.linkText.trim()) m.push({ label: 'Copy link text', click: () => clipboard.writeText(p.linkText.trim()) });
     sep();
   }
@@ -2168,7 +2196,7 @@ function pageContextMenu(tab, wc, p) {
     sep();
     m.push({ label: 'Print…', click: () => wc.print() });
     m.push({ label: 'Find on page', click: openFind });
-    m.push({ label: 'Copy page link', click: () => copyLink(tab.url) });
+    m.push({ label: 'Copy page link', click: () => copyLinkToast(tab.url) });
     if (/^https?:/i.test(tab.url)) m.push({ label: 'View page source', click: () => viewSource(tab) });
     sep();
   }
@@ -2180,6 +2208,55 @@ function pageContextMenu(tab, wc, p) {
   popupMenu(m);
 }
 
+// (In this Electron the clipboard calls return promises.)
+const readClipboard = async () => { try { return String(await clipboard.readText() || ''); } catch { return ''; } };
+async function uiEditMenu(p) {
+  if (!p.isEditable && !(p.selectionText || '').trim()) return;
+  const m = [];
+  if (p.isEditable) {
+    const ctx = cur, clip = (await readClipboard()).trim();
+    if (!windows.includes(ctx)) return; useWin(ctx);   // (other windows may have run meanwhile)
+    m.push({ role: 'undo', enabled: p.editFlags.canUndo }, { role: 'redo', enabled: p.editFlags.canRedo }, { type: 'separator' },
+      { role: 'cut', enabled: p.editFlags.canCut }, { role: 'copy', enabled: p.editFlags.canCopy }, { role: 'paste', enabled: p.editFlags.canPaste });
+    // In the address bar: paste and open it (or search for it) in one go.
+    if (overlay === 'palette' && clip) m.push({ label: /^\S+$/.test(clip) && /[.:/]/.test(clip) ? 'Paste and go' : 'Paste and search', click: () => ui.webContents.send('paste-go', clip.slice(0, 4000)) });
+    m.push({ type: 'separator' }, { role: 'selectAll' });
+  } else m.push({ role: 'copy' });
+  popupMenu(m);
+}
+// Copy a link and say so.
+function copyLinkToast(url) {
+  copyLink(url);
+  if (ui && !ui.webContents.isDestroyed()) ui.webContents.send('toast', { text: 'Link copied', icon: 'copy', ms: 1800 });
+}
+// Tabs showing the same page twice (or more): keep the first, close the rest.
+function closeDuplicateTabs() {
+  const seen = new Set(); let n = 0;
+  for (const t of tabs.filter(t => !t.pinned && inWs(t))) {
+    const key = (t.url || '').replace(/#.*$/, '');
+    if (isInternal(t.url)) continue;
+    if (seen.has(key)) { closeTab(t.id); n++; } else seen.add(key);
+  }
+  if (ui && !ui.webContents.isDestroyed()) ui.webContents.send('toast', { text: n ? `Closed ${n} duplicate tab${n === 1 ? '' : 's'}` : 'No duplicate tabs', icon: 'tab', ms: 2200 });
+}
+// Ctrl+Shift+PageUp / PageDown: move the tab up or down the list (not past Essentials).
+function nudgeTab(dir) {
+  const t = activeTab(); if (!t || t.pinned) return;
+  const vis = tabs.filter(x => !x.pinned && inWs(x));
+  const i = vis.indexOf(t); let other = vis[i + dir]; if (i < 0 || !other) return;
+  const same = !!t.folder && other.folder === t.folder;
+  // At the edge of its own folder: the first step only takes it out of the folder.
+  if (t.folder && !same) {
+    const rest = vis.filter(x => x.folder === t.folder && x !== t), without = tabs.filter(x => x !== t);
+    const anchor = rest.length ? (dir < 0 ? rest[0] : rest[rest.length - 1]) : null;
+    moveTab(t.id, anchor ? without.indexOf(anchor) + (dir > 0 ? 1 : 0) : tabs.indexOf(t), false, null);
+    return;
+  }
+  // Another folder is passed over as a whole (to its first tab going up, its last going down).
+  if (other.folder && !same) { const fs_ = vis.filter(x => x.folder === other.folder); other = dir < 0 ? fs_[0] : fs_[fs_.length - 1]; }
+  const without = tabs.filter(x => x !== t);
+  moveTab(t.id, without.indexOf(other) + (dir > 0 ? 1 : 0), false, same ? t.folder : null);
+}
 function tabContextMenu(id) {
   const tab = tabs.find(t => t.id === id); if (!tab) return;
   const wsItems = wsOn() && !tab.pinned && settings.wsList.length > 1 ? [{ label: 'Move to workspace', submenu: settings.wsList.map(w => ({
@@ -2198,7 +2275,7 @@ function tabContextMenu(id) {
     { label: `Volume (${Math.round(tab.volume * 100)}%)`, enabled: !!wc, submenu: [300, 200, 150, 100, 75, 50, 25, 10].map(p => ({
       label: p + '%', type: 'radio', checked: Math.round(tab.volume * 100) === p, click: () => setTabVolume(id, p / 100),
     })) },
-    { label: 'Copy link', click: () => copyLink(tab.url) },
+    { label: 'Copy link', click: () => copyLinkToast(tab.url) },
     splitOf(id) ? { label: 'Close split view', click: () => unsplit(id) }
       : { label: 'Open in split view with current tab', enabled: id !== activeId, click: () => splitWith(id) },
     ...(!tab.pinned ? [tab.folder ? { label: 'Remove from folder', click: () => removeFromFolder(tab) }
@@ -2222,6 +2299,7 @@ function tabContextMenu(id) {
     // (Only tabs in this workspace: the others aren't on screen.)
     { label: 'Close other tabs', click: () => tabs.filter(t => t.id !== id && !t.pinned && inWs(t)).forEach(t => closeTab(t.id)) },
     { label: 'Close tabs below', click: () => { const i = tabs.indexOf(tab); tabs.slice(i + 1).filter(t => !t.pinned && inWs(t)).forEach(t => closeTab(t.id)); } },
+    { label: 'Close duplicate tabs', click: () => closeDuplicateTabs() },
   ]);
 }
 
@@ -2332,7 +2410,9 @@ async function suggest(q) {
     return { items: [...history.values()].sort((a, b) => frecency(b) - frecency(a)).slice(0, 6)
       .map(h => ({ kind: 'history', url: h.url, title: h.title || hostOf(h.url) })) };
   }
+  const priv = !!(cur && cur.private);
   for (const t of allTabs()) {
+    if (isPrivateTab(t) !== priv) continue;   // private and normal windows don't see each other's tabs
     if (t.id !== activeId && ((t.title || '').toLowerCase().includes(q) || t.url.toLowerCase().includes(q)))
       out.push({ kind: 'tab', id: t.id, url: t.url, title: t.title || t.url, favicon: t.favicon });
   }
@@ -2353,16 +2433,23 @@ async function suggest(q) {
   }
   hits.sort((a, b) => b[0] - a[0]);
   for (const [, h] of hits.slice(0, 6)) if (!out.some(o => o.url === h.url)) out.push({ kind: 'history', url: h.url, title: h.title || hostOf(h.url) });
-  let remote = [];
-  if (settings.suggestions && q.length > 1) {
-    try {
-      const ctl = new AbortController(); setTimeout(() => ctl.abort(), 1200);
-      const r = await net.fetch('https://duckduckgo.com/ac/?type=list&q=' + encodeURIComponent(q), { signal: ctl.signal });
-      const j = await r.json();
-      remote = (j[1] || []).filter(s => s.toLowerCase() !== q).slice(0, 4);
-    } catch {}
-  }
-  return { items: out.slice(0, 10), searches: remote, inline: inlineCompletion(q) };
+  return { items: out.slice(0, 10), searches: [], inline: inlineCompletion(q) };
+}
+// Search suggestions from the web, asked separately so your own tabs, bookmarks and history
+// show at once instead of waiting on the network.
+const remoteSugg = new Map();   // query -> suggestions (recent ones; typing back and forth)
+async function suggestRemote(q) {
+  q = (q || '').trim().toLowerCase();
+  if (!settings.suggestions || q.length < 2) return [];
+  if (remoteSugg.has(q)) return remoteSugg.get(q);
+  try {
+    const ctl = new AbortController(); const t = setTimeout(() => ctl.abort(), 1500);
+    const r = await net.fetch('https://duckduckgo.com/ac/?type=list&q=' + encodeURIComponent(q), { signal: ctl.signal });
+    const j = await r.json(); clearTimeout(t);
+    const list = (j[1] || []).filter(s => typeof s === 'string' && s.toLowerCase() !== q).slice(0, 4);
+    remoteSugg.set(q, list); if (remoteSugg.size > 200) remoteSugg.delete(remoteSugg.keys().next().value);
+    return list;
+  } catch { return []; }
 }
 
 // Address-bar autocomplete: the most-visited site (or address) that starts with what's typed,
@@ -2412,9 +2499,10 @@ function topSites() {
 // Shields (ad & tracker blocking via Ghostery's engine — same lists as uBlock)
 // ---------------------------------------------------------------------------
 
-function shieldsOnFor(url) {
+// priv: a private window's page (always the built-in blocker, with its per-site switch).
+function shieldsOnFor(url, priv) {
   if (!settings.shields) return false;
-  if (settings.shieldsEngine === 'ubo') return true;
+  if (settings.shieldsEngine === 'ubo' && !priv) return true;
   const h = hostOf(url);
   return !h || !settings.shieldsAllow.includes(h);
 }
@@ -2641,6 +2729,7 @@ async function initShields() {
 
 function setShieldsGlobal(on) {
   settings.shields = on; saveSettings();
+  setPrivateShields(on);
   if (settings.shieldsEngine === 'ubo') { on ? loadUbo() : unloadUbo(); push(); return; }
   if (!blocker) { if (on) initShields(); return; }
   try {
@@ -2648,6 +2737,11 @@ function setShieldsGlobal(on) {
     else blocker.disableBlockingInSession(session.defaultSession);
   } catch {}
   push();
+}
+// Private windows always use the built-in blocker; it follows the main switch.
+function setPrivateShields(on) {
+  if (!privateBlocker || !privateSes) return;
+  try { if (on) privateBlocker.enableBlockingInSession(privateSes); else privateBlocker.disableBlockingInSession(privateSes); } catch {}
 }
 
 async function setShieldsEngine(engine) {
@@ -2992,23 +3086,26 @@ async function siteInfo() {
   if (!t || !t.view || !/^https?:/.test(t.url)) return null;
   const u = new URL(t.url), origin = u.origin;
   const perms = SITE_PERMS.map(([perm, label]) => ({ perm, label }));
-  for (const key of Object.keys(settings.permissions)) {
+  const store = permStore(), ses = t.view.webContents.session;
+  for (const key of Object.keys(store)) {
     const [o, perm] = key.split('|');
     if (o === origin && !perms.some(p => p.perm === perm)) perms.push({ perm, label: ASK[perm] ? ASK[perm].replace(/^\w/, c => c.toUpperCase()) : perm });
   }
-  for (const p of perms) { const v = settings.permissions[`${origin}|${p.perm}`]; p.value = v === true ? 'allow' : v === false ? 'block' : 'ask'; }
+  for (const p of perms) { const v = store[`${origin}|${p.perm}`]; p.value = v === true ? 'allow' : v === false ? 'block' : 'ask'; }
   let cookies = 0;
-  try { const base = u.hostname.replace(/^www\./, ''); cookies = (await session.defaultSession.cookies.get({ domain: base })).length; } catch {}
+  try { const base = u.hostname.replace(/^www\./, ''); cookies = (await ses.cookies.get({ domain: base })).length; } catch {}
   return {
     origin, host: u.hostname.replace(/^www\./, ''), secure: u.protocol === 'https:',
     cert: u.protocol === 'https:' ? certs.get(u.hostname) || null : null,
-    perms, cookies, blocked: t.blocked || 0, shields: shieldsOnFor(t.url), ubo: settings.shieldsEngine === 'ubo' && !!uboId,
+    perms, cookies, blocked: t.blocked || 0, shields: shieldsOnFor(t.url, !!cur.private), ubo: settings.shieldsEngine === 'ubo' && !!uboId && !cur.private,
   };
 }
-async function clearSiteData(origin) {
+// The current window's saved site permissions (a private window keeps its own, in memory).
+function permStore() { return cur && cur.private ? privatePerms : settings.permissions; }
+async function clearSiteData(origin, ses = session.defaultSession) {
   let u; try { u = new URL(origin); } catch { return false; }
   if (!/^https?:$/.test(u.protocol)) return false;
-  const ses = session.defaultSession, base = u.hostname.replace(/^www\./, '');
+  const base = u.hostname.replace(/^www\./, '');
   try {
     for (const c of await ses.cookies.get({ domain: base })) {
       const url = `${c.secure ? 'https' : 'http'}://${c.domain.replace(/^\./, '')}${c.path}`;
@@ -3156,7 +3253,7 @@ function setupDownloads(ses) {
 let driftHandler = null;   // drift:// pages (private windows' session gets it too)
 function setupProtocol() {
   let newtabHtml = null;
-  driftHandler = async (req) => {
+  driftHandler = async (req, from = {}) => {
     const u = new URL(req.url);
     // Remove a tile from the new tab page. Needs a custom header, so other sites can't send it
     // (cross-origin requests with custom headers need permission they don't get).
@@ -3210,7 +3307,8 @@ function setupProtocol() {
     if (u.hostname === 'newtab') {
       let html = newtabHtml || (newtabHtml = fs.readFileSync(path.join(PAGES_DIR, 'newtab.html'), 'utf8'));
       const data = {
-        sites: topSites(), accent: settings.accent, dark: isDark(),
+        // A private window's new tab page shows none of your sites (they come from your history).
+        sites: from.private ? [] : topSites(), private: !!from.private, accent: settings.accent, dark: isDark(),
         engine: SEARCH_ENGINES[settings.searchEngine].name,
         searchUrl: SEARCH_ENGINES[settings.searchEngine].url,
         blocked: blockedTotal,
@@ -3218,7 +3316,7 @@ function setupProtocol() {
         wallpaperDim: settings.wallpaperDim, wallpaperBlur: settings.wallpaperBlur,
       };
       html = html.replace('/*__DATA__*/null', JSON.stringify(data).replace(/</g, '\\u003c'));
-      return new Response(html, { headers: { 'content-type': 'text/html; charset=utf-8' } });
+      return new Response(html, { headers: { 'content-type': 'text/html; charset=utf-8', 'cache-control': 'no-store' } });
     }
     // The sidebar UI is served from drift://ui/ rather than file:// so that
     // extension content scripts (which can match file:// URLs) never run inside it.
@@ -3688,7 +3786,7 @@ function warmOrigin(target) {
   let origin; try { const u = new URL(toUrl(String(target || ''))); if (!/^https?:$/.test(u.protocol)) return; origin = u.origin; } catch { return; }
   const now = Date.now(); if (now - (warmed.get(origin) || 0) < 10000) return;
   warmed.set(origin, now); if (warmed.size > 200) warmed.clear();
-  try { session.defaultSession.preconnect({ url: origin, numSockets: 1 }); } catch {}
+  try { (cur && cur.private && privateSes ? privateSes : session.defaultSession).preconnect({ url: origin, numSockets: 1 }); } catch {}
 }
 
 // ---------------------------------------------------------------------------
@@ -3926,7 +4024,7 @@ function setupIPC() {
   on('preconnect', (target) => warmOrigin(target));
   const handle = (ch, fn) => ipcMain.handle(ch, (e, ...a) => { const c = ctxOfUi(e.sender); if (!c) return null; useWin(c); return fn(...a); });
 
-  on('ready', () => { push(); layout(); sendBookmarks(); });
+  on('ready', () => { resetSent(cur); push(); layout(); sendBookmarks(); });
   on('activate', (id, noFocus) => activate(id, { noFocus: !!noFocus }));
   on('focus-page', () => { if (!overlay) focusPage(); });
   on('close-tab', (id) => closeTab(id));
@@ -4074,8 +4172,10 @@ function setupIPC() {
     const r = await dialog.showMessageBox(win, { type: 'warning', buttons: ['Clear', 'Cancel'], defaultId: 1, cancelId: 1,
       message: 'Clear browsing data?', detail: 'This removes history, cookies, site data, cache and saved site permissions. You will be signed out of websites.' });
     if (r.response !== 0) return;
-    history.clear(); histVer++; writeJSON('history.json', []);
+    history.clear(); histVer++; topCache = null; writeJSON('history.json', []);
     searches = []; writeJSON('searches.json', []);
+    closedTabs = []; remoteSugg.clear();   // nothing to bring back with Ctrl+Shift+T either
+    for (const t of allTabs()) if (t.view && /^drift:\/\/(history|newtab)/.test(t.url)) t.view.webContents.reload();
     settings.permissions = {}; saveSettings();
     await session.defaultSession.clearStorageData();
     await session.defaultSession.clearCache();
@@ -4126,6 +4226,7 @@ function setupIPC() {
   on('open-downloads-folder', () => shell.openPath(app.getPath('downloads')));
   on('devtools-ui', () => ui.webContents.openDevTools({ mode: 'detach' }));
   handle('suggest', (q) => suggest(q));
+  handle('suggest-remote', (q) => suggestRemote(q));
   on('ext-list', () => sendExtensions());
   on('ext-remove', (id) => removeExtension(id));
   on('ext-options', (id) => { const e = listExtensions().find(x => x.id === id); if (e && e.options) createTab(e.options); });
@@ -4176,13 +4277,13 @@ function setupIPC() {
   handle('site-info', () => siteInfo());
   on('site-perm', (origin, perm, value) => {
     if (!ASK[perm] || typeof origin !== 'string') return;
-    const key = `${origin}|${perm}`;
-    if (value === 'allow') settings.permissions[key] = true;
-    else if (value === 'block') settings.permissions[key] = false;
-    else delete settings.permissions[key];
-    saveSettings();
+    const key = `${origin}|${perm}`, store = permStore();
+    if (value === 'allow') store[key] = true;
+    else if (value === 'block') store[key] = false;
+    else delete store[key];
+    if (store === settings.permissions) saveSettings();
   });
-  handle('site-clear', async (origin) => { const t = activeTab(); const ok = await clearSiteData(origin); if (ok && t && t.view && !t.view.webContents.isDestroyed()) t.view.webContents.reload(); return ok; });
+  handle('site-clear', async (origin) => { const t = activeTab(); const ok = await clearSiteData(origin, t && t.view ? t.view.webContents.session : undefined); if (ok && t && t.view && !t.view.webContents.isDestroyed()) t.view.webContents.reload(); return ok; });
   on('bm-open-background', (id) => { const h = bookmarks.find(id); if (h) openBookmark(h.item, true, true); });
   on('bm-menu', (id) => bookmarkContextMenu(id));
   on('bm-bar-menu', () => {
@@ -4229,7 +4330,7 @@ function setupIPC() {
     const e = passwords.get(id); if (!e) return;
     clipboard.writeText(what === 'username' ? e.username : e.password);
     // Clear a copied password from the clipboard after 30 seconds, like most password managers.
-    if (what !== 'username') setTimeout(() => { if (clipboard.readText() === e.password) clipboard.clear(); }, 30000);
+    if (what !== 'username') setTimeout(async () => { if (await readClipboard() === e.password) clipboard.clear(); }, 30000);
   });
   on('pw-delete', async (id) => {
     const e = passwords.get(id); if (!e) return;
@@ -4279,7 +4380,7 @@ function getPrivateSession() {
   setupPermissions(ses, privatePerms);
   setupCertificates(ses);
   ses.registerPreloadScript({ id: 'drift-page', type: 'frame', filePath: path.join(__dirname, 'page-preload.js') });
-  if (driftHandler) ses.protocol.handle('drift', driftHandler);
+  if (driftHandler) ses.protocol.handle('drift', (req) => driftHandler(req, { private: true }));
   setupDownloads(ses);
   ses.webRequest.onBeforeSendHeaders(addHintHeaders);
   // Shields: the built-in blocker, with the same per-site switches.
@@ -4291,9 +4392,9 @@ function getPrivateSession() {
       });
       const tabUrlFor = (wcId) => { const t = wcToTab.get(wcId); return t ? t.url : ''; };
       const oReq = b.onBeforeRequest, oHdr = b.onHeadersReceived, oCos = b.onInjectCosmeticFilters;
-      b.onBeforeRequest = (d, cb) => (d.webContentsId && !shieldsOnFor(tabUrlFor(d.webContentsId))) || d.resourceType === 'mainFrame' ? cb({}) : oReq(d, cb);
-      b.onHeadersReceived = (d, cb) => d.webContentsId && !shieldsOnFor(tabUrlFor(d.webContentsId)) ? cb({}) : oHdr(d, cb);
-      b.onInjectCosmeticFilters = (ev, url, msg) => { try { if (!shieldsOnFor(ev.sender.getURL())) return undefined; } catch {} return oCos(ev, url, msg); };
+      b.onBeforeRequest = (d, cb) => (d.webContentsId && !shieldsOnFor(tabUrlFor(d.webContentsId), true)) || d.resourceType === 'mainFrame' ? cb({}) : oReq(d, cb);
+      b.onHeadersReceived = (d, cb) => d.webContentsId && !shieldsOnFor(tabUrlFor(d.webContentsId), true) ? cb({}) : oHdr(d, cb);
+      b.onInjectCosmeticFilters = (ev, url, msg) => { try { if (!shieldsOnFor(ev.sender.getURL(), true)) return undefined; } catch {} return oCos(ev, url, msg); };
       b.on('request-blocked', (req) => { blockedTotal++; const t = wcToTab.get(req.tabId); if (t) { t.blocked++; if (t.id === activeId) push(); } });
       privateBlocker = b;
       if (settings.shields) b.enableBlockingInSession(ses);
@@ -4342,6 +4443,8 @@ function createWindow(opts = {}) {
     // Let normal typing go to the sidebar inputs; only intercept real shortcuts.
     if (handleShortcut(input)) e.preventDefault();
   }));
+  ui.webContents.on('did-start-loading', () => resetSent(ctx));
+  ui.webContents.on('did-finish-load', () => resetSent(ctx));
   ui.webContents.once('did-finish-load', W(() => {
     ctx.ready = true; layout(); win.show(); push();
     if (extensions) sendExtensionsTo(ctx);
@@ -4350,6 +4453,8 @@ function createWindow(opts = {}) {
   }));
   ui.webContents.setWindowOpenHandler(() => ({ action: 'deny' }));
   ui.webContents.on('will-navigate', (e) => e.preventDefault());
+  // Right-click in the address bar, find box or a settings field: the usual edit menu.
+  ui.webContents.on('context-menu', W((_e, p) => uiEditMenu(p)));
 
   const saveBounds = debounce(W(() => {
     if (win.isDestroyed()) return;
@@ -4629,14 +4734,14 @@ if (!app.requestSingleInstanceLock(launchRequest)) {
     const updatedFrom = prevVersion && semverCmp(app.getVersion(), prevVersion) > 0 ? prevVersion : '';
     if (settings.lastVersion !== app.getVersion()) { settings.lastVersion = app.getVersion(); writeJSON('settings.json', settings); }
     nativeTheme.themeSource = settings.theme;
-    history = new Map(readJSON('history.json', []).map(h => [h.url, h]));
+    PERF('settings read'); history = new Map(readJSON('history.json', []).map(h => [h.url, h]));
     searches = readJSON('searches.json', []).filter(x => x && typeof x.q === 'string');
     bookmarks = new Bookmarks(() => readJSON('bookmarks.json', null), (d) => writeJSON('bookmarks.json', d));
     passwords = new Passwords(file('passwords.json'));
-    faviconStore = readJSON('favicons.json', {});
+    PERF('history, bookmarks, passwords read'); faviconStore = readJSON('favicons.json', {});
     loadDownloads();
     loadEssentials();
-    Menu.setApplicationMenu(null);
+    PERF('favicons, downloads, essentials read'); Menu.setApplicationMenu(null);
     const ses = session.defaultSession;
     ses.setUserAgent(chromeUA());
     ses.setSpellCheckerLanguages(['en-US']);
@@ -4644,7 +4749,7 @@ if (!app.requestSingleInstanceLock(launchRequest)) {
     setupPermissions(ses);
     setupCertificates(ses);
     ses.registerPreloadScript({ id: 'drift-page', type: 'frame', filePath: path.join(__dirname, 'page-preload.js') });
-    setupDownloads(ses);
+    setupDownloads(ses); PERF('session set up');
     setupIPC();
     setupPageIPC();
     nativeTheme.on('updated', () => {

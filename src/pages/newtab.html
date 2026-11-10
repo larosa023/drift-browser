@@ -161,7 +161,8 @@
     const a = e.target.closest('a.site'); clearTimeout(warmT);
     if (a) warmT = setTimeout(() => tell('warm', a.href), 120);
   });
-  if (D.blocked) document.getElementById('stat').innerHTML = `<b>${D.blocked.toLocaleString()}</b> ads and trackers blocked this session`;
+  if (D.private) document.getElementById('stat').textContent = 'Private window · no history is kept, and cookies and site data are wiped when you close it';
+  else if (D.blocked) document.getElementById('stat').innerHTML = `<b>${D.blocked.toLocaleString()}</b> ads and trackers blocked this session`;
 </script>
 </body>
 </html>

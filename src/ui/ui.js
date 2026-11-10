@@ -752,18 +752,24 @@ async function updatePalette(completeInline) {
     return b;
   };
   renderPalette(baseFor(q, q), null);
+  // Your tabs, bookmarks and history first (instant); the web's search suggestions join after.
+  const remote = paletteMode === 'ess' || q.length < 2 ? null : window.drift.suggestRemote(q);
   const r = await window.drift.suggest(q);
   if (my !== seq) return;
   const inline = r && r.inline;
+  let base = baseFor(q, q);
   if (completeInline && inline && input.value === q && input.selectionStart === q.length && inline.toLowerCase().startsWith(q.toLowerCase())) {
     input.value = q + inline.slice(q.length);
     input.setSelectionRange(q.length, input.value.length);
     typedText = q;
     paletteSel = 0;
-    renderPalette(baseFor(input.value, q), r);
-    return;
+    base = baseFor(input.value, q);
   }
-  renderPalette(baseFor(q, q), r);
+  renderPalette(base, r);
+  if (!remote) return;
+  const searches = await remote;
+  if (my !== seq || !searches || !searches.length) return;
+  renderPalette(base, { ...r, searches });
 }
 
 function renderPalette(base, r) {
@@ -779,6 +785,9 @@ function renderPalette(base, r) {
     if (bms.length) { groups.push([items.length, 'Bookmarks']); items.push(...bms); }
     if (hist.length) { groups.push([items.length, base.length ? 'History' : 'Recent']); items.push(...hist); }
   }
+  // Rows arriving above the one you've moved to (web suggestions come in late) keep it selected.
+  const was = paletteItems[paletteSel], key = (it) => it ? it.kind + '|' + (it.id || it.url || it.text || '') : '';
+  if (was && paletteSel > 0) { const j = items.findIndex(it => key(it) === key(was)); if (j >= 0) paletteSel = j; }
   paletteItems = items;
   paletteSel = Math.min(paletteSel, Math.max(0, items.length - 1));
   if (!base.length && paletteSel === 0 && !items.length) paletteSel = 0;
@@ -986,7 +995,10 @@ function renderSettings() {
       <div><span>Edit address</span><span><kbd>Ctrl</kbd><kbd>L</kbd></span></div>
       <div><span>Close tab</span><span><kbd>Ctrl</kbd><kbd>W</kbd></span></div>
       <div><span>Reopen closed tab</span><span><kbd>Ctrl</kbd><kbd>Shift</kbd><kbd>T</kbd></span></div>
-      <div><span>Private window</span><span><kbd>Ctrl</kbd><kbd>Shift</kbd><kbd>N</kbd></span></div>
+      <div><span>Copy page link</span><span><kbd>Ctrl</kbd><kbd>Shift</kbd><kbd>C</kbd></span></div>
+      <div><span>Mute / unmute tab</span><span><kbd>Ctrl</kbd><kbd>M</kbd></span></div>
+      <div><span>Move tab up / down</span><span><kbd>Ctrl</kbd><kbd>Shift</kbd><kbd>PgUp</kbd> <kbd>PgDn</kbd></span></div>
+      <div><span>Close window</span><span><kbd>Ctrl</kbd><kbd>Shift</kbd><kbd>W</kbd></span></div>
       <div><span>Side panel</span><span><kbd>Ctrl</kbd><kbd>Alt</kbd><kbd>P</kbd></span></div>
       <div><span>Next / previous tab</span><span><kbd>Ctrl</kbd><kbd>Tab</kbd></span></div>
       <div><span>Jump to tab 1–9</span><span><kbd>Ctrl</kbd><kbd>1</kbd>…<kbd>9</kbd></span></div>
@@ -1189,7 +1201,7 @@ function dlDragStart(e) {
 }
 function renderDlMenu() {
   const ds = (S.downloads || []).slice(0, 6);
-  $('#dlmenu-list').innerHTML = ds.length ? dlRows(ds) : `<div class="empty">No downloads yet</div>`;
+  setHTML($('#dlmenu-list'), ds.length ? dlRows(ds) : `<div class="empty">No downloads yet</div>`);
 }
 function openDlMenu() {
   const r = $('#tb-dl').getBoundingClientRect(), m = $('#dlmenu');
@@ -1309,9 +1321,9 @@ function renderExtensions() {
       ${e.options ? `<button class="ib" data-act="opt" title="Options">${icon('gear', 15)}</button>` : ''}
       ${e.builtin ? '' : `<button class="ib" data-act="rm" title="Remove">${icon('trash', 15)}</button>`}
     </div>`).join('');
-  body.innerHTML = (rows || `<div class="empty">${icon('puzzle', 22)}<br>No extensions yet.<br>Click <b>Get extensions</b> to browse the Chrome Web Store, then press <b>Add to Chrome</b>.</div>`) + `
+  setHTML(body, (rows || `<div class="empty">${icon('puzzle', 22)}<br>No extensions yet.<br>Click <b>Get extensions</b> to browse the Chrome Web Store, then press <b>Add to Chrome</b>.</div>`) + `
     <button class="btn" id="ext-unpacked" style="margin-top:8px">Load unpacked extension…</button>
-    <div class="note">Ad blocking is built in (<b>Shields</b>), so ad-blocker extensions aren't needed and may not work here.</div>`;
+    <div class="note">Ad blocking is built in (<b>Shields</b>), so ad-blocker extensions aren't needed and may not work here.</div>`);
 }
 $('#extensions-body').addEventListener('click', (e) => {
   if (e.target.closest('#ext-unpacked')) return send('ext-unpacked');
@@ -1676,12 +1688,24 @@ function toast(html, ms = 3200, actions = []) {
   t.querySelectorAll('[data-tact]').forEach(b => b.onclick = () => { const a = toastActions[Number(b.dataset.tact)]; t.hidden = true; if (a) a.run(); });
   clearTimeout(toastTimer); toastTimer = setTimeout(() => (t.hidden = true), ms + (actions.length ? 2000 : 0));
 }
+// "Paste and go" from the address bar's right-click menu.
+window.drift.on('paste-go', (text) => {
+  if (!S || S.overlay !== 'palette' || typeof text !== 'string' || !text.trim()) return;
+  const q = text.trim();
+  if (paletteMode === 'ess') { send('ess-add', q); paletteMode = null; return; }
+  send('navigate', looksLikeUrl(q) ? q : '?' + q, paletteNewTab);
+});
 window.drift.on('toast-action', ({ token, index }) => { if (token === toastSeq && toastActions[index]) toastActions[index].run(); });
 
 // ---------------------------------------------------------------------- messages from main
 // An overlay opened here is shown before Drift confirms it; a state update sent just before
 // the confirmation still says "no overlay" and must not close it.
+// Main sends a tab's icon only when it changes, and the fixed lists once: keep what came before.
+const iconMem = new Map();
 window.drift.on('state', (s) => {
+  for (const t of s.tabs) { if (t.favicon !== undefined) iconMem.set(t.id, t.favicon); else t.favicon = iconMem.get(t.id) || ''; }
+  if (iconMem.size > s.tabs.length + 100) { const live = new Set(s.tabs.map(t => t.id)); for (const k of iconMem.keys()) if (!live.has(k)) iconMem.delete(k); }
+  if (S) for (const k of ['wallpapers', 'engines', 'platform', 'chrome', 'appVersion']) if (s[k] === undefined) s[k] = S[k];
   document.body.classList.toggle('private', !!s.private); $('#tb-private').hidden = !s.private;
   if (pendingOverlay) {
     if (s.overlay === pendingOverlay.mode || Date.now() - pendingOverlay.at > 1000) pendingOverlay = null;
