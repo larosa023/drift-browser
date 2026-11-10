@@ -895,18 +895,18 @@ body.side-resizing, body.side-resizing * { cursor: ew-resize !important; user-se
 #side-empty #se-cur:hover { text-decoration: underline; }
 
 /* Tab folders */
-.folder { display: flex; align-items: center; gap: 7px; height: 30px; padding: 0 6px 0 8px; margin: 4px 0 2px; border-radius: 8px; cursor: default; color: var(--fg); font-size: 12.5px; font-weight: 600; user-select: none; position: relative; }
-.folder:hover { background: var(--hover); }
-.folder .fchev { display: grid; place-items: center; width: 12px; color: var(--muted); transition: transform .15s; }
-.folder.collapsed .fchev { transform: rotate(-90deg); }
-.folder .fic { display: grid; place-items: center; color: var(--fc); }
-.folder .fname { flex: 1; min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-.folder .fcount { font-size: 11px; font-weight: 500; color: var(--muted); padding: 0 2px; }
-.folder:hover .fcount { display: none; }
-.folder .fadd { display: none; width: 20px; height: 20px; border-radius: 5px; place-items: center; color: var(--muted); padding: 0; background: none; border: 0; }
-.folder:hover .fadd { display: grid; }
-.folder .fadd:hover { background: var(--press); color: var(--fg); }
-.folder.drop-into { background: color-mix(in srgb, var(--fc) 18%, transparent); box-shadow: inset 0 0 0 1.5px var(--fc); }
+#tablist .folder { display: flex; align-items: center; gap: 7px; height: 30px; padding: 0 6px 0 8px; margin: 4px 0 2px; border-radius: 8px; cursor: default; color: var(--fg); font-size: 12.5px; font-weight: 600; user-select: none; position: relative; }
+#tablist .folder:hover { background: var(--hover); }
+#tablist .folder .fchev { display: grid; place-items: center; width: 12px; color: var(--muted); transition: transform .15s; }
+#tablist .folder.collapsed .fchev { transform: rotate(-90deg); }
+#tablist .folder .fic { display: grid; place-items: center; color: var(--fc); }
+#tablist .folder .fname { flex: 1; min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+#tablist .folder .fcount { font-size: 11px; font-weight: 500; color: var(--muted); padding: 0 2px; }
+#tablist .folder:hover .fcount { display: none; }
+#tablist .folder .fadd { display: none; width: 20px; height: 20px; border-radius: 5px; place-items: center; color: var(--muted); padding: 0; background: none; border: 0; }
+#tablist .folder:hover .fadd { display: grid; }
+#tablist .folder .fadd:hover { background: var(--press); color: var(--fg); }
+#tablist .folder.drop-into { background: color-mix(in srgb, var(--fc) 18%, transparent); box-shadow: inset 0 0 0 1.5px var(--fc); }
 .tab.in-folder { margin-left: 14px; }
 .tab.in-folder::before { content: ''; position: absolute; left: -8px; top: -2px; bottom: 0; width: 2px; background: color-mix(in srgb, var(--fc) 70%, transparent); }
 .tab.in-folder.folder-last::before { bottom: 8px; border-radius: 0 0 2px 2px; }
@@ -914,7 +914,7 @@ body.side-resizing, body.side-resizing * { cursor: ew-resize !important; user-se
 .f-colors { display: flex; gap: 8px; flex-wrap: wrap; margin: 4px 0 6px; }
 .fcol { width: 22px; height: 22px; border-radius: 50%; background: var(--fc); border: 2px solid transparent; padding: 0; cursor: pointer; box-shadow: inset 0 0 0 2px var(--card); }
 .fcol.on { border-color: var(--fc); }
-body.rail:not(.rail-open) .folder { justify-content: center; padding: 0; gap: 0; height: 22px; }
-body.rail:not(.rail-open) .folder > :not(.fic) { display: none; }
+body.rail:not(.rail-open) #tablist .folder { justify-content: center; padding: 0; gap: 0; height: 22px; }
+body.rail:not(.rail-open) #tablist .folder > :not(.fic) { display: none; }
 body.rail:not(.rail-open) .tab.in-folder { margin-left: 0; }
 body.rail:not(.rail-open) .tab.in-folder::before { left: 1px; }

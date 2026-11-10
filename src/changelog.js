@@ -1,6 +1,9 @@
 // What's new in each release, shown on the What's new page (drift://whatsnew) after an update.
 // Newest first. Kinds: new, faster, fixed, changed. Written for people using Drift.
 module.exports = [
+  { version: '1.26.1', date: '2026-11-09', items: [
+    ['fixed', 'Folders on the bookmarks bar showed only their arrow, without their name, when the sidebar was narrow (1.26.0).'],
+  ] },
   { version: '1.26.0', date: '2026-11-09', items: [
     ['new', 'Private windows (Ctrl+Shift+N, or right-click a link or tab): sites can\'t see your normal cookies or sign-ins, nothing goes into History or search history, and everything the sites stored is wiped when you close the last private window. Ad blocking still works; extensions don\'t run there.'],
     ['new', 'Side panel (Ctrl+Alt+P, or the button next to Downloads): keep a site open beside your tabs, like Twitch chat, a schedule or a feed. Drag its edge to resize; it stays across restarts. Right-click a link or tab for "Open in side panel".'],
