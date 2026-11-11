@@ -1,6 +1,9 @@
 // What's new in each release, shown on the What's new page (drift://whatsnew) after an update.
 // Newest first. Kinds: new, faster, fixed, changed. Written for people using Drift.
 module.exports = [
+  { version: '1.27.2', date: '2026-11-11', items: [
+    ['fixed', 'The empty part of the top bar between the address bar and the buttons on the right sometimes wouldn\'t drag the window. Drift now refreshes where the bar can be dragged whenever its buttons change size.'],
+  ] },
   { version: '1.27.1', date: '2026-11-11', items: [
     ['fixed', 'With two windows open, a video (or any busy page) in one made the other lag: every ad blocked and every change to an extension\'s badge refreshed the sidebar and extension buttons in every window, and reloaded the extension icons each time. Now each window only refreshes for its own changes, badge updates are capped at about ten a second, and extension icons are only reloaded when they change.'],
   ] },

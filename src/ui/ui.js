@@ -1260,6 +1260,22 @@ function applyHiddenActions() {
     all.querySelectorAll('.action').forEach(b => { b.style.display = builtin.has(b.id) ? 'none' : ''; });
   }
 }
+// Chromium can keep stale "not draggable" strips in the title bar after its buttons change
+// size (extension buttons tucked away, downloads button appearing): the empty part next to
+// the buttons then wouldn't drag the window. Whenever the bar's pieces resize, switch the
+// bar's drag area off and on so the window recomputes it.
+let regionRaf = 0;
+function refreshDragRegions() {
+  if (regionRaf) return;
+  regionRaf = requestAnimationFrame(() => {
+    const tb = $('#titlebar'); tb.style.setProperty('-webkit-app-region', 'no-drag');
+    requestAnimationFrame(() => { tb.style.removeProperty('-webkit-app-region'); regionRaf = 0; });
+  });
+}
+if (window.ResizeObserver) {
+  const ro = new ResizeObserver(() => refreshDragRegions());
+  for (const sel of ['.tb-left', '.tb-nav', '#addr', '.tb-right', '.winbtns', '#bmbar']) { const el = $(sel); if (el) ro.observe(el); }
+}
 customElements.whenDefined('browser-action-list').then(() => {
   for (const id of ['#actions', '#actions-all']) {
     const root = $(id).shadowRoot;
