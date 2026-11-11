@@ -193,6 +193,8 @@ var require_browser_action = __commonJS({
               searchParams.append("t", info.iconModified);
             }
             const iconUrl = `crx://extension-icon/${this.id}/${iconSize}/${resizeType}?${searchParams.toString()}`;
+            if (this.__iconUrl === iconUrl) return;
+            this.__iconUrl = iconUrl;
             const bgImage = `url(${iconUrl})`;
             if (this.pendingIcon) {
               this.pendingIcon.onload = this.pendingIcon.onerror = () => {
@@ -224,13 +226,16 @@ var require_browser_action = __commonJS({
             const activeTabId = this.tab;
             const tabInfo = activeTabId > -1 ? action.tabs[activeTabId] : {};
             const info = { ...tabInfo, ...action };
-            this.title = typeof info.title === "string" ? info.title : "";
+            const __t = typeof info.title === "string" ? info.title : "";
+            if (this.title !== __t) this.title = __t;
             this.updateIcon(info);
             if (info.text) {
               const badge = this.getBadge();
-              badge.textContent = info.text;
-              badge.style.color = "#fff";
-              badge.style.backgroundColor = info.color;
+              if (badge.textContent !== info.text) badge.textContent = info.text;
+              if (badge.style.backgroundColor !== info.color) {
+                badge.style.color = "#fff";
+                badge.style.backgroundColor = info.color;
+              }
             } else if (this.badge) {
               this.badge.remove();
               this.badge = void 0;

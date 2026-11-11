@@ -132,3 +132,90 @@ for (const variant of ['cjs/index.js', 'esm/index.mjs']) {
   fs.writeFileSync(f, s);
   console.log(`patch-deps: patched electron-chrome-extensions ${variant} (listener hosts)`);
 }
+
+// electron-chrome-extensions: an extension's badge changing (uBlock Origin's blocked count
+// changes many times a second on streaming sites) made every window's extension buttons
+// reload every icon, each decoded and re-encoded on Drift's main thread — with a second
+// window open (and a video playing in it) that was enough to make the browser lag.
+// Main side: badge updates go out at most ~10 times a second, and icon images are cached.
+for (const variant of ['cjs/index.js', 'esm/index.mjs']) {
+  const f = path.join(__dirname, '..', 'node_modules', 'electron-chrome-extensions', 'dist', ...variant.split('/'));
+  if (!fs.existsSync(f)) continue;
+  let s = fs.readFileSync(f, 'utf8');
+  const MARK4 = '/* drift: action updates v1 */';
+  if (s.includes(MARK4)) continue;
+  const upd = `  onUpdate() {
+    if (this.queuedUpdate) return;
+    this.queuedUpdate = true;
+    queueMicrotask(() => {
+      this.queuedUpdate = false;`;
+  if (!s.includes(upd)) throw new Error(`patch-deps: browserAction onUpdate changed in ${variant}; update scripts/patch-deps.js`);
+  s = s.replace(upd, `  onUpdate() {
+    ${MARK4}
+    if (this.queuedUpdate) return;
+    this.queuedUpdate = true;
+    const since = Date.now() - (this.__lastUpdate || 0);
+    setTimeout(() => {
+      this.queuedUpdate = false;
+      this.__lastUpdate = Date.now();`);
+  // close the setTimeout instead of queueMicrotask: the callback ends with "    });\n  }" — add the delay
+  const updEnd = `          observer.send?.("browserAction.update");
+        }
+      });
+    });
+  }`;
+  if (!s.includes(updEnd)) throw new Error(`patch-deps: browserAction onUpdate end changed in ${variant}; update scripts/patch-deps.js`);
+  s = s.replace(updEnd, `          observer.send?.("browserAction.update");
+        }
+      });
+    }, Math.max(0, 100 - since));
+  }`);
+  const ico = `          if (action) {
+            iconDetails = tabId && action.tabs[tabId]?.icon || action.icon;
+          }
+          let iconImage;`;
+  if (!s.includes(ico)) throw new Error(`patch-deps: extension-icon handler changed in ${variant}; update scripts/patch-deps.js`);
+  s = s.replace(ico, `          if (action) {
+            iconDetails = tabId && action.tabs[tabId]?.icon || action.icon;
+          }
+          const __iconKey = extension && iconDetails ? [extensionId, imageSize, resizeType, JSON.stringify(iconDetails.path || ''), JSON.stringify(iconDetails.imageData || '')].join('|') : '';
+          const __icons = this.__iconCache || (this.__iconCache = new Map());
+          if (__iconKey && __icons.has(__iconKey)) return new Response(__icons.get(__iconKey), { status: 200, headers: { "Content-Type": "image/png" } });
+          let iconImage;`);
+  const resp = `          if (iconImage) {
+            return new Response(iconImage.toPNG(), {`;
+  if (!s.includes(resp)) throw new Error(`patch-deps: extension-icon response changed in ${variant}; update scripts/patch-deps.js`);
+  s = s.replace(resp, `          if (iconImage) {
+            const __png = iconImage.toPNG();
+            if (__iconKey) { __icons.set(__iconKey, __png); if (__icons.size > 300) __icons.delete(__icons.keys().next().value); }
+            return new Response(__png, {`);
+  fs.writeFileSync(f, s);
+  console.log(`patch-deps: patched electron-chrome-extensions ${variant} (action updates)`);
+}
+// Sidebar side: a button whose icon and badge didn't change isn't touched (no icon reload).
+for (const variant of ['cjs/browser-action.js', 'esm/browser-action.mjs']) {
+  const f = path.join(__dirname, '..', 'node_modules', 'electron-chrome-extensions', 'dist', ...variant.split('/'));
+  if (!fs.existsSync(f)) continue;
+  let s = fs.readFileSync(f, 'utf8');
+  const MARK5 = '/* drift: action icons v1 */';
+  if (s.includes(MARK5)) continue;
+  const a = `        const iconUrl = \`crx://extension-icon/\${this.id}/\${iconSize}/\${resizeType}?\${searchParams.toString()}\`;`;
+  if (!s.includes(a)) throw new Error(`patch-deps: browser-action updateIcon changed in ${variant}; update scripts/patch-deps.js`);
+  s = s.replace(a, a + `
+        ${MARK5}
+        if (this.__iconUrl === iconUrl) return;
+        this.__iconUrl = iconUrl;`);
+  const b = `          const badge = this.getBadge();
+          badge.textContent = info.text;
+          badge.style.color = "#fff";
+          badge.style.backgroundColor = info.color;`;
+  if (!s.includes(b)) throw new Error(`patch-deps: browser-action badge changed in ${variant}; update scripts/patch-deps.js`);
+  s = s.replace(b, `          const badge = this.getBadge();
+          if (badge.textContent !== info.text) badge.textContent = info.text;
+          if (badge.style.backgroundColor !== info.color) { badge.style.color = "#fff"; badge.style.backgroundColor = info.color; }`);
+  const c = `        this.title = typeof info.title === "string" ? info.title : "";`;
+  if (s.includes(c)) s = s.replace(c, `        const __t = typeof info.title === "string" ? info.title : "";
+        if (this.title !== __t) this.title = __t;`);
+  fs.writeFileSync(f, s);
+  console.log(`patch-deps: patched electron-chrome-extensions ${variant} (action icons)`);
+}

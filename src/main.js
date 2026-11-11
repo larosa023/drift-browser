@@ -471,14 +471,35 @@ function popupMenu(template, opts = {}) {
 // push() refreshes every window's sidebar (coalesced); each gets its own tabs and active page.
 // At most ~30 updates a second: a busy page (Twitch, YouTube) fires loading, title, icon and
 // audio events in bursts, and each update makes every sidebar re-render.
-let pushQueued = false, lastPush = 0;
-function push() {
+// push(ctx) refreshes just that window (something only it shows changed).
+let pushQueued = false, lastPush = 0, pushAll = false;
+const pushSome = new Set();
+function push(only) {
+  if (only && only.win) pushSome.add(only); else pushAll = true;
   if (pushQueued) return;
   pushQueued = true;
   const wait = Math.max(0, 33 - (Date.now() - lastPush));
-  const run = () => { pushQueued = false; lastPush = Date.now(); forEachWin(() => pushOne()); };
+  const run = () => {
+    pushQueued = false; lastPush = Date.now();
+    const all = pushAll, some = new Set(pushSome); pushAll = false; pushSome.clear();
+    forEachWin((c) => { if (all || some.has(c)) pushOne(); });
+  };
   if (wait) setTimeout(run, wait); else setImmediate(run);
 }
+// Ads and trackers blocked: the page's count (shield button) refreshes about twice a second in
+// its own window only; the session total, shown in every window, every few seconds. (Streaming
+// sites block constantly; refreshing every window on each one made the others lag.)
+let blockedShown = 0;
+const blockedSoon = new Set();
+function noteBlocked(t) {
+  blockedTotal++;
+  if (!t) return;
+  t.blocked++;
+  const c = ctxOfTab(t); if (!c || blockedSoon.has(c)) return;
+  blockedSoon.add(c);
+  setTimeout(() => { blockedSoon.delete(c); if (windows.includes(c)) push(c); }, 500);
+}
+setInterval(() => { if (blockedShown !== blockedTotal) { blockedShown = blockedTotal; push(); } }, 5000).unref();
 function pushOne() {
   {
     if (!ui || ui.webContents.isDestroyed()) return;
@@ -535,7 +556,7 @@ function pushOne() {
       wallpaperCss: wallpaperCss(),
       desktopWallpaper: !!desktopWallpaperPath(),
       passwordsEncrypted: passwords ? passwords.canEncrypt() : false,
-      blockedTotal,
+      blockedTotal: blockedShown,
       uboId: cur.private ? null : uboId,   // (extensions don't run in private windows)
       // A private window lists only its own downloads, a normal one never shows those.
       downloads: downloads.filter(d => !!d.private === !!cur.private).map(d => ({ ...d, item: undefined })),
@@ -548,6 +569,7 @@ function pushOne() {
     const json = JSON.stringify(state);
     if (json === sent.last) return;
     sent.last = json; sent.statics = true;
+    perfCounts['w' + cur.id] = (perfCounts['w' + cur.id] || 0) + 1;
     ui.webContents.send('state', state);
   }
 }
@@ -921,9 +943,9 @@ function rebuildView(tab) {
 }
 
 function wireTab(tab, wc) {
-  const upd = () => { if (tab.glance) sendGlance(); push(); saveSession(); };
-  wc.on('did-start-loading', () => { tab.loading = true; if (tab.glance) sendGlance(); push(); });
-  wc.on('did-stop-loading', () => { tab.loading = false; if (tab.glance) sendGlance(); push(); });
+  const upd = () => { if (tab.glance) sendGlance(); push(ctxOfTab(tab)); saveSession(); };
+  wc.on('did-start-loading', () => { tab.loading = true; if (tab.glance) sendGlance(); push(ctxOfTab(tab)); });
+  wc.on('did-stop-loading', () => { tab.loading = false; if (tab.glance) sendGlance(); push(ctxOfTab(tab)); });
   wc.on('page-title-updated', (_e, title) => {
     tab.title = title; if (tab.pinned) noteEssentialLook(tab); upd();
     const h = history.get(tab.url); if (h) { h.title = title; saveHistory(); }
@@ -956,11 +978,11 @@ function wireTab(tab, wc) {
     if (!isMain || code === -3) return; // -3 = aborted (normal)
     showErrorPage(wc, url, code, desc);
   });
-  wc.on('audio-state-changed', (e) => { tab.audible = e.audible; if (e.audible) tab.hadAudio = true; push(); });
+  wc.on('audio-state-changed', (e) => { tab.audible = e.audible; if (e.audible) tab.hadAudio = true; push(ctxOfTab(tab)); });
   // Keep a custom volume applied as the page navigates or adds frames/players.
   wc.on('did-frame-finish-load', () => { if (tab.volume !== 1) applyVolume(tab); });
   wc.on('media-started-playing', () => { if (tab.volume !== 1) applyVolume(tab); });
-  wc.on('render-process-gone', () => { tab.crashed = true; push(); });
+  wc.on('render-process-gone', () => { tab.crashed = true; push(ctxOfTab(tab)); });
   wc.on('found-in-page', (_e, r) => {
     ui.webContents.send('find-result', { active: r.activeMatchOrdinal, matches: r.matches });
   });
@@ -976,7 +998,7 @@ function wireTab(tab, wc) {
       activeId = tab.id;
       if (extensions) { try { extensions.selectTab(wc); } catch {} }
       if (findOpen) closeFind(); else layout();
-      push();
+      push(ctxOfTab(tab));
     }
   });
   wc.on('context-menu', (_e, p) => pageContextMenu(tab, wc, p));
@@ -2714,11 +2736,7 @@ async function initShields() {
       try { if (!shieldsOnFor(event.sender.getURL())) return undefined; } catch {}
       return origCos(event, url, msg);
     };
-    blocker.on('request-blocked', (req) => {
-      blockedTotal++;
-      const t = wcToTab.get(req.tabId);
-      if (t) { t.blocked++; if (t.id === activeId) push(); }
-    });
+    blocker.on('request-blocked', (req) => noteBlocked(wcToTab.get(req.tabId)));
     if (settings.shields) blocker.enableBlockingInSession(session.defaultSession);
     session.defaultSession.webRequest.onBeforeSendHeaders(addHintHeaders);
     console.log('[shields] ready');
@@ -3655,6 +3673,7 @@ async function exportPasswords() {
 // moment Drift's main thread was frozen.
 // ---------------------------------------------------------------------------
 let perfNote = () => {};   // replaced by the performance log when it's on
+const perfCounts = {};      // sidebar updates sent per window since the last log line
 function startPerfLog() {
   let st; try { st = fs.statSync(file('perf-log')); } catch { return; }
   // Diagnostics are for a short investigation: they switch themselves off after two days.
@@ -3683,9 +3702,10 @@ function startPerfLog() {
       try {
         const pid = wc.getOSProcessId(), url = wc.getURL(), type = wc.getType();
         let label;
-        if (ui && wc === ui.webContents) label = 'Drift sidebar';
+        const uc = ctxOfUi(wc);
+        if (uc) label = `Drift sidebar #${windows.indexOf(uc) + 1}`;
         else if (/^chrome-extension:/.test(url)) label = `ext:${extName(new URL(url).hostname)}${type === 'backgroundPage' ? ' (background)' : ''}`;
-        else label = `tab:${hostOf(url) || url.slice(0, 40)}${wcToTab.get(wc.id) && wcToTab.get(wc.id).id === activeId ? '*' : ''}`;
+        else { const t = wcToTab.get(wc.id), tc = t && ctxOfTab(t); label = `tab:${hostOf(url) || url.slice(0, 40)}${tc ? '@' + (windows.indexOf(tc) + 1) : ''}${t && tc && t.id === (tc === cur ? activeId : tc.activeId) ? '*' : ''}${t && t.audible ? '♪' : ''}`; }
         labels.set(pid, labels.has(pid) ? labels.get(pid) + ' + ' + label : label);
       } catch {}
     }
@@ -3693,7 +3713,9 @@ function startPerfLog() {
       cpu: m.cpu.percentCPUUsage, mb: Math.round(m.memory.workingSetSize / 1024), pid: m.pid }));
     const total = rows.reduce((a, r) => a + r.cpu, 0);
     rows.sort((a, b) => b.cpu - a.cpu);
-    log(`cpu ${total.toFixed(0)}% | ` + rows.filter(r => r.cpu >= 1 || /\*/.test(r.label)).map(r => `${r.label} ${r.cpu.toFixed(0)}% ${r.mb}MB`).join(' | '));
+    const ups = Object.entries(perfCounts).map(([k, v]) => `${k}:${v}`).join(' '); for (const k of Object.keys(perfCounts)) delete perfCounts[k];
+    const fw = windows.findIndex(c => c.win && !c.win.isDestroyed() && c.win.isFocused());
+    log(`cpu ${total.toFixed(0)}% | windows ${windows.length} (focused #${fw + 1})${ups ? ' | sidebar updates ' + ups : ''} | ` + rows.filter(r => r.cpu >= 1 || /\*/.test(r.label)).map(r => `${r.label} ${r.cpu.toFixed(0)}% ${r.mb}MB`).join(' | '));
     flush();
   }, 2000).unref();
   // Pages that freeze: Chromium's long-animation-frame timing names the scripts that ran (the
@@ -4395,7 +4417,7 @@ function getPrivateSession() {
       b.onBeforeRequest = (d, cb) => (d.webContentsId && !shieldsOnFor(tabUrlFor(d.webContentsId), true)) || d.resourceType === 'mainFrame' ? cb({}) : oReq(d, cb);
       b.onHeadersReceived = (d, cb) => d.webContentsId && !shieldsOnFor(tabUrlFor(d.webContentsId), true) ? cb({}) : oHdr(d, cb);
       b.onInjectCosmeticFilters = (ev, url, msg) => { try { if (!shieldsOnFor(ev.sender.getURL(), true)) return undefined; } catch {} return oCos(ev, url, msg); };
-      b.on('request-blocked', (req) => { blockedTotal++; const t = wcToTab.get(req.tabId); if (t) { t.blocked++; if (t.id === activeId) push(); } });
+      b.on('request-blocked', (req) => noteBlocked(wcToTab.get(req.tabId)));
       privateBlocker = b;
       if (settings.shields) b.enableBlockingInSession(ses);
     } catch (e) { console.error('[private] shields', e.message); }

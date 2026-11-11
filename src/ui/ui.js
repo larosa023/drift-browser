@@ -593,7 +593,8 @@ function uboBlocked() {
   const t = a && a.tabs && a.tabs[S.activeWcId];
   return (t && t.text) || '';
 }
-if (window.browserAction) window.browserAction.addEventListener('update', () => { if (S) renderAddr(); });
+let actRaf = 0;
+if (window.browserAction) window.browserAction.addEventListener('update', () => { if (S && !actRaf) actRaf = requestAnimationFrame(() => { actRaf = 0; renderAddr(); }); });
 $('#a-shield').onclick = (e) => openShields(e.currentTarget);
 document.addEventListener('dblclick', (e) => { if (e.target.closest('#titlebar') && !e.target.closest('button, #addr')) send('win', 'max'); });
 document.querySelectorAll('[data-win]').forEach(b => b.onclick = () => send('win', b.dataset.win));

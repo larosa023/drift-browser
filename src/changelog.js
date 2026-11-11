@@ -1,6 +1,9 @@
 // What's new in each release, shown on the What's new page (drift://whatsnew) after an update.
 // Newest first. Kinds: new, faster, fixed, changed. Written for people using Drift.
 module.exports = [
+  { version: '1.27.1', date: '2026-11-11', items: [
+    ['fixed', 'With two windows open, a video (or any busy page) in one made the other lag: every ad blocked and every change to an extension\'s badge refreshed the sidebar and extension buttons in every window, and reloaded the extension icons each time. Now each window only refreshes for its own changes, badge updates are capped at about ten a second, and extension icons are only reloaded when they change.'],
+  ] },
   { version: '1.27.0', date: '2026-11-10', items: [
     ['new', 'Right-click in the address bar, the find box or any text field in the sidebar for Cut, Copy and Paste, plus "Paste and go" (or "Paste and search") in the address bar.'],
     ['new', 'Ctrl+Shift+C copies the page\'s link, Ctrl+M mutes or unmutes the tab, Ctrl+Shift+PgUp / PgDn moves the tab up or down the list (stepping over folders), and Ctrl+Shift+W closes the window.'],
