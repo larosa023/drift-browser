@@ -1,6 +1,9 @@
 // What's new in each release, shown on the What's new page (drift://whatsnew) after an update.
 // Newest first. Kinds: new, faster, fixed, changed. Written for people using Drift.
 module.exports = [
+  { version: '1.27.3', date: '2026-11-18', items: [
+    ['fixed', 'Dragging the window from the empty part of the top bar (next to the address bar) only worked some of the time. When Windows misses the drag there, Drift now moves the window itself and fixes the spot for next time; double-clicking there maximizes as usual.'],
+  ] },
   { version: '1.27.2', date: '2026-11-11', items: [
     ['fixed', 'The empty part of the top bar between the address bar and the buttons on the right sometimes wouldn\'t drag the window. Drift now refreshes where the bar can be dragged whenever its buttons change size.'],
   ] },

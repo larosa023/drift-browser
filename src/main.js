@@ -472,6 +472,7 @@ function popupMenu(template, opts = {}) {
 // At most ~30 updates a second: a busy page (Twitch, YouTube) fires loading, title, icon and
 // audio events in bursts, and each update makes every sidebar re-render.
 // push(ctx) refreshes just that window (something only it shows changed).
+let manualDrag = null;   // backup window drag in progress (see 'win-drag')
 let pushQueued = false, lastPush = 0, pushAll = false;
 const pushSome = new Set();
 function push(only) {
@@ -4202,6 +4203,32 @@ function setupIPC() {
     await session.defaultSession.clearStorageData();
     await session.defaultSession.clearCache();
     push();
+  });
+  // Backup window dragging: Windows normally drags from the empty top bar itself and Drift
+  // never sees the press. When Chromium's map of draggable areas has gone stale, the press
+  // reaches the sidebar instead, and it asks for this: follow the cursor until release.
+  on('win-drag', (phase) => {
+    if (manualDrag) { clearInterval(manualDrag.timer); manualDrag = null; }
+    if (phase !== 'start' || !win || win.isDestroyed() || win.isFullScreen()) return;
+    const w = win, p0 = screen.getCursorScreenPoint();
+    let grabbed = false;
+    const start = Date.now();
+    manualDrag = { timer: setInterval(() => {
+      if (w.isDestroyed() || Date.now() - start > 60000) { clearInterval(manualDrag && manualDrag.timer); manualDrag = null; return; }
+      const p = screen.getCursorScreenPoint();
+      if (!grabbed) {
+        if (Math.abs(p.x - p0.x) < 4 && Math.abs(p.y - p0.y) < 4) return;   // a click, not a drag (yet)
+        grabbed = true;
+        if (w.isMaximized()) {   // like Windows: restore, keeping the cursor at the same spot across the bar
+          const mb = w.getBounds(), rel = Math.min(1, Math.max(0, (p0.x - mb.x) / mb.width));
+          w.unmaximize();
+          const nb = w.getBounds();
+          w.setPosition(Math.round(p0.x - nb.width * rel), Math.round(p0.y - (p0.y - mb.y)));
+        }
+        const b = w.getBounds(); manualDrag.dx = p0.x - b.x; manualDrag.dy = p0.y - b.y;
+      }
+      w.setPosition(Math.round(p.x - manualDrag.dx), Math.round(p.y - manualDrag.dy));
+    }, 8) };
   });
   on('win', (action) => {
     if (action === 'min') win.minimize();

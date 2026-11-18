@@ -1272,6 +1272,23 @@ function refreshDragRegions() {
     requestAnimationFrame(() => { tb.style.removeProperty('-webkit-app-region'); regionRaf = 0; });
   });
 }
+// If a press on an empty part of the top bar reaches us at all, Windows didn't treat it as a
+// drag (stale map): move the window ourselves, refresh the map, and handle double-click too.
+let lastBarPress = 0;
+$('#titlebar').addEventListener('pointerdown', (e) => {
+  if (e.button !== 0) return;
+  const t = e.target;
+  if (!(t.id === 'titlebar' || t.classList.contains('tb-main') || t.classList.contains('tb-left'))) return;
+  e.preventDefault();
+  refreshDragRegions();
+  const now = Date.now();
+  if (now - lastBarPress < 400) { lastBarPress = 0; send('win', 'max'); return; }
+  lastBarPress = now;
+  try { t.setPointerCapture(e.pointerId); } catch {}
+  send('win-drag', 'start');
+  const end = () => { send('win-drag', 'stop'); t.removeEventListener('pointerup', end); t.removeEventListener('lostpointercapture', end); };
+  t.addEventListener('pointerup', end); t.addEventListener('lostpointercapture', end);
+});
 if (window.ResizeObserver) {
   const ro = new ResizeObserver(() => refreshDragRegions());
   for (const sel of ['.tb-left', '.tb-nav', '#addr', '.tb-right', '.winbtns', '#bmbar']) { const el = $(sel); if (el) ro.observe(el); }
