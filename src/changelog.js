@@ -1,6 +1,11 @@
 // What's new in each release, shown on the What's new page (drift://whatsnew) after an update.
 // Newest first. Kinds: new, faster, fixed, changed. Written for people using Drift.
 module.exports = [
+  { version: '1.28.0', date: '2026-11-19', items: [
+    ['new', 'AI panel, powered by Ollama on your own PC (free, private, works offline). Open it with the ✦ button in the top bar or Ctrl+Alt+I: summarize the page, list its key points, or ask anything about it. Right-click a page for "Summarize this page with AI", or select text and pick "Ask AI about this". Answers stream in as they\'re written; pick any model you have in Ollama at the top.'],
+    ['new', 'Multiviewer: watch 2 to 4 tabs at once in one window. Click the split button in the address bar → "Multiviewer with…", or right-click a tab → "Open in multiviewer with current tab". Choose equal tiles or one big with the others small; sound comes from the one you click into (or from all of them). It\'s kept after a restart.'],
+    ['new', 'Colour themes (Settings → Appearance): Midnight, Ocean, Forest, Grape, Rose, Ember, Sand and Graphite tint Drift and its pages, each with a matching accent. "Match Windows" follows your Windows accent colour and your desktop wallpaper\'s colours.'],
+  ] },
   { version: '1.27.3', date: '2026-11-18', items: [
     ['fixed', 'Dragging the window from the empty part of the top bar (next to the address bar) only worked some of the time. When Windows misses the drag there, Drift now moves the window itself and fixes the spot for next time; double-clicking there maximizes as usual.'],
   ] },

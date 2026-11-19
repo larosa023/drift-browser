@@ -76,16 +76,18 @@ function render() {
   const act = S.tabs.find(t => t.id === S.activeId);
   document.title = act ? (tabTitle(act) + ' — Drift') : 'Drift';
   if (!b.classList.contains('platform-' + S.platform)) { [...b.classList].filter(c => c.startsWith('platform-')).forEach(c => b.classList.remove(c)); b.classList.add('platform-' + S.platform); }
-  setVar('--accent', S.settings.accent);
+  setVar('--accent', (S.themeInfo && S.themeInfo.accent) || S.settings.accent);
+  applyTint();
   setVar('--sw', S.settings.sidebarWidth + 'px');
   setVar('--fw', Math.round(Math.min(S.settings.sidebarWidth, 260) * 0.88) + 'px');   // slide-out width
   applyHole();
   applyWallpaper();
   const inSplit = (S.splits || []).find(sp => sp.a === S.activeId || sp.b === S.activeId);
+  const inGrid = !!(S.grid && S.grid.ids.includes(S.activeId));
   const spb = $('#a-split');
-  spb.classList.toggle('on', !!inSplit);
-  setHTML(spb, icon(inSplit && inSplit.dir === 'col' ? 'splitcol' : 'split'));
-  spb.title = inSplit ? 'Split view options' : 'Split view';
+  spb.classList.toggle('on', !!inSplit || inGrid);
+  setHTML(spb, icon(inGrid ? 'grid' : inSplit && inSplit.dir === 'col' ? 'splitcol' : 'split'));
+  spb.title = inGrid ? 'Multiviewer options' : inSplit ? 'Split view options' : 'Split view or multiviewer';
 
   // nav
   document.querySelectorAll('[data-nav=back]').forEach(b => b.disabled = !S.nav.canGoBack);
@@ -299,12 +301,24 @@ function renderTabs() {
   });
   syncKeyed(list, rows.map(r => r.t ? { ...tabRow(r.t, r.inF), f: r.f, fc: r.fc } : r));
 }
+// The colour theme's tint on Drift's backgrounds (none = Drift's own greys).
+function applyTint() {
+  const t = S.themeInfo && S.themeInfo.tint, dark = !!S.dark, key = JSON.stringify([t, dark]);
+  if (applyTint.k === key) return; applyTint.k = key;
+  const st = document.body.style, names = ['--bg', '--card', '--card-2', '--muted', '--faint'];
+  names.forEach(n => st.removeProperty(n));
+  if (!t) return;
+  const hsl = (sat, l) => `hsl(${t.h} ${Math.round(t.s * sat)}% ${l}%)`;
+  const v = dark ? { '--bg': hsl(.55, 8), '--card': hsl(.45, 15), '--card-2': hsl(.5, 11), '--muted': hsl(.25, 60), '--faint': hsl(.2, 40) }
+                 : { '--bg': hsl(.6, 92), '--card': hsl(.5, 99), '--card-2': hsl(.55, 96), '--muted': hsl(.2, 42), '--faint': hsl(.15, 64) };
+  for (const [k, x] of Object.entries(v)) st.setProperty(k, x);
+}
 function tabRow(t, extra) {
   const splitClass = tabRow.split;
   return {
-    id: t.id, cls: `tab ${t.id === S.activeId ? 'active' : ''} ${t.asleep ? 'asleep' : ''} ${splitClass(t)}${extra || ''}`.replace(/\s+/g, ' ').trim(),
+    id: t.id, cls: `tab ${t.id === S.activeId ? 'active' : ''} ${t.asleep ? 'asleep' : ''} ${splitClass(t)}${S.grid && S.grid.ids.includes(t.id) ? ' in-grid' : ''}${extra || ''}`.replace(/\s+/g, ' ').trim(),
     title: S.settings.tabPreviews ? '' : tabTitle(t) + (t.asleep ? ' (sleeping)' : ''),   // the preview card replaces the tooltip
-    html: `${favHTML(t)}<span class="title">${esc(tabTitle(t))}</span>${t.audible || t.muted || t.volume !== 1 ? `<button class="audio" data-act="mute" title="${t.muted ? 'Unmute' : 'Mute'} · volume ${Math.round(t.volume * 100)}% (scroll to adjust)">${icon(t.muted ? 'muted' : 'sound', 18)}</button>` : ''}<button class="close" data-act="close" title="Close (Ctrl+W)">${icon('x', 9)}</button>`,
+    html: `${favHTML(t)}<span class="title">${esc(tabTitle(t))}</span>${S.grid && S.grid.ids.includes(t.id) ? `<span class="grid-ic" title="In the multiviewer">${icon('grid', 12)}</span>` : ''}${t.audible || t.muted || t.volume !== 1 ? `<button class="audio" data-act="mute" title="${t.muted ? 'Unmute' : 'Mute'} · volume ${Math.round(t.volume * 100)}% (scroll to adjust)">${icon(t.muted ? 'muted' : 'sound', 18)}</button>` : ''}<button class="close" data-act="close" title="Close (Ctrl+W)">${icon('x', 9)}</button>`,
   };
 }
 const FOLDER_HEX = { blue: '#3b82f6', purple: '#8b5cf6', pink: '#ec4899', red: '#ef4444', orange: '#f97316', yellow: '#eab308', green: '#22c55e', teal: '#14b8a6', grey: '#94a3b8' };
@@ -917,9 +931,19 @@ function renderSettings() {
         <select data-sel="searchEngine">${Object.entries(S.engines).map(([k, n]) => `<option value="${k}" ${k === s.searchEngine ? 'selected' : ''}>${n}</option>`).join('')}</select></div>
       <div class="row"><span class="lbl">Search suggestions<small>From DuckDuckGo as you type</small></span>${sw('suggestions', s.suggestions)}</div>
     </div>
+    <div class="group"><h4>AI</h4>
+      <div class="row"><span class="lbl">AI panel<small>Summarize pages and ask questions with Ollama on your own PC · Ctrl+Alt+I, or right-click a page</small></span><button class="mini" id="open-ai">Open</button></div>
+      <div class="row col"><span class="lbl">Ollama address<small>Where Ollama runs (normally on this PC)</small></span><input class="mini-in wide" id="ai-url" value="${esc(s.aiUrl || 'http://127.0.0.1:11434')}" spellcheck="false"></div>
+    </div>
     <div class="group"><h4>Appearance</h4>
       <div class="row"><span class="lbl">Theme</span><div class="seg">
         ${['system', 'dark', 'light'].map(t => `<button class="${s.theme === t ? 'on' : ''}" data-set="theme" data-val="${t}">${t[0].toUpperCase() + t.slice(1)}</button>`).join('')}</div></div>
+      <div class="row col"><span class="lbl">Colour theme<small>${S.themeInfo && S.themeInfo.palette === 'windows' ? 'Following your Windows accent colour and wallpaper' : 'Tints Drift and sets the accent colour (you can change the accent after)'}</small></span>
+        <div class="palettes">${(S.palettes || []).map(p => {
+          const tint = p.id === 'windows' ? null : p.tint, a = p.accent || (S.themeInfo && S.themeInfo.palette === 'windows' ? S.themeInfo.accent : '#888');
+          const bg = tint ? (S.dark ? `hsl(${tint.h} ${Math.round(tint.s * .55)}% 14%)` : `hsl(${tint.h} ${Math.round(tint.s * .6)}% 88%)`) : (S.dark ? '#26262c' : '#e2e2e8');
+          return `<button class="pal ${(S.themeInfo ? S.themeInfo.palette : 'default') === p.id ? 'on' : ''}" data-set="palette" data-val="${p.id}" title="${esc(p.name)}" style="--pb:${bg};--pa:${a}">${p.id === 'windows' ? icon('palette', 14) : ''}<span>${esc(p.name)}</span></button>`;
+        }).join('')}</div></div>
       <div class="row"><span class="lbl">New tabs open your homepage<small>+ and Ctrl+T open the homepage instead of the command bar (Ctrl+Alt+T always does)</small></span>${sw('homeNewTab', s.homeNewTab)}</div>
       <div class="row"><span class="lbl">Compact mode<small>The page fills the window; the sidebar and toolbar slide in at the edges · Ctrl+Alt+C</small></span>${sw('compact', s.compact)}</div>
       <div class="row"><span class="lbl">Top toolbar<small>Address bar, window buttons and a drag area at the top</small></span>${sw('titleBar', s.titleBar)}</div>
@@ -1001,6 +1025,7 @@ function renderSettings() {
       <div><span>Move tab up / down</span><span><kbd>Ctrl</kbd><kbd>Shift</kbd><kbd>PgUp</kbd> <kbd>PgDn</kbd></span></div>
       <div><span>Close window</span><span><kbd>Ctrl</kbd><kbd>Shift</kbd><kbd>W</kbd></span></div>
       <div><span>Side panel</span><span><kbd>Ctrl</kbd><kbd>Alt</kbd><kbd>P</kbd></span></div>
+      <div><span>AI panel</span><span><kbd>Ctrl</kbd><kbd>Alt</kbd><kbd>I</kbd></span></div>
       <div><span>Next / previous tab</span><span><kbd>Ctrl</kbd><kbd>Tab</kbd></span></div>
       <div><span>Jump to tab 1–9</span><span><kbd>Ctrl</kbd><kbd>1</kbd>…<kbd>9</kbd></span></div>
       <div><span>Find on page</span><span><kbd>Ctrl</kbd><kbd>F</kbd></span></div>
@@ -1076,6 +1101,7 @@ $('#settings-body').addEventListener('click', (e) => {
   if (e.target.id === 'upd-check') send('update-check');
   if (e.target.id === 'whats-new') { send('whats-new'); togglePanel(null); }
   if (e.target.id === 'open-history') { send('open-history'); togglePanel(null); }
+  if (e.target.id === 'open-ai') { send('ai-toggle'); togglePanel(null); }
   if (e.target.id === 'default-browser') send('default-browser');
   if (e.target.id === 'upd-install') send('update-install');
   if (e.target.closest('[data-uboopts]')) send('ext-options', S.uboId);
@@ -1099,6 +1125,7 @@ $('#settings-body').addEventListener('input', (e) => {
 $('#settings-body').addEventListener('change', (e) => {
   const r = e.target.closest('[data-range]');
   if (r) { send('set', r.dataset.range, Number(r.value) / Number(r.dataset.scale)); return; }
+  if (e.target.id === 'ai-url') { const v = e.target.value.trim(); if (/^https?:\/\/[^\s/]+(:\d+)?\/?$/i.test(v)) send('set', 'aiUrl', v.replace(/\/$/, '')); else e.target.value = S.settings.aiUrl; return; }
   const s = e.target.closest('[data-sel]'); if (!s) return;
   send('set', s.dataset.sel, 'num' in s.dataset ? Number(s.value) : s.value);
 });
@@ -1674,7 +1701,14 @@ function editPassword(p) {
 function renderPanes(l) {
   const box = $('#panes'), div = $('#split-divider');
   const split = !!(l.split && l.panes && l.panes.length === 2 && !l.fullscreen);
-  document.body.classList.toggle('split', split);
+  const grid = !!(l.grid && l.panes && l.panes.length > 1 && !l.fullscreen);
+  document.body.classList.toggle('split', split || grid);
+  if (grid) {
+    // Multiviewer tiles: the selected one is outlined (with "sound from the selected one", it's the one you hear).
+    div.hidden = true;
+    box.innerHTML = l.panes.map(p => `<div class="pane ${p.id === l.activeId ? 'active' : ''}" style="left:${p.rect.x}px;top:${p.rect.y}px;width:${p.rect.width}px;height:${p.rect.height}px"></div>`).join('');
+    return;
+  }
   if (!split) { box.innerHTML = ''; div.hidden = true; return; }
   box.innerHTML = l.panes.map(p => `<div class="pane ${p.id === l.activeId ? 'active' : ''}" style="left:${p.rect.x}px;top:${p.rect.y}px;width:${p.rect.width}px;height:${p.rect.height}px"></div>`).join('');
   const [a, b] = l.panes.map(p => p.rect);
@@ -1794,7 +1828,8 @@ function placeSide() {
 }
 function renderSide() {
   const st = S.side;
-  $('#tb-side').classList.toggle('on', !!st);
+  $('#tb-side').classList.toggle('on', !!st && !st.ai);
+  $('#tb-ai').classList.toggle('on', !!(st && st.ai));
   if (!st) { placeSide(); return; }
   setHTML($('#sh-ic'), st.url ? (st.favicon ? `<img src="${esc(st.favicon)}" alt="">` : icon('globe', 14)) : icon('sidepanel', 15));
   const title = st.url ? (st.loading ? 'Loading…' : st.title || hostOf(st.url)) : 'Side panel';
@@ -1805,6 +1840,7 @@ function renderSide() {
   if (!st.url && !st.editing && document.activeElement !== $('#se-url')) setTimeout(() => { if (S.side && !S.side.url) $('#se-url').focus(); }, 0);
 }
 $('#tb-side').onclick = () => send('side-toggle');
+$('#tb-ai').onclick = () => send('ai-toggle');
 $('#sh-close').onclick = () => send('side-close');
 $('#sh-back').onclick = () => send('side-nav', 'back');
 $('#sh-reload').onclick = () => send('side-nav', 'reload');

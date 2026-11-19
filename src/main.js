@@ -7,7 +7,7 @@ global.PERF = PERF_ON ? (l) => console.log(`[perf] ${String(Date.now() - __T0).p
 
 const {
   app, BaseWindow, WebContentsView, ipcMain, session, Menu, shell, dialog,
-  protocol, net, clipboard, nativeTheme, webContents, webFrameMain, nativeImage, screen,
+  protocol, net, clipboard, nativeTheme, webContents, webFrameMain, nativeImage, screen, systemPreferences,
 } = require('electron');
 // castlabs' Electron build adds Widevine (protected video: NBA, Netflix, Disney+, Spotify...).
 // Stock Electron has no `components`; everything below works without it.
@@ -65,6 +65,9 @@ const DEFAULT_SETTINGS = {
   offerPasswords: true,
   zoomLevels: {},            // { host: zoom factor } for sites you zoomed
   sidePanel: { url: '', width: 380 },   // the side panel's site and width (shared by windows)
+  palette: 'default',        // colour theme (see PALETTES); 'windows' follows the Windows accent and wallpaper
+  aiUrl: 'http://127.0.0.1:11434',     // Ollama, for the AI panel (runs on your own PC)
+  aiModel: '',                         // the model the AI panel uses ('' = the first one Ollama has)
   removedExtensions: [],     // removed extensions whose folder couldn't be deleted yet
   blockSites: [],            // blocked sites: nothing from them loads at all, not even inside other pages
   blockedSites: [],          // no-download sites: nothing downloads while you're on them (or from them), subdomains included
@@ -439,6 +442,7 @@ function windowSnapshot(c) {
     ...((c.folders || []).length ? { folders: c.folders.filter(f => kept.some(t => t.folder === f.id)).map(f => ({ id: f.id, name: f.name, color: f.color, collapsed: !!f.collapsed })) } : {}),
     active: Math.max(0, idx(c.activeId)),
     splits: c.splits.map(sp => [idx(sp.a), idx(sp.b), sp.ratio, sp.dir]).filter(x => x[0] >= 0 && x[1] >= 0),
+    ...(c.grid && c.grid.ids.length > 1 ? { grid: { tabs: c.grid.ids.map(idx).filter(i => i >= 0), layout: c.grid.layout, audio: c.grid.audio } } : {}),
     bounds, maximized: !!(c.win && !c.win.isDestroyed() && c.win.isMaximized()),
     ...(c.side && c.side.open && c.side.tab ? { side: c.side.tab.url } : {}),
   };
@@ -534,6 +538,7 @@ function pushOne() {
       activeWcId: wc ? wc.id : -1,
       ws: wsOn() ? curWs() : null,
       splits: splits.map(sp => ({ a: sp.a, b: sp.b, dir: sp.dir })),
+      grid: cur.grid ? { ids: cur.grid.ids, audio: cur.grid.audio } : null,
       nav: {
         url: t ? t.url : '',
         canGoBack: wc ? wc.navigationHistory.canGoBack() : false,
@@ -555,6 +560,8 @@ function pushOne() {
       passwordCount: passwords ? passwords.entries.length : 0,
       update: updateState,
       wallpaperCss: wallpaperCss(),
+      themeInfo: themeInfo(),
+      palettes: Object.entries(PALETTES).map(([id, p]) => ({ id, name: p.name, accent: p.accent, tint: p.tint })),
       desktopWallpaper: !!desktopWallpaperPath(),
       passwordsEncrypted: passwords ? passwords.canEncrypt() : false,
       blockedTotal: blockedShown,
@@ -580,6 +587,84 @@ function resetSent(c) { if (c) c.sent = null; }
 function sendAll(ch, ...args) {
   saveCtx();
   for (const c of windows) if (c.ui && !c.ui.webContents.isDestroyed()) c.ui.webContents.send(ch, ...args);
+}
+
+// Colour themes: a tint for Drift's backgrounds (hue, strength 0-100) and an accent to go with it.
+const PALETTES = {
+  default:  { name: 'Drift',    accent: '#ff6a3d', tint: null },
+  midnight: { name: 'Midnight', accent: '#6d8cff', tint: { h: 228, s: 42 } },
+  ocean:    { name: 'Ocean',    accent: '#22a7f0', tint: { h: 200, s: 50 } },
+  forest:   { name: 'Forest',   accent: '#34c38f', tint: { h: 152, s: 30 } },
+  grape:    { name: 'Grape',    accent: '#a26bff', tint: { h: 272, s: 38 } },
+  rose:     { name: 'Rose',     accent: '#ff5c8a', tint: { h: 342, s: 36 } },
+  ember:    { name: 'Ember',    accent: '#ff7a3d', tint: { h: 18,  s: 40 } },
+  sand:     { name: 'Sand',     accent: '#d9a441', tint: { h: 38,  s: 30 } },
+  graphite: { name: 'Graphite', accent: '#9aa4b2', tint: { h: 220, s: 6 } },
+  windows:  { name: 'Match Windows', accent: null, tint: null },
+};
+// "Match Windows": the Windows accent colour, and a tint from the desktop wallpaper's main colour.
+let winThemeCache = null;
+function windowsTheme() {
+  const wp = desktopWallpaperPath();
+  let mtime = 0; try { mtime = wp ? fs.statSync(wp).mtimeMs : 0; } catch {}
+  let accent = '';
+  try { const a = systemPreferences.getAccentColor && systemPreferences.getAccentColor(); if (/^[0-9a-f]{6}/i.test(a || '')) accent = '#' + a.slice(0, 6).toLowerCase(); } catch {}
+  const key = wp + '|' + mtime + '|' + accent;
+  if (winThemeCache && winThemeCache.key === key) return winThemeCache.v;
+  let tint = null;
+  if (wp) {
+    try {
+      // Average of the wallpaper's colourful pixels (greys count for little).
+      const img = nativeImage.createFromPath(wp).resize({ width: 48, quality: 'good' });
+      const bmp = img.toBitmap(), n = bmp.length / 4;
+      let R = 0, G = 0, B = 0, W = 0;
+      for (let i = 0; i < n; i++) {
+        const b = bmp[i * 4], g = bmp[i * 4 + 1], r = bmp[i * 4 + 2];
+        const mx = Math.max(r, g, b), mn = Math.min(r, g, b), w = 0.05 + (mx - mn) / 255;
+        R += r * w; G += g * w; B += b * w; W += w;
+      }
+      if (W) tint = rgbToHueSat(R / W, G / W, B / W);
+    } catch {}
+  }
+  if (!accent && tint) accent = hslToHex(tint.h, Math.max(55, tint.s), 58);
+  const v = { accent: accent || PALETTES.default.accent, tint: tint ? { h: tint.h, s: Math.min(45, tint.s) } : null };
+  winThemeCache = { key, v };
+  return v;
+}
+function rgbToHueSat(r, g, b) {
+  r /= 255; g /= 255; b /= 255;
+  const mx = Math.max(r, g, b), mn = Math.min(r, g, b), d = mx - mn, l = (mx + mn) / 2;
+  if (!d) return { h: 0, s: 0 };
+  const s = d / (1 - Math.abs(2 * l - 1));
+  let h = mx === r ? ((g - b) / d) % 6 : mx === g ? (b - r) / d + 2 : (r - g) / d + 4;
+  h = Math.round(h * 60); if (h < 0) h += 360;
+  return { h, s: Math.round(s * 100) };
+}
+function hslToHex(h, s, l) {
+  s /= 100; l /= 100;
+  const k = (n) => (n + h / 30) % 12, a = s * Math.min(l, 1 - l);
+  const f = (n) => Math.round(255 * (l - a * Math.max(-1, Math.min(k(n) - 3, Math.min(9 - k(n), 1))))).toString(16).padStart(2, '0');
+  return '#' + f(0) + f(8) + f(4);
+}
+// The theme in use: { palette, accent, tint } (tint null = Drift's own greys).
+function themeInfo() {
+  const id = PALETTES[settings.palette] ? settings.palette : 'default';
+  if (id === 'windows') { const w = windowsTheme(); return { palette: id, accent: w.accent, tint: w.tint }; }
+  return { palette: id, accent: settings.accent, tint: PALETTES[id].tint };
+}
+function accentColor() { return themeInfo().accent; }
+// The theme's background tint as CSS variables (shared with Drift's own pages).
+function tintVars(t, dark) {
+  if (!t) return null;
+  const hsl = (sat, l) => `hsl(${t.h} ${Math.round(t.s * sat)}% ${l}%)`;
+  return dark ? { '--bg': hsl(.55, 8), '--card': hsl(.45, 15), '--card-2': hsl(.5, 11), '--field': hsl(.45, 15), '--muted': hsl(.25, 60), '--faint': hsl(.2, 40) }
+              : { '--bg': hsl(.6, 92), '--card': hsl(.5, 99), '--card-2': hsl(.55, 96), '--field': hsl(.5, 99), '--muted': hsl(.2, 42), '--faint': hsl(.15, 64) };
+}
+// Drift's pages (new tab, history, what's new, AI) take the theme's tint too.
+function themed(html) {
+  const t = themeInfo().tint; if (!t) return html;
+  const css = (d) => Object.entries(tintVars(t, d)).map(([k, v]) => `${k}:${v}`).join(';');
+  return html.replace('</head>', () => `<style>body.dark{${css(true)}}body.light{${css(false)}}</style></head>`);
 }
 
 function isDark() {
@@ -631,6 +716,8 @@ function splitOf(id) { return splits.find(sp => sp.a === id || sp.b === id) || n
 function panes() {
   const r = contentRect();
   const t = activeTab(); if (!t) return [];
+  const g = htmlFullscreen ? null : gridOf(t.id);
+  if (g) return gridPanes(g, r);
   const sp = htmlFullscreen ? null : splitOf(t.id);
   if (!sp) return [{ tab: t, rect: r }];
   const A = tabs.find(x => x.id === sp.a), B = tabs.find(x => x.id === sp.b);
@@ -662,7 +749,7 @@ function showFloatingToast(t) {
   }
   toastToken = t.token;
   const view = toastView;   // this window's, even if another window is current when it loads
-  const send = () => { if (!view.webContents.isDestroyed()) view.webContents.send('show', { html: t.html, dark: isDark(), accent: settings.accent }); };
+  const send = () => { if (!view.webContents.isDestroyed()) view.webContents.send('show', { html: t.html, dark: isDark(), accent: accentColor() }); };
   if (view.webContents.isLoading()) view.webContents.once('did-finish-load', send); else send();
   clearTimeout(toastTimer);
   toastTimer = setTimeout(inThisWin(hideFloatingToast), Math.max(1500, Math.min(15000, t.ms || 3200)));
@@ -723,7 +810,9 @@ function layout() {
     p.tab.view.setBounds(p.rect);
     p.tab.view.setBorderRadius(htmlFullscreen ? 0 : RADIUS);
   }
-  const sp = ps.length === 2 ? splitOf(activeId) : null;
+  const sp = ps.length === 2 && !gridOf(activeId) ? splitOf(activeId) : null;
+  const gl = gridOf(activeId) && !htmlFullscreen ? cur.grid : null;
+  if (cur.grid) applyGridAudio();
   if (overlay === 'peek') ui.setBounds({ x: 0, y: 0, width: (settings.sidebarRail && !settings.compact ? RAIL_W : settings.sidebarWidth) + 24, height: h });
   else if (overlay === 'peektop') ui.setBounds({ x: 0, y: 0, width: w, height: TITLE_H + (settings.bookmarksBar ? BOOKMARKS_H : 0) + 12 });
   else ui.setBounds({ x: 0, y: 0, width: w, height: h });
@@ -743,7 +832,7 @@ function layout() {
   if (toastShown) placeToast();
   restack();
   ui.webContents.send('layout', { content: r, fullscreen: htmlFullscreen || win.isFullScreen(), titleH: titleHeight(), bmH: bookmarksHeight(), left: sidebarLeft(),
-    panes: ps.map(p => ({ id: p.tab ? p.tab.id : 0, rect: p.rect })), split: sp ? { dir: sp.dir, ratio: sp.ratio } : null, activeId,
+    panes: ps.map(p => ({ id: p.tab ? p.tab.id : 0, rect: p.rect })), split: sp ? { dir: sp.dir, ratio: sp.ratio } : null, grid: gl ? { n: ps.length, audio: gl.audio } : null, activeId,
     side: sideOpen() ? { ...sideRect(), head: SIDE_HEAD } : null });
 }
 
@@ -994,9 +1083,10 @@ function wireTab(tab, wc) {
   // In split view, clicking into a page makes it the one the toolbar controls.
   wc.on('focus', () => {
     if (tab.id === activeId) return;
-    const sp = splitOf(tab.id);
-    if (sp && sp === splitOf(activeId)) {
+    const sp = splitOf(tab.id), g = gridOf(tab.id);
+    if ((sp && sp === splitOf(activeId)) || (g && g === gridOf(activeId))) {
       activeId = tab.id;
+      if (g) applyGridAudio();
       if (extensions) { try { extensions.selectTab(wc); } catch {} }
       if (findOpen) closeFind(); else layout();
       push(ctxOfTab(tab));
@@ -1155,12 +1245,12 @@ function showHover(id, r) {
   const y = Math.round(Math.max(0, Math.min(wh - h, r.y + r.height / 2 - (wantShot ? 52 : h / 2))));
   v.setBounds({ x: Math.round(Math.min(ww - HOVER_W, r.x + r.width - 6)), y, width: HOVER_W, height: h });
   const sp = splitOf(tab.id);
-  const state = !loaded ? 'Sleeping · click to load' : tab.audible ? (tab.muted ? 'Muted' : 'Playing audio') : tab.id === activeId ? 'Current tab' : sp ? 'In split view' : '';
+  const state = !loaded ? 'Sleeping · click to load' : tab.audible ? (tab.muted ? 'Muted' : 'Playing audio') : tab.id === activeId ? 'Current tab' : sp ? 'In split view' : gridOf(tab.id) ? 'In the multiviewer' : '';
   const send = (shot, waiting) => { if (!v.webContents.isDestroyed()) v.webContents.send('show', { id, title: tab.title || hostOf(tab.url) || 'New Tab', sub: [hostOf(tab.url) || (isInternal(tab.url) ? 'Drift' : ''), state].filter(Boolean).join(' · '),
     favicon: tab.favicon || '', shot, waiting, dark: isDark() }); };
   // A tab on screen (the current one, or its split partner) gets a fresh picture; others show
   // the one taken when you last left them.
-  const onScreen = loaded && (tab.id === activeId || (!!sp && sp === splitOf(activeId)));
+  const onScreen = loaded && (tab.id === activeId || (!!sp && sp === splitOf(activeId)) || (!!gridOf(tab.id) && gridOf(tab.id) === gridOf(activeId)));
   const go = () => {
     send(fresh ? tab.thumb.data : null, wantShot && !fresh);
     if (onScreen && wantShot) captureThumb(tab).then(t => { if (t && cur.hoverId === id) send(t.data, false); });
@@ -1183,14 +1273,15 @@ function sideTabFor(url) {
     pinned: false, view: null, loading: false, audible: false, muted: false, volume: 1, hadAudio: false,
     blocked: 0, lastActive: Date.now(), crashed: false, side: true };
 }
-function setSidePanel(open, url) {
+function setSidePanel(open, url, opts = {}) {
   if (!cur) return;
   cur.side = cur.side || { open: false, tab: null };
   if (url !== undefined) {
     url = String(url || '').trim();
-    if (url && !/^https?:\/\//i.test(url)) url = /^([^\s/]+\.[^\s/]+|localhost|[^\s/]+:\d+)(\/\S*)?$/i.test(url) ? 'https://' + url : '';
+    const ai = /^drift:\/\/ai\//.test(url);   // the AI panel: shown, but not saved as your side panel site
+    if (url && !ai && !/^https?:\/\//i.test(url)) url = /^([^\s/]+\.[^\s/]+|localhost|[^\s/]+:\d+)(\/\S*)?$/i.test(url) ? 'https://' + url : '';
     if (url) {
-      if (!cur.private) { settings.sidePanel.url = url; saveSettings(); }
+      if (!cur.private && !ai && !opts.temp) { settings.sidePanel.url = url; saveSettings(); }
       if (cur.side.tab && cur.side.tab.view) { cur.side.tab.url = url; loadIn(cur.side.tab.view.webContents, url); }
       else { if (cur.side.tab) destroyView(cur.side.tab); cur.side.tab = sideTabFor(url); }
     }
@@ -1206,7 +1297,7 @@ function sideState() {
   const sd = cur && cur.side; if (!sd || !sd.open) return null;
   const t = sd.tab, wc = t && t.view && !t.view.webContents.isDestroyed() ? t.view.webContents : null;
   return { url: t ? t.url : '', title: t ? (t.title || hostOf(t.url)) : '', favicon: t ? t.favicon : '', loading: !!(t && t.loading),
-    canBack: !!(wc && wc.navigationHistory.canGoBack()), saved: settings.sidePanel.url, editing: !!sd.editing };
+    canBack: !!(wc && wc.navigationHistory.canGoBack()), saved: settings.sidePanel.url, editing: !!sd.editing, ai: !!(t && /^drift:\/\/ai\//.test(t.url)) };
 }
 
 // ---------------------------------------------------------------------------
@@ -1260,7 +1351,7 @@ function sendGlance() {
   const g = cur && cur.glance; if (!g || g.frame.webContents.isDestroyed()) return;
   const r = contentRect(), c = glanceCard(r);
   g.frame.webContents.send('glance', { card: { x: c.x - r.x, y: c.y - r.y, width: c.width, height: c.height },
-    title: g.tab.title, url: g.tab.url, loading: g.tab.loading, dark: isDark(), accent: settings.accent });
+    title: g.tab.title, url: g.tab.url, loading: g.tab.loading, dark: isDark(), accent: accentColor() });
 }
 function closeGlance() {
   const g = cur && cur.glance; if (!g) return;
@@ -1341,9 +1432,9 @@ function closeTab(id, opts = {}) {
     closedTabs.push({ url: tab.url, title: tab.title, favicon: tab.favicon, index: i, ws: tab.ws, folder: tab.folder || null, hist: tabHist(tab, 25) });
     if (closedTabs.length > 25) closedTabs.shift();
   }
-  const sp = splitOf(id);
-  const partner = sp ? (sp.a === id ? sp.b : sp.a) : null;
-  if (sp) splits = splits.filter(x => x !== sp);
+  const sp = splitOf(id), g = gridOf(id);
+  const partner = sp ? (sp.a === id ? sp.b : sp.a) : g ? g.ids.find(x => x !== id) : null;
+  dropLayout(id);
   tabs.splice(i, 1);
   destroyView(tab);
   if (activeId === id && partner && tabs.some(t => t.id === partner)) { activate(partner); }
@@ -1445,7 +1536,7 @@ async function deleteWorkspace(id) {
   settings.wsList = settings.wsList.filter(x => x.id !== id); saveSettings();
   forEachWin(() => {
     for (const t of tabs.filter(t => !t.pinned && t.ws === id)) {
-      const sp = splitOf(t.id); if (sp) splits = splits.filter(x => x !== sp);
+      dropLayout(t.id);
       tabs.splice(tabs.indexOf(t), 1); destroyView(t);
     }
     if (cur.ws === id || !settings.wsList.some(x => x.id === cur.ws)) { cur.ws = settings.wsList[0].id; activeId = null; switchWs(cur.ws); }
@@ -1455,7 +1546,7 @@ async function deleteWorkspace(id) {
 }
 function moveTabToWs(tab, id) {
   if (!tab || tab.pinned || !settings.wsList.some(w => w.id === id) || tab.ws === id) return;
-  const sp = splitOf(tab.id); if (sp) splits = splits.filter(x => x !== sp);
+  dropLayout(tab.id);
   tab.ws = id; tab.folder = null;
   if (tab.id === activeId) {
     const mine = tabs.filter(t => t !== tab && !t.pinned && inWs(t)).sort((a, b) => (b.lastActive || 0) - (a.lastActive || 0));
@@ -1491,7 +1582,7 @@ function syncWinEssentials() {
   if (cur && cur.private) return;   // (signed-in sites: not in private windows)
   for (const t of tabs.filter(t => t.pinned && !essentials.some(e => e.id === t.ess))) {
     if (t.id === activeId) { const next = tabs.find(x => x !== t && !x.pinned) || tabs.find(x => x !== t); if (next) activate(next.id); }
-    const sp = splitOf(t.id); if (sp) splits = splits.filter(x => x !== sp);
+    dropLayout(t.id);
     tabs.splice(tabs.indexOf(t), 1); destroyView(t);
   }
   for (const e of essentials) {
@@ -1529,8 +1620,7 @@ function removeEssential(id) {
 }
 function unloadEssential(tab) {
   const others = tabs.filter(t => t !== tab);
-  const sp = splitOf(tab.id);
-  if (sp) splits = splits.filter(x => x !== sp);
+  dropLayout(tab.id);
   if (tab.id === activeId) {
     const next = [...others].sort((a, b) => (b.lastActive || 0) - (a.lastActive || 0)).find(t => !t.pinned) || others.find(t => t.view) || null;
     if (next) activate(next.id); else { createTab(NEWTAB); }
@@ -1714,8 +1804,8 @@ setInterval(() => {
   let slept = false;
   forEachWin(() => {
     for (const t of tabs) {
-      const sp = splitOf(t.id);
-      if (sp && sp === splitOf(activeId)) continue;
+      const sp = splitOf(t.id), g = gridOf(t.id);
+      if ((sp && sp === splitOf(activeId)) || (g && g === gridOf(activeId))) continue;
       if (t.id !== activeId && t.view && !t.audible && t.lastActive < cutoff) {
         // Keep its back/forward history for when it wakes (ensureView restores it).
         try { const h = t.view.webContents.navigationHistory; t.sleepHistory = { entries: h.getAllEntries(), index: h.getActiveIndex() }; } catch {}
@@ -1727,12 +1817,103 @@ setInterval(() => {
 }, 60000);
 
 // ---------------------------------------------------------------------------
+// Multiviewer: 2–4 tabs on screen at once in one window (cur.grid = { ids, layout, audio }).
+//   layout 'grid'  equal tiles (2 side by side; 3 = two on top, one centred below; 4 = 2×2)
+//          'focus' the first one big on the left, the others stacked on the right
+//   audio  'focus' only the one you've clicked into plays sound;  'all' every one does
+// A tab is in a split pair or the multiviewer, never both.
+// ---------------------------------------------------------------------------
+function gridOf(id) { const g = cur && cur.grid; return g && g.ids.includes(id) ? g : null; }
+function gridTabs(g) { return g.ids.map(id => tabs.find(t => t.id === id)).filter(Boolean); }
+function gridPanes(g, r) {
+  const ts = gridTabs(g), n = ts.length;
+  const cell = (x, y, w, h) => ({ x: Math.round(x), y: Math.round(y), width: Math.max(1, Math.round(w)), height: Math.max(1, Math.round(h)) });
+  if (g.layout === 'focus' && n > 1) {
+    const bw = (r.width - GAP) * (n === 2 ? 0.7 : 0.66), sw = r.width - GAP - bw, sh = (r.height - GAP * (n - 2)) / (n - 1);
+    return ts.map((tab, i) => ({ tab, rect: i === 0 ? cell(r.x, r.y, bw, r.height) : cell(r.x + bw + GAP, r.y + (i - 1) * (sh + GAP), sw, sh) }));
+  }
+  if (n <= 2) { const w = (r.width - GAP) / 2; return ts.map((tab, i) => ({ tab, rect: cell(r.x + i * (w + GAP), r.y, w, r.height) })); }
+  const w = (r.width - GAP) / 2, h = (r.height - GAP) / 2;
+  return ts.map((tab, i) => {
+    const row = Math.floor(i / 2), col = i % 2;
+    const x = n === 3 && i === 2 ? r.x + (r.width - w) / 2 : r.x + col * (w + GAP);
+    return { tab, rect: cell(x, r.y + row * (h + GAP), w, h) };
+  });
+}
+// Sound in the multiviewer: with 'focus', the others are kept quiet (their own mute stays as set).
+function applyGridAudio() {
+  for (const t of tabs) {
+    if (!t.view || t.view.webContents.isDestroyed()) continue;
+    const g = gridOf(t.id), shown = g && g === gridOf(activeId);
+    const quiet = !!(shown && g.audio === 'focus' && t.id !== activeId);
+    if (t.gridQuiet === quiet) continue;
+    t.gridQuiet = quiet;
+    try { t.view.webContents.setAudioMuted(t.muted || quiet); } catch {}
+  }
+}
+function addToGrid(id) {
+  const base = activeTab(); const t = tabs.find(x => x.id === id);
+  if (!base || !t || t.pinned) return;
+  let g = cur.grid;
+  if (!g || !g.ids.includes(base.id)) {
+    // A new multiviewer starts from the tab you're on (one already running is replaced).
+    if (g) dissolveGrid(false);
+    if (base.pinned || base.id === id) return;
+    g = cur.grid = { ids: [base.id], layout: 'grid', audio: 'focus' };
+  }
+  if (g.ids.includes(id) || g.ids.length >= 4) return;
+  for (const x of [base.id, id]) { const sp = splitOf(x); if (sp) splits = splits.filter(y => y !== sp); }
+  g.ids.push(id);
+  if (base.ws && !t.pinned) t.ws = base.ws;   // one workspace, like a split pair
+  if (!t.view) ensureView(t);
+  layout(); applyGridAudio(); push(); saveSession();
+}
+function removeFromGrid(id) {
+  const g = gridOf(id); if (!g) return;
+  g.ids = g.ids.filter(x => x !== id);
+  const t = tabs.find(x => x.id === id);
+  if (t && t.view && t.gridQuiet) { t.gridQuiet = false; try { t.view.webContents.setAudioMuted(t.muted); } catch {} }
+  if (g.ids.length < 2) { dissolveGrid(false); return; }
+  if (id === activeId) activate(g.ids[0]); else { layout(); applyGridAudio(); push(); saveSession(); }
+}
+function dissolveGrid(redraw = true) {
+  const g = cur && cur.grid; if (!g) return;
+  cur.grid = null;
+  for (const t of tabs) if (t.gridQuiet && t.view) { t.gridQuiet = false; try { t.view.webContents.setAudioMuted(t.muted); } catch {} }
+  if (redraw) { layout(); focusPage(); push(); saveSession(); }
+}
+// Every place a tab leaves the window, workspace or Essentials: out of its split or multiviewer.
+function dropLayout(id) {
+  const sp = splitOf(id); if (sp) splits = splits.filter(x => x !== sp);
+  const g = gridOf(id);
+  if (g) { g.ids = g.ids.filter(x => x !== id); if (g.ids.length < 2) dissolveGrid(false); }
+}
+function gridMenuItems(t) {
+  const g = gridOf(t.id);
+  if (!g) return [];
+  return [
+    { label: 'Multiviewer', enabled: false },
+    { label: 'Equal tiles', type: 'radio', checked: g.layout === 'grid', click: () => { g.layout = 'grid'; layout(); saveSession(); } },
+    { label: 'One big, others small', type: 'radio', checked: g.layout === 'focus', click: () => { g.layout = 'focus'; layout(); saveSession(); } },
+    ...(g.ids[0] !== t.id ? [{ label: 'Make this one the big one', click: () => { g.ids = [t.id, ...g.ids.filter(x => x !== t.id)]; g.layout = 'focus'; layout(); push(); saveSession(); } }] : []),
+    { type: 'separator' },
+    { label: 'Sound from the selected one only', type: 'radio', checked: g.audio === 'focus', click: () => { g.audio = 'focus'; applyGridAudio(); push(); saveSession(); } },
+    { label: 'Sound from all of them', type: 'radio', checked: g.audio === 'all', click: () => { g.audio = 'all'; applyGridAudio(); push(); saveSession(); } },
+    { type: 'separator' },
+    ...(g.ids.length < 4 ? [{ label: 'Add a tab', submenu: tabs.filter(o => !o.pinned && !g.ids.includes(o.id) && inWs(o)).sort((a, b) => b.lastActive - a.lastActive).slice(0, 12)
+      .map(o => ({ label: (o.title || hostOf(o.url) || 'New Tab').slice(0, 60), click: () => addToGrid(o.id) })).concat([{ type: 'separator' }, { label: 'New tab', click: () => { const n = createTab(NEWTAB, { activate: false, openerId: t.id }); addToGrid(n.id); activate(n.id); ui.webContents.send('palette', { newTab: false }); } }]) }] : []),
+    { label: 'Remove this tab from the multiviewer', click: () => removeFromGrid(t.id) },
+    { label: 'Close multiviewer (keep the tabs)', click: () => dissolveGrid() },
+  ];
+}
+
+// ---------------------------------------------------------------------------
 // Split view
 // ---------------------------------------------------------------------------
 
 function splitWith(otherId) {
   const base = activeTab(); if (!base) return;
-  for (const id of [base.id, otherId]) { const old = splitOf(id); if (old) splits = splits.filter(x => x !== old); }
+  for (const id of [base.id, otherId]) { const old = splitOf(id); if (old) splits = splits.filter(x => x !== old); if (gridOf(id)) removeFromGrid(id); }
   let other;
   if (otherId === 'new') other = createTab(NEWTAB, { activate: false, openerId: base.id });
   else other = tabs.find(t => t.id === otherId);
@@ -1760,7 +1941,8 @@ function splitMenu(x, y) {
   const t = activeTab(); if (!t) return;
   const sp = splitOf(t.id);
   let items;
-  if (sp) {
+  if (gridOf(t.id)) items = gridMenuItems(t);
+  else if (sp) {
     items = [
       { label: 'Swap sides', click: () => { [sp.a, sp.b] = [sp.b, sp.a]; layout(); push(); saveSession(); } },
       { type: 'separator' },
@@ -1777,6 +1959,7 @@ function splitMenu(x, y) {
       { label: 'New tab', accelerator: undefined, click: () => splitWith('new') },
       ...(others.length ? [{ type: 'separator' }] : []),
       ...others.map(o => ({ label: (o.title || hostOf(o.url) || 'New Tab').slice(0, 60), click: () => splitWith(o.id) })),
+      ...(!t.pinned ? [{ type: 'separator' }, { label: 'Multiviewer with… (up to 4 tabs)', submenu: others.filter(o => !o.pinned).map(o => ({ label: (o.title || hostOf(o.url) || 'New Tab').slice(0, 60), click: () => addToGrid(o.id) })) }] : []),
     ];
   }
   popupMenu(items, { x: Math.round(x), y: Math.round(y) });
@@ -2135,6 +2318,7 @@ function handleShortcut(input) {
   if (mod && input.alt && !input.shift && k === 't') { createTab(NEWTAB); return true; }   // always the homepage
   if (mod && input.shift && !input.alt && k === 'n') { newPrivateWindow(); return true; }
   if (mod && input.alt && !input.shift && k === 'p') { setSidePanel(!(cur.side && cur.side.open)); return true; }
+  if (mod && input.alt && !input.shift && k === 'i') { openAI(); return true; }
   if (input.alt && !mod && !input.shift) {
     if (k === 'ArrowLeft') { if (wc && wc.navigationHistory.canGoBack()) wc.navigationHistory.goBack(); return true; }
     if (k === 'ArrowRight') { if (wc && wc.navigationHistory.canGoForward()) wc.navigationHistory.goForward(); return true; }
@@ -2210,6 +2394,7 @@ function pageContextMenu(tab, wc, p) {
     m.push({ role: 'copy' });
     const short = sel.length > 28 ? sel.slice(0, 28) + '…' : sel;
     m.push({ label: `Search ${SEARCH_ENGINES[settings.searchEngine].name} for “${short}”`, click: () => createTab(searchUrl(sel), { openerId: tab.id }) });
+    if (!tab.side) m.push({ label: 'Ask AI about this', click: () => { useTab(tab); openAI('ask', sel); } });
     sep();
   }
   if (!p.linkURL && !p.isEditable && !p.selectionText && p.mediaType === 'none') {
@@ -2221,6 +2406,7 @@ function pageContextMenu(tab, wc, p) {
     m.push({ label: 'Find on page', click: openFind });
     m.push({ label: 'Copy page link', click: () => copyLinkToast(tab.url) });
     if (/^https?:/i.test(tab.url)) m.push({ label: 'View page source', click: () => viewSource(tab) });
+    if (/^https?:/i.test(tab.url) && !tab.side) m.push({ label: 'Summarize this page with AI', click: () => { useTab(tab); openAI('summarize'); } });
     sep();
   }
   if (extensions) {
@@ -2301,6 +2487,9 @@ function tabContextMenu(id) {
     { label: 'Copy link', click: () => copyLinkToast(tab.url) },
     splitOf(id) ? { label: 'Close split view', click: () => unsplit(id) }
       : { label: 'Open in split view with current tab', enabled: id !== activeId, click: () => splitWith(id) },
+    ...(tab.pinned ? [] : gridOf(id) ? [{ label: 'Remove from multiviewer', click: () => removeFromGrid(id) }]
+      : [{ label: cur.grid && gridOf(activeId) ? `Add to multiviewer (${cur.grid.ids.length}/4)` : 'Open in multiviewer with current tab',
+          enabled: id !== activeId && !(activeTab() || {}).pinned && !(cur.grid && gridOf(activeId) && cur.grid.ids.length >= 4), click: () => addToGrid(id) }]),
     ...(!tab.pinned ? [tab.folder ? { label: 'Remove from folder', click: () => removeFromFolder(tab) }
       : (cur.folders || []).length ? { label: 'Add to folder', submenu: [
           { label: 'New folder', click: () => { const f = newFolder([id]); if (f && ui) ui.webContents.send('folder-edit', f.id, true); } },
@@ -2355,7 +2544,7 @@ function setTabVolume(id, v) {
 function toggleMute(id) {
   const tab = tabs.find(t => t.id === id); if (!tab || !tab.view) return;
   tab.muted = !tab.muted;
-  tab.view.webContents.setAudioMuted(tab.muted);
+  tab.view.webContents.setAudioMuted(tab.muted || !!tab.gridQuiet);
   push();
 }
 
@@ -3296,6 +3485,18 @@ function setupProtocol() {
       }
       return new Response(null, { status: 204 });
     }
+    // The AI panel (drift://ai, shown in the side panel): talks to Ollama on your PC. Its calls
+    // need the page's own header, so other sites can't use them to reach Ollama or read pages.
+    if (u.hostname === 'ai' && u.pathname !== '/') {
+      if (req.headers.get('x-drift-ai') !== '1') return new Response('', { status: 403 });
+      return aiRequest(u, req);
+    }
+    if (u.hostname === 'ai') {
+      let html = await fs.promises.readFile(path.join(PAGES_DIR, 'ai.html'), 'utf8');
+      const data = { accent: accentColor(), dark: isDark(), model: settings.aiModel, task: u.searchParams.get('task') || '', text: (u.searchParams.get('text') || '').slice(0, 8000), private: !!from.private };
+      html = html.replace('/*__DATA__*/null', () => JSON.stringify(data).replace(/</g, '\\u003c'));
+      return new Response(themed(html), { headers: { 'content-type': 'text/html; charset=utf-8', 'cache-control': 'no-store' } });
+    }
     // History (Ctrl+H): your searches and the sites you visited. Changes need the page's own
     // header, so other pages can't send them.
     if (u.hostname === 'history' && u.pathname === '/delete') {
@@ -3312,22 +3513,22 @@ function setupProtocol() {
     if (u.hostname === 'history') {
       let html = await fs.promises.readFile(path.join(PAGES_DIR, 'history.html'), 'utf8');
       const sites = [...history.values()].sort((a, b) => b.last - a.last).slice(0, 4000).map(h => ({ url: h.url, title: h.title || '', last: h.last, visits: h.visits }));
-      const data = { searches, sites, accent: settings.accent, dark: isDark(), tab: u.searchParams.get('tab') || 'searches' };
+      const data = { searches, sites, accent: accentColor(), dark: isDark(), tab: u.searchParams.get('tab') || 'searches' };
       const json = JSON.stringify(data).replace(/</g, '\\u003c');
       html = html.replace('/*__DATA__*/null', () => json);   // (a function: "$&" in a search mustn't be a pattern)
-      return new Response(html, { headers: { 'content-type': 'text/html; charset=utf-8', 'cache-control': 'no-store' } });
+      return new Response(themed(html), { headers: { 'content-type': 'text/html; charset=utf-8', 'cache-control': 'no-store' } });
     }
     if (u.hostname === 'whatsnew') {
       let html = await fs.promises.readFile(path.join(PAGES_DIR, 'whatsnew.html'), 'utf8');
-      const data = { entries: CHANGELOG, current: app.getVersion(), from: (u.searchParams.get('from') || '').replace(/[^\d.]/g, ''), accent: settings.accent, dark: isDark() };
+      const data = { entries: CHANGELOG, current: app.getVersion(), from: (u.searchParams.get('from') || '').replace(/[^\d.]/g, ''), accent: accentColor(), dark: isDark() };
       html = html.replace('/*__DATA__*/null', JSON.stringify(data).replace(/</g, '\\u003c'));
-      return new Response(html, { headers: { 'content-type': 'text/html; charset=utf-8' } });
+      return new Response(themed(html), { headers: { 'content-type': 'text/html; charset=utf-8' } });
     }
     if (u.hostname === 'newtab') {
       let html = newtabHtml || (newtabHtml = fs.readFileSync(path.join(PAGES_DIR, 'newtab.html'), 'utf8'));
       const data = {
         // A private window's new tab page shows none of your sites (they come from your history).
-        sites: from.private ? [] : topSites(), private: !!from.private, accent: settings.accent, dark: isDark(),
+        sites: from.private ? [] : topSites(), private: !!from.private, accent: accentColor(), dark: isDark(),
         engine: SEARCH_ENGINES[settings.searchEngine].name,
         searchUrl: SEARCH_ENGINES[settings.searchEngine].url,
         blocked: blockedTotal,
@@ -3335,7 +3536,7 @@ function setupProtocol() {
         wallpaperDim: settings.wallpaperDim, wallpaperBlur: settings.wallpaperBlur,
       };
       html = html.replace('/*__DATA__*/null', JSON.stringify(data).replace(/</g, '\\u003c'));
-      return new Response(html, { headers: { 'content-type': 'text/html; charset=utf-8', 'cache-control': 'no-store' } });
+      return new Response(themed(html), { headers: { 'content-type': 'text/html; charset=utf-8', 'cache-control': 'no-store' } });
     }
     // The sidebar UI is served from drift://ui/ rather than file:// so that
     // extension content scripts (which can match file:// URLs) never run inside it.
@@ -3358,6 +3559,80 @@ function setupProtocol() {
     return new Response('Not found', { status: 404 });
   };
   protocol.handle('drift', driftHandler);
+}
+
+// ---------------------------------------------------------------------------
+// AI panel back end: Ollama (http://127.0.0.1:11434 by default) and the page you're reading.
+// ---------------------------------------------------------------------------
+function aiBase() {
+  const u = String(settings.aiUrl || '').trim().replace(/\/+$/, '');
+  return /^https?:\/\/[^\s/]+(:\d+)?$/i.test(u) ? u : 'http://127.0.0.1:11434';
+}
+const AI_JSON = { 'content-type': 'application/json', 'cache-control': 'no-store' };
+// The text of the page in front (the window you used last), for "summarize" and questions.
+async function aiPageText() {
+  const c = lastFocused && windows.includes(lastFocused) ? lastFocused : windows[0]; if (!c) return null;
+  useWin(c);
+  const t = activeTab(); if (!t || !t.view || isInternal(t.url)) return { title: t ? t.title : '', url: t ? t.url : '', text: '', none: true };
+  try {
+    const r = await t.view.webContents.executeJavaScript(`(() => {
+      const pick = document.querySelector('article, main, [role=main]');
+      const root = pick && pick.innerText.trim().length > 600 ? pick : document.body;
+      const text = (root ? root.innerText : '').replace(/[ \\t]+/g, ' ').replace(/\\n\\s*\\n+/g, '\\n\\n').trim();
+      return { title: document.title, url: location.href, text: text.slice(0, 40000), selection: String(getSelection() || '').slice(0, 8000) };
+    })()`, false);
+    return r;
+  } catch { return { title: t.title, url: t.url, text: '', none: true }; }
+}
+async function aiRequest(u, req) {
+  const base = aiBase();
+  if (u.pathname === '/models') {
+    try {
+      const ctl = new AbortController(); const to = setTimeout(() => ctl.abort(), 4000);
+      const r = await net.fetch(base + '/api/tags', { signal: ctl.signal }); clearTimeout(to);
+      const j = await r.json();
+      const models = (j.models || []).map(m => ({ name: m.name, size: m.size || 0, params: (m.details && m.details.parameter_size) || '' }));
+      return new Response(JSON.stringify({ ok: true, models, model: settings.aiModel, url: base }), { headers: AI_JSON });
+    } catch { return new Response(JSON.stringify({ ok: false, url: base }), { headers: AI_JSON }); }
+  }
+  if (u.pathname === '/page') return new Response(JSON.stringify(await aiPageText() || {}), { headers: AI_JSON });
+  if (u.pathname === '/model' && req.method === 'POST') {
+    let b = {}; try { b = JSON.parse(await req.text()); } catch {}
+    if (typeof b.model === 'string') { settings.aiModel = b.model.slice(0, 200); saveSettings(); }
+    return new Response(null, { status: 204 });
+  }
+  if (u.pathname === '/chat' && req.method === 'POST') {
+    let b = {}; try { b = JSON.parse(await req.text()); } catch {}
+    const messages = (Array.isArray(b.messages) ? b.messages : []).slice(-40)
+      .filter(m => m && ['system', 'user', 'assistant'].includes(m.role) && typeof m.content === 'string')
+      .map(m => ({ role: m.role, content: m.content.slice(0, 60000) }));
+    const model = String(b.model || settings.aiModel || '').slice(0, 200);
+    if (!model || !messages.length) return new Response(JSON.stringify({ error: 'no model' }), { status: 400, headers: AI_JSON });
+    const ctl = new AbortController();
+    let up;
+    try {
+      up = await net.fetch(base + '/api/chat', { method: 'POST', headers: { 'content-type': 'application/json' }, signal: ctl.signal,
+        body: JSON.stringify({ model, messages, stream: true, options: { num_ctx: 16384 } }) });
+    } catch { return new Response(JSON.stringify({ error: 'offline' }), { status: 502, headers: AI_JSON }); }
+    if (!up.ok || !up.body) { let t = ''; try { t = await up.text(); } catch {} return new Response(JSON.stringify({ error: t.slice(0, 300) || ('HTTP ' + up.status) }), { status: 502, headers: AI_JSON }); }
+    // Passed straight through as it's written (one JSON line per piece); stopping in the
+    // panel cancels the request to Ollama too.
+    return new Response(up.body, { headers: { 'content-type': 'application/x-ndjson', 'cache-control': 'no-store' } });
+  }
+  return new Response('Not found', { status: 404 });
+}
+// Open the AI panel (in this window's side panel), optionally starting a task on the page:
+// 'summarize', or 'ask' with the selected text.
+function openAI(task, text) {
+  if (!cur) return;
+  const sd = cur.side, st = sd && sd.open && sd.tab;
+  if (st && st.view && /^drift:\/\/ai/.test(st.url)) {
+    if (task) st.view.webContents.executeJavaScript(`window.driftAI && window.driftAI.run(${JSON.stringify(task)}, ${JSON.stringify(String(text || '').slice(0, 8000))})`).catch(() => {});
+    else setSidePanel(false);
+    return;
+  }
+  const q = new URLSearchParams(); if (task) q.set('task', task); if (text) q.set('text', String(text).slice(0, 8000));
+  setSidePanel(true, 'drift://ai/' + (q.toString() ? '?' + q : ''), { temp: true });
 }
 
 // ---------------------------------------------------------------------------
@@ -4056,6 +4331,7 @@ function setupIPC() {
   on('side-toggle', () => setSidePanel(!(cur.side && cur.side.open)));
   on('side-set', (url) => setSidePanel(true, url));
   on('side-close', () => setSidePanel(false));
+  on('ai-toggle', () => openAI());
   // Choosing another site: the page steps aside so the site box (drawn by the UI) shows.
   on('side-edit', (on) => { if (!cur.side || !cur.side.open) return; cur.side.editing = !!on && !!cur.side.tab; layout(); push(); });
   on('side-nav', (what) => {
@@ -4163,6 +4439,11 @@ function setupIPC() {
     if (!(key in DEFAULT_SETTINGS) || ['permissions', 'bounds', 'shieldsAllow', 'popupAllow', 'wsList', 'hiddenActions', 'pinnedActions', 'hiddenSites', 'unpacked', 'forceDarkOff', 'blockedSites', 'blockSites', 'zoomLevels', 'removedExtensions', 'sidePanel'].includes(key)) return;
     if (key === 'shields') return setShieldsGlobal(!!value);
     if (key === 'shieldsEngine') return setShieldsEngine(value === 'builtin' ? 'builtin' : 'ubo');
+    if (key === 'palette') {
+      if (!PALETTES[value]) return;
+      if (PALETTES[value].accent) settings.accent = PALETTES[value].accent;   // a theme comes with its accent (change it after if you like)
+      winThemeCache = null;
+    }
     setSetting(key, value);
   });
   // No-download sites: one site per line from Settings.
@@ -4572,8 +4853,12 @@ function createWindow(opts = {}) {
     ctx.folders = (Array.isArray(snap.folders) ? snap.folders : []).filter(f => f && typeof f.id === 'string')
       .map(f => ({ id: f.id, name: String(f.name || 'Folder').slice(0, 40), color: FOLDER_COLORS[f.color] ? f.color : 'blue', collapsed: !!f.collapsed }));
     snap.tabs.filter(t => !t.pinned).forEach((t) => createTab(t.url, { title: t.title, favicon: t.favicon, ws: t.ws, hist: t.hist, lazy: true, activate: false, folder: t.folder || null }));
+    if (snap.grid && Array.isArray(snap.grid.tabs)) {
+      const ids = snap.grid.tabs.map(i => tabs[i] && !tabs[i].pinned ? tabs[i].id : null).filter(Boolean).slice(0, 4);
+      if (ids.length > 1) ctx.grid = { ids, layout: snap.grid.layout === 'focus' ? 'focus' : 'grid', audio: snap.grid.audio === 'all' ? 'all' : 'focus' };
+    }
     for (const [i, j, ratio, dir] of snap.splits || []) {
-      if (tabs[i] && tabs[j] && !splitOf(tabs[i].id) && !splitOf(tabs[j].id)) splits.push({ a: tabs[i].id, b: tabs[j].id, ratio: ratio || 0.5, dir: dir === 'col' ? 'col' : 'row' });
+      if (tabs[i] && tabs[j] && !splitOf(tabs[i].id) && !splitOf(tabs[j].id) && !gridOf(tabs[i].id) && !gridOf(tabs[j].id)) splits.push({ a: tabs[i].id, b: tabs[j].id, ratio: ratio || 0.5, dir: dir === 'col' ? 'col' : 'row' });
     }
   }
   syncWinEssentials();
@@ -4638,7 +4923,7 @@ function moveTabToWindow(tab, target, index) {
   }
   useWin(src);
   const wasActive = activeId === tab.id;
-  const sp = splitOf(tab.id); if (sp) splits = splits.filter(x => x !== sp);
+  dropLayout(tab.id);
   const i = tabs.indexOf(tab); if (i >= 0) tabs.splice(i, 1);
   if (tab.view) { try { win.contentView.removeChildView(tab.view); } catch {} }
   if (!tabs.length) { src.closingEmpty = true; setImmediate(() => { if (src.win && !src.win.isDestroyed()) src.win.close(); }); }
@@ -4801,6 +5086,8 @@ if (!app.requestSingleInstanceLock(launchRequest)) {
     setupDownloads(ses); PERF('session set up');
     setupIPC();
     setupPageIPC();
+    // The Windows accent colour changed (Match Windows follows it).
+    try { systemPreferences.on('accent-color-changed', () => { winThemeCache = null; if (settings.palette === 'windows') push(); }); } catch {}
     nativeTheme.on('updated', () => {
       push(); refreshNewTabs(); folderMenuIcon = null; prepareBookmarkMenuIcons();
       for (const t of allTabs()) if (t.view && !t.view.webContents.isDestroyed()) t.view.setBackgroundColor(baseFor(t.view.webContents.getURL()));
