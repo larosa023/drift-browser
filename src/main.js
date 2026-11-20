@@ -64,6 +64,7 @@ const DEFAULT_SETTINGS = {
   forceDarkOff: [],          // hostnames excluded from force dark
   offerPasswords: true,
   zoomLevels: {},            // { host: zoom factor } for sites you zoomed
+  zaps: {},                  // { host: [CSS selectors] } parts of sites you chose to hide (element zapper)
   sidePanel: { url: '', width: 380 },   // the side panel's site and width (shared by windows)
   palette: 'default',        // colour theme (see PALETTES); 'windows' follows the Windows accent and wallpaper
   aiUrl: 'http://127.0.0.1:11434',     // Ollama, for the AI panel (runs on your own PC)
@@ -1052,6 +1053,8 @@ function wireTab(tab, wc) {
     if (d.isMainFrame && !d.isSameDocument) { tab.blocked = 0; notePendingNav(d.url, wc.id); }
   });
   wc.on('did-redirect-navigation', (d) => { if (d.isMainFrame) notePendingNav(d.url, wc.id); });
+  // Parts of the site you hid with the zapper stay hidden (set as soon as the page exists).
+  wc.on('dom-ready', () => applyZaps(wc));
   wc.on('did-navigate', (_e, url) => {
     if (hostOf(url) !== tab.iconHost) tab.iconHost = '';
     if (hostOf(url) !== hostOf(tab.url)) tab.favicon = faviconStore[hostOf(url)] || '';
@@ -2309,6 +2312,7 @@ function handleShortcut(input) {
       case '+': case '=': zoom(1); return true;
       case 'c': if (t && /^(https?|file):/i.test(t.url)) copyLinkToast(t.url); return true;   // copy this page's link (like Zen)
       case 'w': if (win && !win.isDestroyed()) win.close(); return true;
+      case 'x': startZap(t); return true;   // hide an element on this site
       case 'PageUp': nudgeTab(-1); return true;
       case 'PageDown': nudgeTab(1); return true;
     }
@@ -2407,6 +2411,7 @@ function pageContextMenu(tab, wc, p) {
     m.push({ label: 'Copy page link', click: () => copyLinkToast(tab.url) });
     if (/^https?:/i.test(tab.url)) m.push({ label: 'View page source', click: () => viewSource(tab) });
     if (/^https?:/i.test(tab.url) && !tab.side) m.push({ label: 'Summarize this page with AI', click: () => { useTab(tab); openAI('summarize'); } });
+    if (/^https?:/i.test(tab.url)) m.push({ label: 'Hide an element…', click: () => { useTab(tab); startZap(tab, { x: p.x, y: p.y }); } });
     sep();
   }
   if (extensions) {
@@ -3305,7 +3310,7 @@ async function siteInfo() {
   return {
     origin, host: u.hostname.replace(/^www\./, ''), secure: u.protocol === 'https:',
     cert: u.protocol === 'https:' ? certs.get(u.hostname) || null : null,
-    perms, cookies, blocked: t.blocked || 0, shields: shieldsOnFor(t.url, !!cur.private), ubo: settings.shieldsEngine === 'ubo' && !!uboId && !cur.private,
+    perms, cookies, blocked: t.blocked || 0, zaps: (settings.zaps[zapHost(t.url)] || []).length, shields: shieldsOnFor(t.url, !!cur.private), ubo: settings.shieldsEngine === 'ubo' && !!uboId && !cur.private,
   };
 }
 // The current window's saved site permissions (a private window keeps its own, in memory).
@@ -3559,6 +3564,35 @@ function setupProtocol() {
     return new Response('Not found', { status: 404 });
   };
   protocol.handle('drift', driftHandler);
+}
+
+// ---------------------------------------------------------------------------
+// Element zapper: hide parts of a site for good (settings.zaps, per site).
+// ---------------------------------------------------------------------------
+const zapperCode = require('./zapper.js');
+const zapHost = (url) => { try { return new URL(url).hostname.replace(/^www\./, '').toLowerCase(); } catch { return ''; } };
+function zapCss(list) { return list.map(sel => `${sel}{display:none!important}`).join('\n'); }
+function applyZaps(wc) {
+  try {
+    const list = settings.zaps[zapHost(wc.getURL())];
+    if (list && list.length) wc.insertCSS(zapCss(list), { cssOrigin: 'user' }).catch(() => {});
+  } catch {}
+}
+// Start picking on the tab's page (at the right-clicked point, if any).
+async function startZap(tab, at) {
+  if (!tab || !tab.view || !/^https?:/i.test(tab.url)) return;
+  const wc = tab.view.webContents, host = zapHost(tab.url);
+  focusPage();
+  let sels = null;
+  try { sels = await wc.executeJavaScriptInIsolatedWorld(1999, [{ code: zapperCode(at) }], true); } catch {}
+  if (!Array.isArray(sels) || !sels.length || !host) return;
+  sels = sels.filter(x => typeof x === 'string' && x.length < 600);
+  if (!sels.length) return;
+  try { wc.insertCSS(zapCss(sels), { cssOrigin: 'user' }); } catch {}
+  if (isPrivateTab(tab)) return;   // private windows: hidden for this visit only
+  settings.zaps[host] = [...new Set([...(settings.zaps[host] || []), ...sels])].slice(-200);
+  saveSettings();
+  if (ui && !ui.webContents.isDestroyed()) ui.webContents.send('toast', { text: `${sels.length === 1 ? 'It stays' : 'They stay'} hidden on ${host}`, icon: 'eyeoff', ms: 6000, action: { zapUndo: { host, sels } } });
 }
 
 // ---------------------------------------------------------------------------
@@ -4436,7 +4470,7 @@ function setupIPC() {
   on('site-shields', () => toggleSiteShields());
   on('zoom', (d) => zoom(d));
   on('set', (key, value) => {
-    if (!(key in DEFAULT_SETTINGS) || ['permissions', 'bounds', 'shieldsAllow', 'popupAllow', 'wsList', 'hiddenActions', 'pinnedActions', 'hiddenSites', 'unpacked', 'forceDarkOff', 'blockedSites', 'blockSites', 'zoomLevels', 'removedExtensions', 'sidePanel'].includes(key)) return;
+    if (!(key in DEFAULT_SETTINGS) || ['permissions', 'bounds', 'shieldsAllow', 'popupAllow', 'wsList', 'hiddenActions', 'pinnedActions', 'hiddenSites', 'unpacked', 'forceDarkOff', 'blockedSites', 'blockSites', 'zoomLevels', 'removedExtensions', 'sidePanel', 'zaps'].includes(key)) return;
     if (key === 'shields') return setShieldsGlobal(!!value);
     if (key === 'shieldsEngine') return setShieldsEngine(value === 'builtin' ? 'builtin' : 'ubo');
     if (key === 'palette') {
@@ -4612,6 +4646,19 @@ function setupIPC() {
     else if (value === 'block') store[key] = false;
     else delete store[key];
     if (store === settings.permissions) saveSettings();
+  });
+  // Show everything you hid on this site again.
+  on('zap-undo', (host, sels) => {
+    if (typeof host !== 'string' || !Array.isArray(sels) || !settings.zaps[host]) return;
+    settings.zaps[host] = settings.zaps[host].filter(x => !sels.includes(x));
+    if (!settings.zaps[host].length) delete settings.zaps[host];
+    saveSettings();
+    for (const t of allTabs()) if (t.view && zapHost(t.url) === host) t.view.webContents.reload();
+  });
+  on('zap-clear', (origin) => {
+    const host = zapHost(origin); if (!host || !settings.zaps[host]) return;
+    delete settings.zaps[host]; saveSettings();
+    for (const t of allTabs()) if (t.view && zapHost(t.url) === host) t.view.webContents.reload();
   });
   handle('site-clear', async (origin) => { const t = activeTab(); const ok = await clearSiteData(origin, t && t.view ? t.view.webContents.session : undefined); if (ok && t && t.view && !t.view.webContents.isDestroyed()) t.view.webContents.reload(); return ok; });
   on('bm-open-background', (id) => { const h = bookmarks.find(id); if (h) openBookmark(h.item, true, true); });

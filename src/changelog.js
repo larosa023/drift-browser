@@ -1,6 +1,9 @@
 // What's new in each release, shown on the What's new page (drift://whatsnew) after an update.
 // Newest first. Kinds: new, faster, fixed, changed. Written for people using Drift.
 module.exports = [
+  { version: '1.29.0', date: '2026-11-20', items: [
+    ['new', 'Element zapper: right-click any annoying part of a site → "Hide an element…" (or press Ctrl+Shift+X). Hover to highlight, scroll to pick a bigger or smaller area, click to hide it — as many as you like, with Undo. It stays hidden every time you visit that site. To bring things back, use Undo on the notice, or "Show again" in the site info panel (the icon left of the address). In private windows things are hidden for that visit only.'],
+  ] },
   { version: '1.28.0', date: '2026-11-19', items: [
     ['new', 'AI panel, powered by Ollama on your own PC (free, private, works offline). Open it with the ✦ button in the top bar or Ctrl+Alt+I: summarize the page, list its key points, or ask anything about it. Right-click a page for "Summarize this page with AI", or select text and pick "Ask AI about this". Answers stream in as they\'re written; pick any model you have in Ollama at the top.'],
     ['new', 'Multiviewer: watch 2 to 4 tabs at once in one window. Click the split button in the address bar → "Multiviewer with…", or right-click a tab → "Open in multiviewer with current tab". Choose equal tiles or one big with the others small; sound comes from the one you click into (or from all of them). It\'s kept after a restart.'],

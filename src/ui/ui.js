@@ -1021,6 +1021,7 @@ function renderSettings() {
       <div><span>Close tab</span><span><kbd>Ctrl</kbd><kbd>W</kbd></span></div>
       <div><span>Reopen closed tab</span><span><kbd>Ctrl</kbd><kbd>Shift</kbd><kbd>T</kbd></span></div>
       <div><span>Copy page link</span><span><kbd>Ctrl</kbd><kbd>Shift</kbd><kbd>C</kbd></span></div>
+      <div><span>Hide an element on this site</span><span><kbd>Ctrl</kbd><kbd>Shift</kbd><kbd>X</kbd></span></div>
       <div><span>Mute / unmute tab</span><span><kbd>Ctrl</kbd><kbd>M</kbd></span></div>
       <div><span>Move tab up / down</span><span><kbd>Ctrl</kbd><kbd>Shift</kbd><kbd>PgUp</kbd> <kbd>PgDn</kbd></span></div>
       <div><span>Close window</span><span><kbd>Ctrl</kbd><kbd>Shift</kbd><kbd>W</kbd></span></div>
@@ -1789,6 +1790,7 @@ window.drift.on('toast', (t) => {
   const actions = [];
   if (t.action && t.action.bm) actions.push({ label: t.action.label, run: () => { const b = findBm(t.action.bm); if (b) editBookmark(b); } });
   if (t.action && t.action.update) actions.push({ label: t.action.label, run: () => send('update-install') });
+  if (t.action && t.action.zapUndo) actions.push({ label: 'Undo', run: () => send('zap-undo', t.action.zapUndo.host, t.action.zapUndo.sels) });
   if (t.action && t.action.dlAllow) actions.push({ label: 'Download anyway', run: () => send('dl-allow', t.action.dlAllow) });
   if (t.action && t.action.popup) {
     if (!t.action.noOpen) actions.push({ label: 'Open', run: () => send('popup-open', t.action.popup) });
@@ -1930,6 +1932,7 @@ function renderSiteInfo() {
     <div class="si-sec"><h4>Privacy</h4>
       <div class="si-row"><span>Ads & trackers blocked</span><span class="n">${d.shields ? d.blocked.toLocaleString() + ' on this page' : 'Shields off for this site'}</span></div>
       <div class="si-row"><span>Cookies</span><span class="n">${d.cookies} stored by this site</span></div>
+      ${d.zaps ? `<div class="si-row"><span>Hidden elements</span><span class="n">${d.zaps} hidden by you · <a href="#" id="si-unzap">Show again</a></span></div>` : ''}
       <button class="si-btn" id="si-clear">Clear cookies and site data</button>
     </div>`;
 }
@@ -1952,6 +1955,8 @@ $('#siteinfo').addEventListener('change', (e) => {
   send('site-perm', siteData.origin, sel.dataset.perm, sel.value);
 });
 $('#siteinfo').addEventListener('click', async (e) => {
+  const uz = e.target.closest('#si-unzap');
+  if (uz && siteData) { e.preventDefault(); send('zap-clear', siteData.origin); uz.parentElement.textContent = 'Shown again — page reloaded'; return; }
   const b = e.target.closest('#si-clear'); if (!b || !siteData) return;
   b.disabled = true; b.textContent = 'Clearing…';
   const ok = await window.drift.invoke('site-clear', siteData.origin);
