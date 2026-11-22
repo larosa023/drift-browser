@@ -1197,6 +1197,28 @@ function openBlockedPopup(id) {
   createTab(url, { openerId: tab.glance ? undefined : tab.id });
 }
 
+// Picture in picture from anywhere on a page or its tab: the video under the pointer if there
+// is one, otherwise the biggest video on the page (including ones inside embedded players).
+async function pipAny(wc, p) {
+  if (!wc || wc.isDestroyed()) return;
+  const pf = p && p.frame && !p.frame.isDestroyed() ? p.frame : null;
+  const frames = pf ? [pf] : [];
+  try { for (const f of wc.mainFrame.framesInSubtree) if (f !== pf && !f.isDestroyed()) frames.push(f); } catch {}
+  let best = null, area = 0;
+  for (const f of frames) {
+    try {
+      const a = await f.executeJavaScript(`Math.max(0, ...[...document.querySelectorAll('video')].map(v => v.readyState ? Math.max(1, v.clientWidth * v.clientHeight) : 0))`);
+      if (a > area || (f === pf && a > 0 && !best)) { area = a; best = f; }
+      if (f === pf && a > 0) break;   // the frame you right-clicked has one: that's it
+    } catch {}
+  }
+  if (!best) {
+    const t = wcToTab.get(wc.id), c = t && ctxOfTab(t);
+    if (c && c.ui && !c.ui.webContents.isDestroyed()) c.ui.webContents.send('toast', { text: 'No video on this page', icon: 'popout', ms: 2200 });
+    return;
+  }
+  pipAt(wc, { frame: best, x: best === pf ? p.x : -1, y: best === pf ? p.y : -1 });
+}
 // Picture in picture for the video under the pointer (right-click menu), or the largest one.
 function pipAt(wc, p) {
   const f = p.frame && !p.frame.isDestroyed() ? p.frame : wc.mainFrame;
@@ -2411,6 +2433,7 @@ function pageContextMenu(tab, wc, p) {
     m.push({ label: 'Copy page link', click: () => copyLinkToast(tab.url) });
     if (/^https?:/i.test(tab.url)) m.push({ label: 'View page source', click: () => viewSource(tab) });
     if (/^https?:/i.test(tab.url) && !tab.side) m.push({ label: 'Summarize this page with AI', click: () => { useTab(tab); openAI('summarize'); } });
+    if (/^https?:/i.test(tab.url) && p.mediaType !== 'video') m.push({ label: 'Picture in picture', click: () => pipAny(wc, p) });
     if (/^https?:/i.test(tab.url)) m.push({ label: 'Hide an element…', click: () => { useTab(tab); startZap(tab, { x: p.x, y: p.y }); } });
     sep();
   }
@@ -2490,8 +2513,18 @@ function tabContextMenu(id) {
       label: p + '%', type: 'radio', checked: Math.round(tab.volume * 100) === p, click: () => setTabVolume(id, p / 100),
     })) },
     { label: 'Copy link', click: () => copyLinkToast(tab.url) },
-    splitOf(id) ? { label: 'Close split view', click: () => unsplit(id) }
-      : { label: 'Open in split view with current tab', enabled: id !== activeId, click: () => splitWith(id) },
+    { label: 'Picture in picture', enabled: !!wc && /^https?:/i.test(tab.url), click: () => pipAny(wc) },
+    { type: 'separator' },
+    ...(splitOf(id) ? [{ label: 'Close split view', click: () => unsplit(id) }]
+      : tab.pinned ? [] : [
+        ...(id !== activeId && !(activeTab() || {}).pinned ? [{ label: 'Split view with current tab', click: () => splitWith(id) }] : []),
+        { label: 'Split view with…', submenu: (() => {
+            const others = tabs.filter(o => o.id !== id && !o.pinned && inWs(o)).sort((a, b) => b.lastActive - a.lastActive).slice(0, 15);
+            const items = others.map(o => ({ label: (o.title || hostOf(o.url) || 'New Tab').slice(0, 60), click: () => { if (id !== activeId) activate(id); splitWith(o.id); } }));
+            return [...(items.length ? items : [{ label: 'No other tabs', enabled: false }]), { type: 'separator' },
+              { label: 'New tab', click: () => { if (id !== activeId) activate(id); splitWith('new'); } }];
+          })() },
+      ]),
     ...(tab.pinned ? [] : gridOf(id) ? [{ label: 'Remove from multiviewer', click: () => removeFromGrid(id) }]
       : [{ label: cur.grid && gridOf(activeId) ? `Add to multiviewer (${cur.grid.ids.length}/4)` : 'Open in multiviewer with current tab',
           enabled: id !== activeId && !(activeTab() || {}).pinned && !(cur.grid && gridOf(activeId) && cur.grid.ids.length >= 4), click: () => addToGrid(id) }]),

@@ -1,6 +1,10 @@
 // What's new in each release, shown on the What's new page (drift://whatsnew) after an update.
 // Newest first. Kinds: new, faster, fixed, changed. Written for people using Drift.
 module.exports = [
+  { version: '1.29.1', date: '2026-11-22', items: [
+    ['new', '"Picture in picture" is now in the right-click menu anywhere on a page (not only right on a bare video) — it pops out the video you clicked on, or the page\'s main video, including ones inside embedded players like Twitch and YouTube. It\'s in a tab\'s right-click menu too.'],
+    ['new', 'Right-click any tab — including the one you\'re on — for "Split view with…" and pick the other tab (or a new one).'],
+  ] },
   { version: '1.29.0', date: '2026-11-20', items: [
     ['new', 'Element zapper: right-click any annoying part of a site → "Hide an element…" (or press Ctrl+Shift+X). Hover to highlight, scroll to pick a bigger or smaller area, click to hide it — as many as you like, with Undo. It stays hidden every time you visit that site. To bring things back, use Undo on the notice, or "Show again" in the site info panel (the icon left of the address). In private windows things are hidden for that visit only.'],
   ] },
