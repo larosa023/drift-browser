@@ -2222,9 +2222,9 @@ function renderCast() {
     if (vol) { vol.oninput = () => { castDrag = true; }; vol.onchange = () => { castDrag = false; send('cast-cmd', 'volume', +vol.value); }; }
     return;
   }
-  const devs = castS.devices || [];
+  const devs = (castS.devices || []).slice().sort((a, b) => (a.speaker - b.speaker) || a.name.localeCompare(b.name));
   m.innerHTML = `<div class="cp-head">${icon('cast', 16)}<span>Cast this tab's video to</span></div>
-    <div class="cp-list">${devs.map(d => `<button class="cp-dev" data-id="${esc(d.id)}"><span class="cp-dev-ic">${icon('desktop', 16)}</span><span><b>${esc(d.name)}</b>${d.model ? `<small>${esc(d.model)}</small>` : ''}</span></button>`).join('')}</div>
+    <div class="cp-list">${devs.map(d => `<button class="cp-dev" data-id="${esc(d.id)}"><span class="cp-dev-ic">${icon(d.speaker ? 'sound' : 'desktop', 16)}</span><span><b>${esc(d.name)}</b><small>${d.speaker ? 'Speaker · sound only' : esc(d.model || 'TV')}</small></span></button>`).join('')}</div>
     ${castS.scanning ? '<div class="cp-sub"><span class="cp-spin"></span>Looking for TVs on your network…</div>'
       : !devs.length ? '<div class="cp-sub">No TVs found. The TV (Chromecast or Google TV) and this PC need to be on the same Wi-Fi.</div>' : ''}
     <div class="cp-foot"><span class="cp-note">Copy-protected video (Netflix, Disney+) can't be cast.</span>${castS.scanning ? '' : '<button class="cp-btn ghost" id="cp-scan">Search again</button>'}</div>`;

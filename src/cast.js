@@ -81,7 +81,9 @@ function discover(ms = 4000, onFound = () => {}) {
         if (!a) continue;
         const id = txt.id || inst;
         if (found.has(id)) continue;
-        const dev = { id, name: txt.fn || inst.split('.')[0], model: txt.md || '', host: a.ip, port: srv.port || 8009 };
+        // "ca" lists what the device can do; bit 1 is video out (speakers and speaker groups lack it).
+        const video = txt.ca === undefined ? true : (Number(txt.ca) & 1) === 1;
+        const dev = { id, name: txt.fn || inst.split('.')[0], model: txt.md || '', host: a.ip, port: srv.port || 8009, video };
         found.set(id, dev); onFound(dev);
       }
     };
@@ -184,7 +186,16 @@ class CastSession extends EventEmitter {
       this.onMessage(m, j);
     }
   }
+  // Resolves with the next message of this type in this namespace (for apps that don't echo requestIds).
+  waitFor(ns, type, ms = 10000) {
+    return new Promise((resolve, reject) => {
+      const t = setTimeout(() => { this.removeListener('msg', on); reject(new Error('The TV did not answer')); }, ms);
+      const on = (m, j) => { if (m.ns === ns && j.type === type) { clearTimeout(t); this.removeListener('msg', on); resolve(j); } };
+      this.on('msg', on);
+    });
+  }
   onMessage(m, j) {
+    this.emit('msg', m, j);
     if (m.ns === NS.beat && j.type === 'PING') return this.raw(m.source, NS.beat, { type: 'PONG' });
     if (m.ns === NS.conn && j.type === 'CLOSE') {
       if (m.source === this.transport) return this.close('stopped on the TV');
@@ -201,10 +212,10 @@ class CastSession extends EventEmitter {
       if (st) { if (st.mediaSessionId) this.mediaSession = st.mediaSessionId; this.emit('status', st); }
     }
   }
-  async launch() {
-    const r = await this.request('receiver-0', NS.recv, { type: 'LAUNCH', appId: DEFAULT_APP }, 20000);
-    if (r.type !== 'RECEIVER_STATUS') throw new Error(r.reason ? `The TV said: ${r.reason}` : "The TV couldn't start the player");
-    const app = (r.status.applications || []).find(a => a.appId === DEFAULT_APP);
+  async launch(appId = DEFAULT_APP) {
+    const r = await this.request('receiver-0', NS.recv, { type: 'LAUNCH', appId }, 25000);
+    if (r.type !== 'RECEIVER_STATUS') throw new Error(r.reason === 'NOT_FOUND' || r.reason === 'NOT_ALLOWED' ? "This device can't open that app" : r.reason ? `The TV said: ${r.reason}` : "The TV couldn't start the player");
+    const app = (r.status.applications || []).find(a => a.appId === appId);
     if (!app) throw new Error("The TV couldn't start the player");
     this.transport = app.transportId; this.appSession = app.sessionId;
     this.raw(this.transport, NS.conn, { type: 'CONNECT' });
@@ -233,6 +244,38 @@ class CastSession extends EventEmitter {
     try { this.sock.destroy(); } catch {}
     this.emit('closed', reason);
   }
+}
+
+// ---------------------------------------------------------------------------
+// YouTube: the TV's own YouTube app plays the video; Drift asks it to, the way YouTube's phone
+// app does (YouTube's "lounge" remote-control service), then controls it like any cast.
+// ---------------------------------------------------------------------------
+const YT_APP = '233637DE';
+const yt = { base: 'https://www.youtube.com/' };
+async function castYouTube(session, fetchFn, { videoId, listId = '', time = 0 }) {
+  await session.launch(YT_APP);
+  const MDX = 'urn:x-cast:com.google.youtube.mdx';
+  const got = session.waitFor(MDX, 'mdxSessionStatus', 15000);
+  session.raw(session.transport, MDX, { type: 'getMdxSessionStatus' });
+  const screenId = ((await got).data || {}).screenId;
+  if (!screenId) throw new Error("The TV's YouTube app didn't answer");
+  const form = (o) => Object.entries(o).map(([k, v]) => encodeURIComponent(k) + '=' + encodeURIComponent(v)).join('&');
+  const post = async (url, data, headers = {}) => {
+    const r = await fetchFn(url, { method: 'POST', headers: { 'content-type': 'application/x-www-form-urlencoded', origin: yt.base.replace(/\/$/, ''), ...headers }, body: form(data) });
+    if (!r.ok) throw new Error(`YouTube said ${r.status}`);
+    return r.text();
+  };
+  const tok = JSON.parse(await post(yt.base + 'api/lounge/pairing/get_lounge_token_batch', { screen_ids: screenId }));
+  const lounge = tok && tok.screens && tok.screens[0] && tok.screens[0].loungeToken;
+  if (!lounge) throw new Error("YouTube didn't connect to the TV");
+  const H = { 'X-YouTube-LoungeId-Token': lounge };
+  const id = crypto.randomBytes(13).toString('hex');
+  const bind = await post(yt.base + 'api/lounge/bc/bind?' + form({ RID: 0, VER: 8, CVER: 1 }),
+    { device: 'REMOTE_CONTROL', id, name: 'Drift', 'mdx-version': 3, pairing_type: 'cast', app: 'android-phone-13.14.55' }, H);
+  const sid = (/"c","(.*?)","/.exec(bind) || [])[1], gs = (/"S","(.*?)"]/.exec(bind) || [])[1];
+  if (!sid || !gs) throw new Error("YouTube didn't connect to the TV");
+  await post(yt.base + 'api/lounge/bc/bind?' + form({ SID: sid, gsessionid: gs, RID: 1, VER: 8, CVER: 1 }),
+    { count: 1, req0__sc: 'setPlaylist', req0__listId: listId, req0__currentTime: String(Math.max(0, Math.floor(time))), req0__currentIndex: -1, req0__audioOnly: 'false', req0__videoId: videoId }, H);
 }
 
 // ---------------------------------------------------------------------------
@@ -336,4 +379,4 @@ function lanIpFor(host) {
   return addrs[0] ? addrs[0].address : '127.0.0.1';
 }
 
-module.exports = { discover, CastSession, Relay, httpGet, lanIpFor, isM3u8, parseDns, encodeMsg, decodeMsg, dnsQuery };
+module.exports = { discover, CastSession, Relay, httpGet, castYouTube, yt, lanIpFor, isM3u8, parseDns, encodeMsg, decodeMsg, dnsQuery };

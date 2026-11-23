@@ -3902,7 +3902,7 @@ const castSt = { scanning: false, devices: [], scanned: false, s: null };   // s
 let castSession = null, castRelay = null, castPoll = 0;
 function sendCast() {
   const s = castSt.s;
-  const out = { scanning: castSt.scanning, scanned: castSt.scanned, devices: castSt.devices.map(d => ({ id: d.id, name: d.name, model: d.model })),
+  const out = { scanning: castSt.scanning, scanned: castSt.scanned, devices: castSt.devices.map(d => ({ id: d.id, name: d.name, model: d.model, speaker: d.video === false })),
     s: s && { dev: s.dev.name, devId: s.dev.id, title: s.title, state: s.state, time: s.time, duration: s.duration, live: s.live, at: s.at, volume: s.volume, muted: s.muted, error: s.error, tabId: s.tabId } };
   for (const c of windows) try { if (c.ui && !c.ui.webContents.isDestroyed()) c.ui.webContents.send('cast', out); } catch {}
 }
@@ -3928,7 +3928,15 @@ const fetchVia = (ses) => (u, o = {}) => castLib.httpGet(u, {
 // What to send to the TV from this tab: a plain video the page plays, or the stream it loaded.
 async function castableOf(tab) {
   const wc = tab.view.webContents, ses = wc.session;
-  if (/(^|\.)youtube\.com$|(^|\.)youtu\.be$/i.test(hostOf(tab.url))) return { error: "YouTube can't be cast from Drift yet. Use the YouTube app on the TV" };
+  if (/(^|\.)youtube\.com$|(^|\.)youtu\.be$/i.test(hostOf(tab.url))) {
+    // YouTube plays in the TV's own YouTube app: just the video's id and where you are in it.
+    let u; try { u = new URL(tab.url); } catch { u = null; }
+    const videoId = u && (u.searchParams.get('v') || (/^\/(?:shorts|live|embed)\/([\w-]{11})/.exec(u.pathname) || [])[1] || (/youtu\.be$/i.test(u.hostname) ? u.pathname.slice(1, 12) : ''));
+    if (!videoId || !/^[\w-]{11}$/.test(videoId)) return { error: 'Open a YouTube video first, then cast it' };
+    let time = 0;
+    try { time = await wc.executeJavaScript("(() => { const v = document.querySelector('video.html5-main-video, #movie_player video, video'); return v ? v.currentTime : 0; })()") || 0; } catch {}
+    return { kind: 'youtube', videoId, listId: (u.searchParams.get('list') || '').slice(0, 80), time, title: (tab.title || '').replace(/ - YouTube$/, '').slice(0, 120) || 'YouTube', live: false };
+  }
   let page = null; const seen = [];
   for (const f of wc.mainFrame.framesInSubtree) {
     try {
@@ -4005,6 +4013,9 @@ async function castTo(devId, tab) {
   const what = await castableOf(tab);
   if (!castSt.s || castSt.s.dev !== dev) return;
   if (what.error) return fail(what.error);
+  if (dev.video === false) {
+    if (what.kind === 'youtube') return fail(`${dev.name} is a speaker, so it can't show YouTube videos. Pick a TV`);
+  }
   castUpdate({ title: what.title, live: what.live });
   const s = new castLib.CastSession(dev); castSession = s;
   s.on('volume', (v) => castUpdate({ volume: v.level, muted: !!v.muted }));
@@ -4025,6 +4036,16 @@ async function castTo(devId, tab) {
   try {
     await s.connect();
     if (castSession !== s) return s.close('replaced');
+    if (what.kind === 'youtube') {
+      await castLib.castYouTube(s, (u, o) => net.fetch(u, { ...o, credentials: 'omit', cache: 'no-store' }), what);
+      if (castSession !== s) return;
+      castUpdate({ state: 'BUFFERING', time: what.time || 0, at: Date.now() });
+      for (const f of tab.view.webContents.mainFrame.framesInSubtree) f.executeJavaScript("document.querySelectorAll('video,audio').forEach(v => v.pause())").catch(() => {});
+      s.status();
+      clearInterval(castPoll);
+      castPoll = setInterval(() => { if (castSession === s) s.status(); }, 3000);
+      return;
+    }
     castRelay = new castLib.Relay(fetchVia(tab.view.webContents.session));
     castRelay.ctx = { referer: what.referer || tab.url, origin: what.origin || '' };
     await castRelay.start();

@@ -1,6 +1,10 @@
 // What's new in each release, shown on the What's new page (drift://whatsnew) after an update.
 // Newest first. Kinds: new, faster, fixed, changed. Written for people using Drift.
 module.exports = [
+  { version: '1.31.2', date: '2026-11-23', items: [
+    ['new', 'Cast YouTube to your TV: "Cast to TV…" on a YouTube video opens it in the TV\'s YouTube app, at the same spot (and playlist), with Drift as the remote.'],
+    ['changed', 'Speakers (Google Home / Nest speakers) are marked "Speaker · sound only" in the cast list and listed after TVs.'],
+  ] },
   { version: '1.31.1', date: '2026-11-23', items: [
     ['fixed', "Extensions with a side panel (like Hoopology Play Finder) work now: their toolbar button opens the extension's panel in Drift's side panel, and the panel can talk to the extension and your tabs."],
     ['fixed', "Newer (Manifest V3) extensions that use a side panel can now also use windows, tabs and their toolbar button's click from their background script."],
