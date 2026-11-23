@@ -933,6 +933,7 @@ function renderSettings() {
     </div>
     <div class="group"><h4>AI</h4>
       <div class="row"><span class="lbl">AI panel<small>Summarize pages and ask questions with Ollama on your own PC · Ctrl+Alt+I, or right-click a page</small></span><button class="mini" id="open-ai">Open</button></div>
+      <div class="row"><span class="lbl">Translate pages into<small>Right-click a page → "Translate page" (uses the AI panel's model)</small></span><input class="mini-in" id="tr-lang" value="${esc(s.translateTo || 'English')}" spellcheck="false" maxlength="40"></div>
       <div class="row col"><span class="lbl">Ollama address<small>Where Ollama runs (normally on this PC)</small></span><input class="mini-in wide" id="ai-url" value="${esc(s.aiUrl || 'http://127.0.0.1:11434')}" spellcheck="false"></div>
     </div>
     <div class="group"><h4>Appearance</h4>
@@ -1001,6 +1002,10 @@ function renderSettings() {
         <div class="src-btns">${(bmSources || []).map(n => `<button data-bmsrc="${esc(n)}">${esc(n)}</button>`).join('') || '<small style="color:var(--muted)">No other browsers found</small>'}</div></div>
       <div class="row"><span class="lbl">Import from file<small>bookmarks.html from any browser</small></span><button class="mini" data-bmsrc="file">Choose file</button></div>
       <div class="row"><span class="lbl">Export bookmarks<small>As a bookmarks.html file</small></span><button class="mini" id="bm-export">Export</button></div>
+    </div>
+    <div class="group"><h4>Downloads</h4>
+      <div class="row"><span class="lbl">Sort downloads into folders<small>Videos, Images, Music, Documents, Installers and Archives each get their own folder inside Downloads</small></span>${sw('dlSort', s.dlSort)}</div>
+      <div class="row"><span class="lbl">Downloads folder</span><button class="mini" id="open-dl-folder">Open</button></div>
     </div>
     <div class="group"><h4>Privacy</h4>
       <div class="row"><span class="lbl">History<small>Everything you've searched for and the sites you've visited, by day (Ctrl+H)</small></span><button class="mini" id="open-history">Open</button></div>
@@ -1103,6 +1108,7 @@ $('#settings-body').addEventListener('click', (e) => {
   if (e.target.id === 'whats-new') { send('whats-new'); togglePanel(null); }
   if (e.target.id === 'open-history') { send('open-history'); togglePanel(null); }
   if (e.target.id === 'open-ai') { send('ai-toggle'); togglePanel(null); }
+  if (e.target.id === 'open-dl-folder') send('open-downloads-folder');
   if (e.target.id === 'default-browser') send('default-browser');
   if (e.target.id === 'upd-install') send('update-install');
   if (e.target.closest('[data-uboopts]')) send('ext-options', S.uboId);
@@ -1126,6 +1132,7 @@ $('#settings-body').addEventListener('input', (e) => {
 $('#settings-body').addEventListener('change', (e) => {
   const r = e.target.closest('[data-range]');
   if (r) { send('set', r.dataset.range, Number(r.value) / Number(r.dataset.scale)); return; }
+  if (e.target.id === 'tr-lang') { const v = e.target.value.trim(); if (v) send('set', 'translateTo', v.slice(0, 40)); else e.target.value = S.settings.translateTo; return; }
   if (e.target.id === 'ai-url') { const v = e.target.value.trim(); if (/^https?:\/\/[^\s/]+(:\d+)?\/?$/i.test(v)) send('set', 'aiUrl', v.replace(/\/$/, '')); else e.target.value = S.settings.aiUrl; return; }
   const s = e.target.closest('[data-sel]'); if (!s) return;
   send('set', s.dataset.sel, 'num' in s.dataset ? Number(s.value) : s.value);

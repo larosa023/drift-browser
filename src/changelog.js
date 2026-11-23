@@ -1,6 +1,10 @@
 // What's new in each release, shown on the What's new page (drift://whatsnew) after an update.
 // Newest first. Kinds: new, faster, fixed, changed. Written for people using Drift.
 module.exports = [
+  { version: '1.30.0', date: '2026-11-23', items: [
+    ['new', 'Translate page with AI: right-click a page and choose "Translate page". Your local Ollama model rewrites the text in place, starting with what is on screen. "Show original" flips back and forth, and Stop halts it. Pick the language in Settings → AI.'],
+    ['new', 'Sort downloads: turn it on in Settings → Downloads and videos, pictures, music, documents, installers and ZIPs each go into their own folder inside Downloads.'],
+  ] },
   { version: '1.29.1', date: '2026-11-22', items: [
     ['new', '"Picture in picture" is now in the right-click menu anywhere on a page (not only right on a bare video) — it pops out the video you clicked on, or the page\'s main video, including ones inside embedded players like Twitch and YouTube. It\'s in a tab\'s right-click menu too.'],
     ['new', 'Right-click any tab — including the one you\'re on — for "Split view with…" and pick the other tab (or a new one).'],

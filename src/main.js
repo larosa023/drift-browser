@@ -65,6 +65,8 @@ const DEFAULT_SETTINGS = {
   offerPasswords: true,
   zoomLevels: {},            // { host: zoom factor } for sites you zoomed
   zaps: {},                  // { host: [CSS selectors] } parts of sites you chose to hide (element zapper)
+  dlSort: false,             // put downloads in Downloads\Videos, \Images, \Music, \Documents, \Installers, \Archives
+  translateTo: 'English',    // the language "Translate page" turns pages into (with the AI panel's model)
   sidePanel: { url: '', width: 380 },   // the side panel's site and width (shared by windows)
   palette: 'default',        // colour theme (see PALETTES); 'windows' follows the Windows accent and wallpaper
   aiUrl: 'http://127.0.0.1:11434',     // Ollama, for the AI panel (runs on your own PC)
@@ -2433,6 +2435,7 @@ function pageContextMenu(tab, wc, p) {
     m.push({ label: 'Copy page link', click: () => copyLinkToast(tab.url) });
     if (/^https?:/i.test(tab.url)) m.push({ label: 'View page source', click: () => viewSource(tab) });
     if (/^https?:/i.test(tab.url) && !tab.side) m.push({ label: 'Summarize this page with AI', click: () => { useTab(tab); openAI('summarize'); } });
+    if (/^https?:/i.test(tab.url)) m.push({ label: `Translate page to ${String(settings.translateTo || 'English').slice(0, 30)} (AI)`, click: () => translatePage(tab) });
     if (/^https?:/i.test(tab.url) && p.mediaType !== 'video') m.push({ label: 'Picture in picture', click: () => pipAny(wc, p) });
     if (/^https?:/i.test(tab.url)) m.push({ label: 'Hide an element…', click: () => { useTab(tab); startZap(tab, { x: p.x, y: p.y }); } });
     sep();
@@ -3374,6 +3377,23 @@ const RISKY_EXT = /\.(exe|msi|msix|msixbundle|appx|appxbundle|bat|cmd|com|scr|pi
 // Archives and macro-enabled Office files: common wrappers for malware.
 const ARCHIVE_EXT = /\.(zip|rar|7z|cab|gz|tgz|tar|bz2|xz|ace|arj|apk|docm|dotm|xlsm|xltm|xlam|pptm|potm|ppsm)$/i;
 const dlReserved = new Set();   // file names given to downloads that haven't finished
+// Download sorting (setting): each kind of file gets its own folder inside Downloads.
+const DL_KINDS = [
+  ['Videos', /\.(mp4|mkv|webm|mov|avi|wmv|m4v|flv|ts)$/i],
+  ['Images', /\.(jpe?g|png|gif|webp|avif|bmp|svg|heic|tiff?|ico)$/i],
+  ['Music', /\.(mp3|flac|wav|m4a|aac|ogg|opus|wma)$/i],
+  ['Documents', /\.(pdf|docx?|xlsx?|pptx?|txt|rtf|csv|odt|ods|odp|md|epub)$/i],
+  ['Installers', /\.(exe|msi|msix|appx|appxbundle|msixbundle)$/i],
+  ['Archives', /\.(zip|rar|7z|tar|gz|tgz|bz2|xz|iso)$/i],
+];
+function downloadFolderFor(name) {
+  const root = app.getPath('downloads');
+  if (!settings.dlSort) return root;
+  const k = DL_KINDS.find(([, re]) => re.test(name || ''));
+  if (!k) return root;
+  const dir = path.join(root, k[0]);
+  try { fs.mkdirSync(dir, { recursive: true }); return dir; } catch { return root; }
+}
 // The downloads list survives restarts (finished, cancelled and failed ones; not the file data).
 const saveDownloads = debounceSave(() => writeJSON('downloads.json', downloads.filter(d => d.state !== 'progressing' && !d.private).slice(0, 60)
   .map(d => ({ id: d.id, name: d.name, path: d.path, url: d.url || '', received: d.received, total: d.total, state: d.state, started: d.started || 0, finished: d.finished || 0 }))), 1000);
@@ -3439,7 +3459,7 @@ function setupDownloads(ses) {
     // Program and script files can take over a PC: ask before keeping one (unless you just
     // chose Download anyway for it).
     const risky = RISKY_EXT.test(name) && !hold;
-    const dir = app.getPath('downloads');
+    const dir = downloadFolderFor(item.getFilename());
     const ext = path.extname(item.getFilename());
     const base = path.basename(item.getFilename(), ext);
     // A free name: not on disk, and not taken by another download still in progress.
@@ -3687,6 +3707,75 @@ async function aiRequest(u, req) {
     return new Response(up.body, { headers: { 'content-type': 'application/x-ndjson', 'cache-control': 'no-store' } });
   }
   return new Response('Not found', { status: 404 });
+}
+// ---------------------------------------------------------------------------
+// Translate page: the page's text goes to Ollama in batches and comes back in place.
+// ---------------------------------------------------------------------------
+const trCode = require('./translator.js');
+const trRunning = new Set();   // webContents ids being translated
+function uiToast(text, icon = 'sparkle', ms = 5000) { if (ui && !ui.webContents.isDestroyed()) ui.webContents.send('toast', { text, icon, ms }); }
+async function trModel(base) {
+  try {
+    const ctl = new AbortController(); const to = setTimeout(() => ctl.abort(), 4000);
+    const r = await net.fetch(base + '/api/tags', { signal: ctl.signal }); clearTimeout(to);
+    const names = ((await r.json()).models || []).map(m => m.name);
+    if (!names.length) return { none: true };
+    return { model: names.includes(settings.aiModel) ? settings.aiModel : names[0] };
+  } catch { return { offline: true }; }
+}
+async function trBatch(base, model, lang, items) {
+  const lines = items.map((x, n) => `[[${n + 1}]] ${x.t.replace(/\s+/g, ' ')}`).join('\n');
+  const messages = [
+    { role: 'system', content: `You translate web page text into ${lang}. Each line starts with a marker like [[3]]. Reply with every line translated into ${lang}, keeping each marker at the start of its line and the same number of lines. Keep names, numbers, links and code as they are. If a line is already in ${lang}, repeat it unchanged. Reply with the lines only, nothing else.` },
+    { role: 'user', content: lines },
+  ];
+  const ask = async (think) => {
+    const body = { model, messages, stream: false, keep_alive: '10m', options: { temperature: 0.2, num_ctx: 8192 } };
+    if (think === false) body.think = false;
+    const r = await net.fetch(base + '/api/chat', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) });
+    if (!r.ok) { const e = new Error('HTTP ' + r.status); e.status = r.status; throw e; }
+    return ((await r.json()).message || {}).content || '';
+  };
+  let out;
+  try { out = await ask(false); } catch (e) { if (e.status === 400) out = await ask(); else throw e; }   // models without "think"
+  out = out.replace(/<think>[\s\S]*?<\/think>/g, '');
+  const map = {};
+  const re = /\[\[(\d+)\]\][ \t]*([^\n]*(?:\n(?!\s*\[\[\d+\]\])[^\n]*)*)/g;
+  for (let m; (m = re.exec(out));) {
+    const x = items[+m[1] - 1], t = m[2].trim();
+    if (x && t) map[x.i] = t;
+  }
+  return map;
+}
+async function translatePage(tab) {
+  if (!tab || !tab.view || !/^https?:/i.test(tab.url)) return;
+  const wc = tab.view.webContents;
+  if (trRunning.has(wc.id)) return;
+  const base = aiBase(), lang = String(settings.translateTo || 'English').trim().slice(0, 40) || 'English';
+  const m = await trModel(base);
+  if (m.offline) return uiToast("Ollama isn't running. Start it, then try again", 'sparkle', 6000);
+  if (m.none) return uiToast('Ollama has no models yet. Pull one first (e.g. "ollama pull qwen3")', 'sparkle', 7000);
+  let items;
+  try { items = await wc.executeJavaScriptInIsolatedWorld(1998, [{ code: trCode.collect({ lang: lang.replace(/[<>&"]/g, ''), accent: accentColor() }) }]); } catch { return; }
+  if (!Array.isArray(items) || !items.length) return uiToast('No text to translate on this page');
+  trRunning.add(wc.id);
+  const run = (code) => wc.isDestroyed() ? Promise.resolve(false) : wc.executeJavaScriptInIsolatedWorld(1998, [{ code }]).catch(() => false);
+  const startUrl = wc.getURL();
+  let failed = 0, sent = 0;
+  try {
+    for (let k = 0; k < items.length;) {
+      const batch = []; let chars = 0;
+      while (k < items.length && batch.length < 40 && (chars < 1800 || !batch.length)) { batch.push(items[k]); chars += items[k].t.length; k++; }
+      if (wc.isDestroyed() || wc.getURL() !== startUrl) return;
+      const st = await run(trCode.state()); if (!st || st.stopped) return;
+      let map = {};
+      try { map = await trBatch(base, m.model, lang, batch); } catch { failed++; if (!sent && failed) break; continue; }
+      sent++;
+      const go = await run(trCode.apply(map)); if (!go) return;
+    }
+    if (!sent) { await run(trCode.finish(`Couldn't translate <small>· is ${m.model.replace(/[<>&]/g, '')} working?</small>`)); return; }
+    await run(trCode.finish(`Translated to ${lang.replace(/[<>&"]/g, '')} <small>· ${m.model.replace(/[<>&]/g, '')}</small>`));
+  } finally { trRunning.delete(wc.id); }
 }
 // Open the AI panel (in this window's side panel), optionally starting a task on the page:
 // 'summarize', or 'ask' with the selected text.
