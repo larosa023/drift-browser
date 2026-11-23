@@ -27,6 +27,7 @@
         <button class="shield a-shield" id="a-shield" title="Shields"><span></span><b id="a-shield-count"></b></button>
       </div>
       <div class="tb-right">
+        <button class="ib" id="tb-cast" data-i="cast" hidden title="Casting to your TV"></button>
         <button class="ib" id="tb-ai" data-i="sparkle" title="AI (Ctrl+Alt+I) · uses Ollama on your PC"></button>
         <button class="ib" id="tb-side" data-i="sidepanel" title="Side panel (Ctrl+Alt+P)"></button>
         <button class="ib tb-dl" id="tb-dl" hidden title="Downloads"><span class="dl-ring"></span><span data-i="download"></span><i class="dot" id="tb-dl-dot" hidden></i></button>
@@ -174,6 +175,7 @@
   </div>
 
   <div id="bmpop-wrap" hidden></div>
+  <div id="castpop-wrap" hidden><div id="castpop" tabindex="-1"></div></div>
   <div id="zoompop-wrap" hidden>
     <div id="zoompop" tabindex="-1">
       <button class="zp-b" id="zp-out" title="Zoom out (Ctrl+−)"></button>

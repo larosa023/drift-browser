@@ -842,7 +842,7 @@ function layout() {
 function setOverlay(mode, keepFocus) {
   overlay = mode;
   layout();
-  if (['palette', 'modal', 'extmenu', 'siteinfo', 'dlmenu', 'bmpop', 'zoompop'].includes(mode)) ui.webContents.focus();
+  if (['palette', 'modal', 'extmenu', 'siteinfo', 'dlmenu', 'bmpop', 'zoompop', 'castpop'].includes(mode)) ui.webContents.focus();
   else if (!keepFocus) focusPage();   // keepFocus: an extension popup just opened and must keep focus
   push();
 }
@@ -2393,6 +2393,7 @@ function pageContextMenu(tab, wc, p) {
   if (p.mediaType === 'video' || p.mediaType === 'audio') {
     const kind = p.mediaType;
     if (kind === 'video') m.push({ label: 'Picture in picture', click: () => pipAt(wc, p) });
+    if (kind === 'video' && /^https?:/i.test(tab.url)) m.push({ label: 'Cast to TV…', click: () => openCast(tab) });
     // Saving: only for a plain file. Most big sites stream video in pieces (a "blob:" source),
     // which can't be saved as one file.
     if (/^https?:/i.test(p.srcURL || '')) {
@@ -2437,6 +2438,7 @@ function pageContextMenu(tab, wc, p) {
     if (/^https?:/i.test(tab.url) && !tab.side) m.push({ label: 'Summarize this page with AI', click: () => { useTab(tab); openAI('summarize'); } });
     if (/^https?:/i.test(tab.url)) m.push({ label: `Translate page to ${String(settings.translateTo || 'English').slice(0, 30)} (AI)`, click: () => translatePage(tab) });
     if (/^https?:/i.test(tab.url) && p.mediaType !== 'video') m.push({ label: 'Picture in picture', click: () => pipAny(wc, p) });
+    if (/^https?:/i.test(tab.url)) m.push({ label: 'Cast to TV…', click: () => openCast(tab) });
     if (/^https?:/i.test(tab.url)) m.push({ label: 'Hide an element…', click: () => { useTab(tab); startZap(tab, { x: p.x, y: p.y }); } });
     sep();
   }
@@ -2517,6 +2519,7 @@ function tabContextMenu(id) {
     })) },
     { label: 'Copy link', click: () => copyLinkToast(tab.url) },
     { label: 'Picture in picture', enabled: !!wc && /^https?:/i.test(tab.url), click: () => pipAny(wc) },
+    { label: 'Cast to TV…', enabled: !!wc && /^https?:/i.test(tab.url), click: () => openCast(tab) },
     { type: 'separator' },
     ...(splitOf(id) ? [{ label: 'Close split view', click: () => unsplit(id) }]
       : tab.pinned ? [] : [
@@ -3777,6 +3780,173 @@ async function translatePage(tab) {
     await run(trCode.finish(`Translated to ${lang.replace(/[<>&"]/g, '')} <small>· ${m.model.replace(/[<>&]/g, '')}</small>`));
   } finally { trRunning.delete(wc.id); }
 }
+// ---------------------------------------------------------------------------
+// Cast to a TV (Chromecast / Google TV): the video in a tab plays on the TV, Drift is the remote.
+// ---------------------------------------------------------------------------
+const castLib = require('./cast.js');
+const castSt = { scanning: false, devices: [], scanned: false, s: null };   // s: the cast in progress
+let castSession = null, castRelay = null, castPoll = 0;
+function sendCast() {
+  const s = castSt.s;
+  const out = { scanning: castSt.scanning, scanned: castSt.scanned, devices: castSt.devices.map(d => ({ id: d.id, name: d.name, model: d.model })),
+    s: s && { dev: s.dev.name, devId: s.dev.id, title: s.title, state: s.state, time: s.time, duration: s.duration, live: s.live, at: s.at, volume: s.volume, muted: s.muted, error: s.error, tabId: s.tabId } };
+  for (const c of windows) try { if (c.ui && !c.ui.webContents.isDestroyed()) c.ui.webContents.send('cast', out); } catch {}
+}
+async function castScan() {
+  if (castSt.scanning) return;
+  castSt.scanning = true; sendCast();
+  const add = (d) => { const i = castSt.devices.findIndex(x => x.id === d.id); if (i >= 0) castSt.devices[i] = d; else castSt.devices.push(d); sendCast(); };
+  try { await castLib.discover(4500, add); } catch {}
+  castSt.scanning = false; castSt.scanned = true; sendCast();
+}
+function openCast(tab) {
+  if (tab) useTab(tab);
+  if (ui && !ui.webContents.isDestroyed()) ui.webContents.send('cast-open');
+  if (!castSt.scanning && (!castSt.devices.length || !castSt.s)) castScan();
+}
+// Fetch like the tab would: its user agent and its cookies for each site, plus the page as the
+// referer (Chromium's own networking won't send a chosen referer, which video sites often check).
+const fetchVia = (ses) => (u, o = {}) => castLib.httpGet(u, {
+  method: o.method || 'GET',
+  headers: { 'user-agent': ses.getUserAgent(), 'accept-language': 'en-US,en;q=0.9', ...(o.headers || {}) },
+  perHop: async (url) => { const list = await ses.cookies.get({ url }); return list.length ? { cookie: list.map(c => `${c.name}=${c.value}`).join('; ') } : {}; },
+});
+// What to send to the TV from this tab: a plain video the page plays, or the stream it loaded.
+async function castableOf(tab) {
+  const wc = tab.view.webContents, ses = wc.session;
+  if (/(^|\.)youtube\.com$|(^|\.)youtu\.be$/i.test(hostOf(tab.url))) return { error: "YouTube can't be cast from Drift yet. Use the YouTube app on the TV" };
+  let page = null; const seen = [];
+  for (const f of wc.mainFrame.framesInSubtree) {
+    try {
+      // The frame's best video, and the stream playlists it has loaded (the browser's own list of
+      // what each page fetched, so nothing has to watch the network).
+      const r = await f.executeJavaScript(`(() => {
+        const v = [...document.querySelectorAll('video')].map(v => ({ src: v.currentSrc || v.src || '', t: v.currentTime || 0, d: v.duration || 0, a: (v.clientWidth * v.clientHeight) || 0, p: !v.paused, poster: v.poster || '' })).sort((a, b) => (b.p - a.p) || (b.a - a.a))[0] || null;
+        let res = []; try { res = performance.getEntriesByType('resource').map(e => e.name).filter(n => /^https?:/.test(n) && /\\.(m3u8|mpd)(\\?|$)/i.test(n)); } catch {}
+        return { v, res };
+      })()`);
+      if (!r) continue;
+      let origin = ''; try { origin = new URL(f.url).origin; } catch {}
+      for (const u of r.res) {
+        const i = seen.findIndex(x => x.url === u); if (i >= 0) seen.splice(i, 1);
+        seen.push({ url: u, kind: /\.mpd(\?|$)/i.test(u) ? 'dash' : 'hls', referer: f.url, origin });
+      }
+      if (r.v && (!page || (r.v.p && !page.p) || r.v.a > page.a)) page = { ...r.v, frameUrl: f.url };
+    } catch {}
+  }
+  const title = (tab.title || '').slice(0, 120) || hostOf(tab.url);
+  const base = { title, poster: page && /^https?:/.test(page.poster) ? page.poster : '', time: page && isFinite(page.t) ? page.t : 0 };
+  if (page && /^https?:/i.test(page.src) && !/\.m3u8|\.mpd/i.test(page.src)) {
+    return { ...base, url: page.src, kind: 'file', live: !isFinite(page.d), referer: page.frameUrl || tab.url, origin: '' };
+  }
+  seen.reverse();   // newest first
+  const hls = seen.filter(x => x.kind === 'hls'), dash = seen.find(x => x.kind === 'dash'), file = null;
+  if (page && /^https?:/i.test(page.src) && /\.m3u8/i.test(page.src) && !hls.some(x => x.url === page.src)) hls.unshift({ url: page.src, referer: page.frameUrl || tab.url, origin: '' });
+  if (hls.length) {
+    // The "master" playlist (all the qualities) if it was loaded, else the newest one.
+    const fetch1 = fetchVia(ses);   // (the page's own referer and origin, as its player sent them)
+    let pick = null, text = '';
+    for (const c of hls.slice(0, 5)) {
+      try {
+        const r = await fetch1(c.url, { headers: { referer: c.referer || tab.url, ...(c.origin ? { origin: c.origin } : {}) } });
+        const t = await r.text(); if (!/^\s*#EXTM3U/.test(t)) continue;
+        if (/#EXT-X-STREAM-INF/.test(t)) { pick = { ...c, finalUrl: r.url || c.url }; text = t; break; }
+        if (!pick) { pick = { ...c, finalUrl: r.url || c.url }; text = t; }
+      } catch {}
+    }
+    if (pick) {
+      if (/METHOD=SAMPLE-AES|com\.widevine|streamingkeydelivery|com\.microsoft\.playready/i.test(text)) return { error: "This video is copy-protected, so it can only play on this PC" };
+      let mediaText = text;
+      if (/#EXT-X-STREAM-INF/.test(text)) {
+        const first = text.split(/\r?\n/).find(l => l.trim() && !l.startsWith('#'));
+        try { const r = await fetch1(new URL(first.trim(), pick.finalUrl).href, { headers: { referer: pick.referer || tab.url } }); mediaText = await r.text(); } catch {}
+        if (/METHOD=SAMPLE-AES|com\.widevine|streamingkeydelivery/i.test(mediaText)) return { error: "This video is copy-protected, so it can only play on this PC" };
+      }
+      const fmp4 = /#EXT-X-MAP|\.(m4s|mp4|cmfv)(\?|$)/im.test(mediaText);
+      return { ...base, url: pick.url, kind: 'hls', live: !/#EXT-X-ENDLIST/.test(mediaText) && !/#EXT-X-PLAYLIST-TYPE:VOD/.test(mediaText), fmp4, referer: pick.referer, origin: pick.origin };
+    }
+  }
+  if (dash) return { ...base, url: dash.url, kind: 'dash', live: false, referer: dash.referer, origin: dash.origin };
+  if (file) return { ...base, url: file.url, kind: 'file', live: false, referer: file.referer, origin: file.origin };
+  if (page && page.src.startsWith('blob:')) return { error: "Couldn't find this video's stream. Reload the page, start the video, then try again" };
+  return { error: 'No video on this page to cast. Start the video first' };
+}
+function castUpdate(patch) { if (castSt.s) { Object.assign(castSt.s, patch); sendCast(); } }
+function castEnd(msg) {
+  clearInterval(castPoll); castPoll = 0;
+  const s = castSession; castSession = null;
+  if (s) s.removeAllListeners();
+  if (castRelay) { castRelay.ctx = null; castRelay.stop(); castRelay = null; }
+  castSt.s = null; sendCast();
+  if (msg) uiToast(msg, 'cast', 5000);
+}
+async function castTo(devId, tab) {
+  tab = tab || activeTab();
+  const dev = castSt.devices.find(d => d.id === devId);
+  if (!dev || !tab || !tab.view || !/^https?:/i.test(tab.url)) return;
+  if (castSession) { const old = castSession; castEnd(); old.stop(); }
+  castSt.s = { dev, tabId: tab.id, title: tab.title || hostOf(tab.url), state: 'connecting', time: 0, duration: 0, live: false, at: Date.now(), volume: null, muted: false, error: '' };
+  sendCast();
+  const fail = (msg) => { if (castSt.s && castSt.s.dev === dev) { castUpdate({ state: 'error', error: msg }); const s = castSession; castSession = null; if (s) { s.removeAllListeners(); s.close('failed'); } if (castRelay) { castRelay.stop(); castRelay = null; } } };
+  const what = await castableOf(tab);
+  if (!castSt.s || castSt.s.dev !== dev) return;
+  if (what.error) return fail(what.error);
+  castUpdate({ title: what.title, live: what.live });
+  const s = new castLib.CastSession(dev); castSession = s;
+  s.on('volume', (v) => castUpdate({ volume: v.level, muted: !!v.muted }));
+  s.on('status', (st) => {
+    if (castSession !== s) return;
+    const p = { at: Date.now() };
+    if (typeof st.currentTime === 'number') p.time = st.currentTime;
+    if (st.media && typeof st.media.duration === 'number' && st.media.duration > 0) p.duration = st.media.duration;
+    if (st.playerState) p.state = st.playerState;
+    if (st.playerState === 'IDLE' && st.idleReason) {
+      if (st.idleReason === 'FINISHED') { castEnd('Finished playing on ' + dev.name); s.stop(); return; }
+      if (st.idleReason === 'ERROR') { fail("The TV couldn't keep playing this video"); return; }
+      if (st.idleReason === 'CANCELLED' || st.idleReason === 'INTERRUPTED') { castEnd(); s.close('ended'); return; }
+    }
+    castUpdate(p);
+  });
+  s.on('closed', (why) => { if (castSession === s) castEnd(why === 'stopped' ? '' : `Casting stopped: ${why}`); });
+  try {
+    await s.connect();
+    if (castSession !== s) return s.close('replaced');
+    castRelay = new castLib.Relay(fetchVia(tab.view.webContents.session));
+    castRelay.ctx = { referer: what.referer || tab.url, origin: what.origin || '' };
+    await castRelay.start();
+    await s.launch();
+    if (castSession !== s) return;
+    const lanIp = castLib.lanIpFor(dev.host);
+    const media = {
+      contentId: castRelay.urlFor(what.url, lanIp),
+      contentType: what.kind === 'hls' ? 'application/x-mpegurl' : what.kind === 'dash' ? 'application/dash+xml' : (/\.webm(\?|$)/i.test(what.url) ? 'video/webm' : 'video/mp4'),
+      streamType: what.live ? 'LIVE' : 'BUFFERED',
+      metadata: { metadataType: 0, title: what.title, subtitle: hostOf(tab.url), images: what.poster ? [{ url: what.poster }] : [] },
+    };
+    if (what.kind === 'hls' && what.fmp4) { media.hlsSegmentFormat = 'fmp4'; media.hlsVideoSegmentFormat = 'fmp4'; }
+    const st = await s.load(media, !what.live && what.time > 5 ? what.time : 0);
+    if (castSession !== s) return;
+    castUpdate({ state: st.playerState || 'BUFFERING', time: st.currentTime || 0, at: Date.now() });
+    // The tab stops playing here: the TV has it now.
+    for (const f of tab.view.webContents.mainFrame.framesInSubtree) f.executeJavaScript("document.querySelectorAll('video,audio').forEach(v => v.pause())").catch(() => {});
+    clearInterval(castPoll);
+    castPoll = setInterval(() => { if (castSession === s) s.status(); }, 5000);
+  } catch (e) {
+    const msg = String(e && e.message || '');
+    if (castSession === s) fail(/EHOSTUNREACH|ECONNREFUSED|ETIMEDOUT|ENETUNREACH|Couldn't reach/i.test(msg) ? `Couldn't reach ${dev.name}. Make sure it's on and on the same Wi-Fi`
+      : /EADDR|EACCES/i.test(msg) ? "Drift couldn't share the video on your network. Allow Drift through Windows Firewall (private networks) and try again"
+      : msg || "Couldn't cast");
+  }
+}
+function castCmd(cmd, val) {
+  const s = castSession; if (!s) { if (cmd === 'stop' || cmd === 'dismiss') { castSt.s = null; sendCast(); } return; }
+  if (cmd === 'play') { castUpdate({ state: 'PLAYING', at: Date.now() }); s.media('PLAY'); }
+  else if (cmd === 'pause') { const c = castSt.s; castUpdate({ state: 'PAUSED', time: c.time + (c.state === 'PLAYING' ? (Date.now() - c.at) / 1000 : 0), at: Date.now() }); s.media('PAUSE'); }
+  else if (cmd === 'seek' && isFinite(val)) { castUpdate({ time: Math.max(0, +val), at: Date.now() }); s.media('SEEK', { currentTime: Math.max(0, +val) }); }
+  else if (cmd === 'volume' && isFinite(val)) { castUpdate({ volume: Math.max(0, Math.min(1, +val)), muted: false }); s.volume({ level: Math.max(0, Math.min(1, +val)) }); }
+  else if (cmd === 'mute') { const m = !(castSt.s && castSt.s.muted); castUpdate({ muted: m }); s.volume({ muted: m }); }
+  else if (cmd === 'stop') { castEnd(); s.stop(); }
+}
 // Open the AI panel (in this window's side panel), optionally starting a task on the page:
 // 'summarize', or 'ask' with the selected text.
 function openAI(task, text) {
@@ -4769,6 +4939,12 @@ function setupIPC() {
     else delete store[key];
     if (store === settings.permissions) saveSettings();
   });
+  // Casting (the cast popover).
+  on('cast-scan', () => castScan());
+  on('cast-to', (devId) => { if (typeof devId === 'string') castTo(devId, activeTab()); });
+  on('cast-cmd', (cmd, val) => { if (typeof cmd === 'string') castCmd(cmd, val); });
+  on('cast-sync', () => sendCast());
+  on('cast-tab', () => { const t = castSt.s && findTab(castSt.s.tabId); if (t) { const c = ctxOfTab(t); if (c) { useWin(c); activate(t.id); c.win.focus(); } } });
   // Show everything you hid on this site again.
   on('zap-undo', (host, sels) => {
     if (typeof host !== 'string' || !Array.isArray(sels) || !settings.zaps[host]) return;
@@ -5313,6 +5489,7 @@ if (!app.requestSingleInstanceLock(launchRequest)) {
 
   app.on('window-all-closed', () => app.quit());
   app.on('before-quit', () => {
+    if (castSession) { try { castSession.stop(); } catch {} }
     if (!quitting) flushSaves();
     if (windows.length && !quitting) { writeJSONSync('session.json', sessionSnapshot()); writeJSONSync('settings.json', settings); }
     if (!quitting) writeJSONSync('essentials.json', essentials);

@@ -61,7 +61,7 @@ function render() {
   b.classList.toggle('light', !S.dark);
   b.classList.toggle('hidden-bar', S.settings.sidebarHidden);
   b.classList.toggle('docked', !S.settings.sidebarHidden);
-  b.classList.toggle('over-palette', ['palette', 'modal', 'extmenu', 'siteinfo', 'dlmenu', 'railpeek', 'bmpop', 'zoompop'].includes(S.overlay));
+  b.classList.toggle('over-palette', ['palette', 'modal', 'extmenu', 'siteinfo', 'dlmenu', 'railpeek', 'bmpop', 'zoompop', 'castpop'].includes(S.overlay));
   b.classList.toggle('rail', !!S.settings.sidebarRail && !S.settings.sidebarHidden);
   b.classList.toggle('bm-on', !!S.settings.titleBar && !!S.settings.bookmarksBar);
   b.classList.toggle('over-peek', S.overlay === 'peek');
@@ -69,7 +69,7 @@ function render() {
   // Compact mode: the toolbar shows while the mouse is at the top edge, and stays while one of
   // its menus is open.
   const wasTop = b.classList.contains('over-top');
-  b.classList.toggle('over-top', !!S.settings.compact && ['peektop', 'extmenu', 'dlmenu', 'bmpop', 'siteinfo', 'zoompop'].includes(S.overlay));
+  b.classList.toggle('over-top', !!S.settings.compact && ['peektop', 'extmenu', 'dlmenu', 'bmpop', 'siteinfo', 'zoompop', 'castpop'].includes(S.overlay));
   if (!wasTop && b.classList.contains('over-top')) requestAnimationFrame(() => renderBookmarks());   // it measured nothing while hidden
   b.classList.toggle('no-titlebar', !S.settings.titleBar);
   renderSide();
@@ -148,6 +148,7 @@ function render() {
   if (S.overlay !== 'siteinfo') $('#siteinfo-wrap').hidden = true;
   if (S.overlay !== 'dlmenu') $('#dlmenu-wrap').hidden = true; else renderDlMenu();
   if (S.overlay !== 'zoompop') $('#zoompop-wrap').hidden = true;
+  if (S.overlay !== 'castpop' && !$('#castpop-wrap').hidden && !pendingOverlay) closeCastPop(true);
   if (S.overlay !== 'railpeek' && document.body.classList.contains('rail-open') && !(pendingOverlay && pendingOverlay.mode === 'railpeek')) instantRail(() => document.body.classList.remove('rail-open', 'rail-in', 'rail-closing'));
   if (S.overlay !== 'bmpop') closeBmPopups(true);
   if (panel === 'passwords') renderPasswords();
@@ -225,7 +226,7 @@ function placeActions() {
 
 function applyHole() {
   const w = $('#wash');
-  if (S && ['palette', 'modal', 'extmenu', 'siteinfo', 'dlmenu', 'railpeek', 'bmpop', 'zoompop'].includes(S.overlay)) {
+  if (S && ['palette', 'modal', 'extmenu', 'siteinfo', 'dlmenu', 'railpeek', 'bmpop', 'zoompop', 'castpop'].includes(S.overlay)) {
     const { x, y, width: cw, height: ch } = content;
     w.style.clipPath = `polygon(evenodd, 0 0, 100% 0, 100% 100%, 0 100%, 0 0, ${x}px ${y}px, ${x + cw}px ${y}px, ${x + cw}px ${y + ch}px, ${x}px ${y + ch}px, ${x}px ${y}px)`;
   } else w.style.clipPath = '';
@@ -690,6 +691,7 @@ function overlayVisible(mode) {
     case 'dlmenu': return !$('#dlmenu-wrap').hidden;
     case 'bmpop': return !$('#bmpop-wrap').hidden;
     case 'zoompop': return !$('#zoompop-wrap').hidden;
+    case 'castpop': return !$('#castpop-wrap').hidden;
     default: return true;   // palette, modal and peek are drawn straight from the state
   }
 }
@@ -2144,4 +2146,96 @@ document.addEventListener('drop', (e) => {
   e.preventDefault();
   const paths = [...e.dataTransfer.files].map(f => window.drift.pathForFile(f)).filter(Boolean);
   if (paths.length) send('open-files', paths);
+});
+
+// ---------------------------------------------------------------------- cast to TV
+// The popover under the cast button: pick a TV, then it's the remote (play, seek, volume, stop).
+let castS = { devices: [], s: null }, castTick = 0, castDrag = false;
+const castFmt = (t) => { t = Math.max(0, Math.floor(t || 0)); const h = Math.floor(t / 3600), m = Math.floor(t / 60) % 60, s = t % 60; return (h ? h + ':' + String(m).padStart(2, '0') : m) + ':' + String(s).padStart(2, '0'); };
+function castNow() { const s = castS.s; if (!s) return 0; const t = s.time + (s.state === 'PLAYING' ? (Date.now() - s.at) / 1000 : 0); return s.duration ? Math.min(t, s.duration) : t; }
+function castButton() {
+  const b = $('#tb-cast'), s = castS.s;
+  b.hidden = !s && $('#castpop-wrap').hidden;
+  b.classList.toggle('on', !!s && s.state !== 'error');
+  b.title = s ? (s.state === 'error' ? 'Casting failed' : `Casting to ${s.dev}`) : 'Cast to TV';
+}
+window.drift.on('cast', (c) => { castS = c || { devices: [], s: null }; castButton(); if (!$('#castpop-wrap').hidden && !castDrag) renderCast(); });
+window.drift.on('cast-open', () => openCastPop());
+function openCastPop() {
+  $('#castpop-wrap').hidden = false; castButton();
+  const r = $('#tb-cast').getBoundingClientRect(), m = $('#castpop');
+  const right = r.width ? r.right : window.innerWidth - 120, bottom = r.width ? r.bottom : 44;
+  m.style.left = Math.max(8, Math.min(window.innerWidth - 328, right - 300)) + 'px';
+  m.style.top = (bottom + 8) + 'px';
+  renderCast(); send('cast-sync');
+  raiseOverlay('castpop');
+  clearInterval(castTick); castTick = setInterval(castTime, 500);
+  setTimeout(() => m.focus({ preventScroll: true }), 0);
+}
+function closeCastPop(quiet) {
+  clearInterval(castTick); castTick = 0;
+  $('#castpop-wrap').hidden = true; castButton();
+  if (quiet) return;
+  pendingOverlay = null; if (S && S.overlay === 'castpop') send('overlay', null);
+}
+function castTime() {
+  const s = castS.s; if (!s || castDrag) return;
+  const t = $('#cp-time'), sk = $('#cp-seek');
+  if (t) t.textContent = s.live ? 'Live' : castFmt(castNow()) + (s.duration ? ' / ' + castFmt(s.duration) : '');
+  if (sk) sk.value = castNow();
+}
+function renderCast() {
+  const m = $('#castpop'), s = castS.s;
+  if (s) {
+    const busy = s.state === 'connecting' || s.state === 'BUFFERING' || s.state === 'LOADING';
+    const what = s.state === 'error' ? `<div class="cp-err">${esc(s.error || "Couldn't cast")}</div>`
+      : s.state === 'connecting' ? '<div class="cp-sub">Connecting…</div>'
+      : `<div class="cp-row">
+          <button class="cp-play" id="cp-play" title="${s.state === 'PLAYING' ? 'Pause' : 'Play'} (Space)">${icon(s.state === 'PLAYING' ? 'pause' : 'play', 18)}</button>
+          <span class="cp-time" id="cp-time"></span>${busy ? '<span class="cp-spin"></span>' : ''}
+        </div>
+        ${!s.live && s.duration ? `<input type="range" id="cp-seek" class="cp-range" min="0" max="${s.duration}" step="1" value="${castNow()}">` : ''}
+        <div class="cp-row cp-vol">
+          <button class="cp-ic" id="cp-mute" title="${s.muted ? 'Unmute' : 'Mute'} the TV">${icon(s.muted ? 'muted' : 'sound', 16)}</button>
+          <input type="range" id="cp-vol" class="cp-range" min="0" max="1" step="0.02" value="${s.muted ? 0 : (s.volume ?? 0.5)}" ${s.volume == null ? 'disabled' : ''}>
+        </div>`;
+    m.innerHTML = `<div class="cp-head">${icon('cast', 16)}<span>${s.state === 'error' ? 'Cast to' : 'Casting to'} <b>${esc(s.dev)}</b></span></div>
+      <div class="cp-title" title="${esc(s.title)}">${esc(s.title)}</div>
+      ${what}
+      <div class="cp-foot">
+        ${s.state === 'error' ? `<button class="cp-btn" id="cp-retry">Try again</button><button class="cp-btn ghost" id="cp-close">Close</button>`
+          : `<button class="cp-btn ghost" id="cp-tab">Go to tab</button><button class="cp-btn" id="cp-stop">Stop casting</button>`}
+      </div>`;
+    castTime();
+    const on = (id, f) => { const e = $('#' + id); if (e) e.onclick = f; };
+    on('cp-play', () => send('cast-cmd', s.state === 'PLAYING' ? 'pause' : 'play'));
+    on('cp-mute', () => send('cast-cmd', 'mute'));
+    on('cp-stop', () => { send('cast-cmd', 'stop'); });
+    on('cp-tab', () => { send('cast-tab'); closeCastPop(); });
+    on('cp-retry', () => send('cast-to', s.devId));
+    on('cp-close', () => { send('cast-cmd', 'dismiss'); closeCastPop(); });
+    const seek = $('#cp-seek'), vol = $('#cp-vol');
+    if (seek) {
+      seek.oninput = () => { castDrag = true; $('#cp-time').textContent = castFmt(+seek.value) + ' / ' + castFmt(s.duration); };
+      seek.onchange = () => { castDrag = false; send('cast-cmd', 'seek', +seek.value); };
+    }
+    if (vol) { vol.oninput = () => { castDrag = true; }; vol.onchange = () => { castDrag = false; send('cast-cmd', 'volume', +vol.value); }; }
+    return;
+  }
+  const devs = castS.devices || [];
+  m.innerHTML = `<div class="cp-head">${icon('cast', 16)}<span>Cast this tab's video to</span></div>
+    <div class="cp-list">${devs.map(d => `<button class="cp-dev" data-id="${esc(d.id)}"><span class="cp-dev-ic">${icon('desktop', 16)}</span><span><b>${esc(d.name)}</b>${d.model ? `<small>${esc(d.model)}</small>` : ''}</span></button>`).join('')}</div>
+    ${castS.scanning ? '<div class="cp-sub"><span class="cp-spin"></span>Looking for TVs on your network…</div>'
+      : !devs.length ? '<div class="cp-sub">No TVs found. The TV (Chromecast or Google TV) and this PC need to be on the same Wi-Fi.</div>' : ''}
+    <div class="cp-foot"><span class="cp-note">Copy-protected video (Netflix, Disney+) can't be cast.</span>${castS.scanning ? '' : '<button class="cp-btn ghost" id="cp-scan">Search again</button>'}</div>`;
+  m.querySelectorAll('.cp-dev').forEach(b => b.onclick = () => send('cast-to', b.dataset.id));
+  const sc = $('#cp-scan'); if (sc) sc.onclick = () => send('cast-scan');
+}
+$('#tb-cast').onclick = (e) => { e.stopPropagation(); if (!$('#castpop-wrap').hidden) closeCastPop(); else openCastPop(); };
+$('#castpop-wrap').addEventListener('mousedown', (e) => { if (e.target.id === 'castpop-wrap') closeCastPop(); });
+document.addEventListener('pointerup', () => { if (castDrag) setTimeout(() => { castDrag = false; }, 0); });
+document.addEventListener('keydown', (e) => {
+  if ($('#castpop-wrap').hidden) return;
+  if (e.key === 'Escape') closeCastPop();
+  else if (e.key === ' ' && castS.s && !e.target.closest('input')) { e.preventDefault(); send('cast-cmd', castS.s.state === 'PLAYING' ? 'pause' : 'play'); }
 });

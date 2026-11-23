@@ -1,6 +1,10 @@
 // What's new in each release, shown on the What's new page (drift://whatsnew) after an update.
 // Newest first. Kinds: new, faster, fixed, changed. Written for people using Drift.
 module.exports = [
+  { version: '1.31.0', date: '2026-11-23', items: [
+    ['new', 'Cast to TV: right-click a page, a video or a tab and choose "Cast to TV…" to send the video to a Chromecast or Google TV on your Wi-Fi. Drift becomes the remote: play, pause, seek, TV volume and Stop, from the cast button at the top. Live streams work too, since Drift passes the stream to the TV the way the site expects. The first time, allow Drift through Windows Firewall on private networks.'],
+    ['changed', "Casting can't send copy-protected video (Netflix, Disney+ and the like), and YouTube isn't supported yet."],
+  ] },
   { version: '1.30.0', date: '2026-11-23', items: [
     ['new', 'Translate page with AI: right-click a page and choose "Translate page". Your local Ollama model rewrites the text in place, starting with what is on screen. "Show original" flips back and forth, and Stop halts it. Pick the language in Settings → AI.'],
     ['new', 'Sort downloads: turn it on in Settings → Downloads and videos, pictures, music, documents, installers and ZIPs each go into their own folder inside Downloads.'],
