@@ -1305,7 +1305,8 @@ function setSidePanel(open, url, opts = {}) {
   cur.side = cur.side || { open: false, tab: null };
   if (url !== undefined) {
     url = String(url || '').trim();
-    const ai = /^drift:\/\/ai\//.test(url);   // the AI panel: shown, but not saved as your side panel site
+    // The AI panel and extensions' panels: shown, but not saved as your side panel site.
+    const ai = /^drift:\/\/ai\//.test(url) || /^chrome-extension:\/\/[a-p]{32}\//.test(url);
     if (url && !ai && !/^https?:\/\//i.test(url)) url = /^([^\s/]+\.[^\s/]+|localhost|[^\s/]+:\d+)(\/\S*)?$/i.test(url) ? 'https://' + url : '';
     if (url) {
       if (!cur.private && !ai && !opts.temp) { settings.sidePanel.url = url; saveSettings(); }
@@ -3162,8 +3163,76 @@ function finishRemovals() {
   if ((settings.removedExtensions || []).length !== left.length) { settings.removedExtensions = left; saveSettings(); }
 }
 
+// ---------------------------------------------------------------------------
+// Manifest V3 background workers can't get the browser APIs Drift implements (Electron runs no
+// preload in extension service workers), so extensions that need them (those with a side
+// panel) get a small helper: drift-shim.js runs before their worker and passes those calls to a
+// hidden page of the same extension (drift-bridge.html), where the APIs work.
+// ---------------------------------------------------------------------------
+const SW_FILES = { 'drift-shim.js': 'shim.js', 'drift-bridge.html': 'bridge.html', 'drift-bridge.js': 'bridge.js' };
+function needsSwShim(m) {
+  return m && m.manifest_version === 3 && m.background && typeof m.background.service_worker === 'string'
+    && ((m.permissions || []).includes('sidePanel') || !!m.side_panel);
+}
+// Adds (or refreshes) the helper in an extension folder. Returns true if the manifest changed.
+function prepareSwShim(dir) {
+  const mf = path.join(dir, 'manifest.json');
+  let m; try { m = JSON.parse(fs.readFileSync(mf, 'utf8').replace(/^\uFEFF/, '')); } catch { return false; }
+  if (!needsSwShim(m)) return false;
+  try {
+    for (const [to, from] of Object.entries(SW_FILES)) {
+      const src = fs.readFileSync(path.join(__dirname, 'ext-sw', from));
+      const dst = path.join(dir, to);
+      let same = false; try { same = fs.readFileSync(dst).equals(src); } catch {}
+      if (!same) fs.writeFileSync(dst, src);
+    }
+    if (m.background.service_worker === 'drift-sw.js') return false;
+    const orig = m.background.service_worker.replace(/^\/+/, '');
+    const isModule = m.background.type === 'module';
+    fs.writeFileSync(path.join(dir, 'drift-sw.js'), isModule
+      ? `import './drift-shim.js';\nimport './${orig}';\n`
+      : `importScripts('drift-shim.js', ${JSON.stringify(orig)});\n`);
+    fs.writeFileSync(path.join(dir, 'drift-sw.json'), JSON.stringify({ original: orig }));
+    m.background.service_worker = 'drift-sw.js';
+    fs.writeFileSync(mf, JSON.stringify(m, null, 2));
+    console.log('[ext] added the worker helper to', dir);
+    return true;
+  } catch (e) { console.error('[ext] worker helper', dir, e.message); return false; }
+}
+function prepareAllSwShims() {
+  const root = path.join(userData(), 'Extensions');
+  let ids = []; try { ids = fs.readdirSync(root); } catch {}
+  for (const id of ids) {
+    let vers = []; try { vers = fs.readdirSync(path.join(root, id)); } catch {}
+    for (const v of vers) prepareSwShim(path.join(root, id, v));
+  }
+  for (const dir of settings.unpacked || []) prepareSwShim(dir);
+}
+const swBridges = new Map();   // extension id -> hidden helper page
+function startSwBridge(ext) {
+  if (!ext || swBridges.has(ext.id) || !ext.manifest || ext.manifest.background?.service_worker !== 'drift-sw.js') return;
+  const v = new WebContentsView({ webPreferences: { session: session.defaultSession, sandbox: true, contextIsolation: true } });
+  swBridges.set(ext.id, v);
+  const wc = v.webContents;
+  wc.on('render-process-gone', () => { stopSwBridge(ext.id); setTimeout(() => { const e = extApi().getExtension(ext.id); if (e) startSwBridge(e); }, 3000); });
+  wc.loadURL(`chrome-extension://${ext.id}/drift-bridge.html`).catch(() => {});
+}
+function stopSwBridge(id) { const v = swBridges.get(id); swBridges.delete(id); if (v) try { v.webContents.close(); } catch {} }
+async function onExtLoadedSw(ext) {
+  if (!ext) return;
+  if (needsSwShim(ext.manifest) && prepareSwShim(ext.path)) {
+    // Just installed: load it again with the helper in place.
+    setTimeout(async () => {
+      try { extApi().removeExtension(ext.id); const e2 = await extApi().loadExtension(ext.path, { allowFileAccess: true }); startSwBridge(e2); await startWorker(e2); } catch (e) { console.error('[ext] reload with helper', e.message); }
+    }, 50);
+    return;
+  }
+  startSwBridge(ext);
+}
+
 async function setupExtensions(ses) {
   try { tidyExtensionData(); } catch (e) { console.error('[ext] housekeeping', e.message); }
+  try { prepareAllSwShims(); } catch (e) { console.error('[ext] worker helpers', e.message); }
   try { finishRemovals(); } catch (e) { console.error('[ext] removals', e.message); }
   extensions = new ElectronChromeExtensions({
     session: ses,
@@ -3201,8 +3270,11 @@ async function setupExtensions(ses) {
     },
   });
   ElectronChromeExtensions.handleCRXProtocol(ses);
+  setupExtSidePanels();
   extApi().on('extension-loaded', sendExtensions);
   extApi().on('extension-unloaded', sendExtensions);
+  extApi().on('extension-loaded', (_e, ext) => onExtLoadedSw(ext));
+  extApi().on('extension-unloaded', (_e, ext) => { if (ext) stopSwBridge(ext.id); });
 
   try {
     await installChromeWebStore({
@@ -3223,6 +3295,48 @@ async function setupExtensions(ses) {
     try { await startWorker(await extApi().loadExtension(dir, { allowFileAccess: true })); }
     catch (e) { console.error('[extensions] could not load', dir, e.message); }
   }
+}
+
+// chrome.sidePanel: an extension's panel opens in Drift's side panel (of the window it asks for).
+const extPanels = new Map();   // extension id -> { openOnClick, path, enabled }
+function extPanelOf(id) { if (!extPanels.has(id)) extPanels.set(id, { openOnClick: false, path: '', enabled: true }); return extPanels.get(id); }
+function extPanelUrl(id) {
+  const ext = extApi().getExtension(id); if (!ext) return '';
+  const p = extPanelOf(id).path || (ext.manifest.side_panel && ext.manifest.side_panel.default_path) || '';
+  return p ? `chrome-extension://${id}/${String(p).replace(/^\/+/, '')}` : '';
+}
+function openExtPanel(id, windowId, toggle) {
+  const url = extPanelUrl(id); if (!url || !extPanelOf(id).enabled) return false;
+  const c = (windowId && windows.find(x => x.win && !x.win.isDestroyed() && x.win.id === windowId)) || (lastFocused && windows.includes(lastFocused) ? lastFocused : windows[0]);
+  if (!c) return false;
+  useWin(c);
+  const st = c.side && c.side.open && c.side.tab;
+  if (toggle && st && st.url.startsWith(`chrome-extension://${id}/`)) { setSidePanel(false); return true; }
+  setSidePanel(true, url, { temp: true });
+  return true;
+}
+function setupExtSidePanels() {
+  const handle = extensions.ctx.router.apiHandler();
+  handle('sidePanel.setPanelBehavior', ({ extension }, b = {}) => { if (b && 'openPanelOnActionClick' in b) extPanelOf(extension.id).openOnClick = !!b.openPanelOnActionClick; });
+  handle('sidePanel.getPanelBehavior', ({ extension }) => ({ openPanelOnActionClick: extPanelOf(extension.id).openOnClick }));
+  handle('sidePanel.setOptions', ({ extension }, o = {}) => {
+    const p = extPanelOf(extension.id);
+    if (o && typeof o.path === 'string') p.path = o.path;
+    if (o && typeof o.enabled === 'boolean') { p.enabled = o.enabled; if (!o.enabled) for (const c of windows) { const t = c.side && c.side.open && c.side.tab; if (t && t.url.startsWith(`chrome-extension://${extension.id}/`)) { useWin(c); setSidePanel(false); } } }
+  });
+  handle('sidePanel.getOptions', ({ extension }) => { const p = extPanelOf(extension.id); return { path: extPanelUrl(extension.id).replace(/^chrome-extension:\/\/[^/]+\//, ''), enabled: p.enabled }; });
+  handle('sidePanel.open', ({ extension }, o = {}) => { openExtPanel(extension.id, o && o.windowId); });
+  handle('sidePanel.close', ({ extension }, o = {}) => {
+    for (const c of windows) { if (o && o.windowId && c.win && c.win.id !== o.windowId) continue; const t = c.side && c.side.open && c.side.tab; if (t && t.url.startsWith(`chrome-extension://${extension.id}/`)) { useWin(c); setSidePanel(false); } }
+  });
+  handle('sidePanel.getLayout', () => ({ side: 'right' }));
+  // The toolbar button opens the panel when the extension asked for that.
+  const ba = extensions.api.browserAction, click = ba.activateClick.bind(ba);
+  ba.activateClick = (d) => {
+    const p = d && extPanels.get(d.extensionId);
+    if (p && p.openOnClick && openExtPanel(d.extensionId, null, true)) return;
+    return click(d);
+  };
 }
 
 async function removeExtension(id) {

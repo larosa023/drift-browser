@@ -219,3 +219,37 @@ for (const variant of ['cjs/browser-action.js', 'esm/browser-action.mjs']) {
   fs.writeFileSync(f, s);
   console.log(`patch-deps: patched electron-chrome-extensions ${variant} (action icons)`);
 }
+
+// electron-chrome-extensions has no chrome.sidePanel (Chrome's side panel for extensions).
+// Extensions built around it (e.g. Hoopology Play Finder) failed on their first line and their
+// toolbar button did nothing. Drift shows an extension's panel in its own side panel; the calls
+// go to handlers registered in main.js (sidePanel.*).
+{
+  let s = fs.readFileSync(file, 'utf8');
+  const MARK6 = '/* drift: sidePanel v1 */';
+  if (!s.includes(MARK6)) {
+    const from = `      const apiDefinitions = {
+`;
+    if (!s.includes(from)) throw new Error('patch-deps: apiDefinitions changed; update scripts/patch-deps.js');
+    s = s.replace(from, `      const apiDefinitions = {
+        ${MARK6}
+        sidePanel: {
+          shouldInject: () => (manifest.permissions || []).includes("sidePanel") || !!manifest.side_panel,
+          factory: (base) => ({
+            ...base,
+            setPanelBehavior: invokeExtension2("sidePanel.setPanelBehavior"),
+            getPanelBehavior: invokeExtension2("sidePanel.getPanelBehavior"),
+            setOptions: invokeExtension2("sidePanel.setOptions"),
+            getOptions: invokeExtension2("sidePanel.getOptions"),
+            open: invokeExtension2("sidePanel.open"),
+            close: invokeExtension2("sidePanel.close"),
+            getLayout: invokeExtension2("sidePanel.getLayout"),
+            onOpened: new ExtensionEvent("sidePanel.onOpened"),
+            onClosed: new ExtensionEvent("sidePanel.onClosed")
+          })
+        },
+`);
+    fs.writeFileSync(file, s);
+    console.log('patch-deps: patched electron-chrome-extensions preload (sidePanel)');
+  }
+}
