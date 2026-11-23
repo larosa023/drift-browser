@@ -1,6 +1,10 @@
 // What's new in each release, shown on the What's new page (drift://whatsnew) after an update.
 // Newest first. Kinds: new, faster, fixed, changed. Written for people using Drift.
 module.exports = [
+  { version: '1.31.1', date: '2026-11-23', items: [
+    ['fixed', "Extensions with a side panel (like Hoopology Play Finder) work now: their toolbar button opens the extension's panel in Drift's side panel, and the panel can talk to the extension and your tabs."],
+    ['fixed', "Newer (Manifest V3) extensions that use a side panel can now also use windows, tabs and their toolbar button's click from their background script."],
+  ] },
   { version: '1.31.0', date: '2026-11-23', items: [
     ['new', 'Cast to TV: right-click a page, a video or a tab and choose "Cast to TV…" to send the video to a Chromecast or Google TV on your Wi-Fi. Drift becomes the remote: play, pause, seek, TV volume and Stop, from the cast button at the top. Live streams work too, since Drift passes the stream to the TV the way the site expects. The first time, allow Drift through Windows Firewall on private networks.'],
     ['changed', "Casting can't send copy-protected video (Netflix, Disney+ and the like), and YouTube isn't supported yet."],
