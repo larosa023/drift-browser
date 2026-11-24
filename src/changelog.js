@@ -1,6 +1,13 @@
 // What's new in each release, shown on the What's new page (drift://whatsnew) after an update.
 // Newest first. Kinds: new, faster, fixed, changed. Written for people using Drift.
 module.exports = [
+  { version: '1.32.0', date: '2026-11-24', items: [
+    ['new', 'Reader view: the book button in the address bar (or Ctrl+Alt+R) shows just the article, with text size, sans/serif, column width and light / sepia / dark. Click it again or press Esc to go back.'],
+    ['new', 'Screenshots: Ctrl+Shift+S copies what you see and saves it to Pictures\\Drift Screenshots. Right-click a page → Screenshot for the whole page.'],
+    ['new', 'QR code for a page: right-click → "QR code for this page" and scan it with your phone to open it there.'],
+    ['new', 'More ways to make Drift look your way (Settings → Appearance): floating pages with rounded corners, a see-through Windows 11 background, the font, tab size, and your own CSS for the interface.'],
+    ['changed', 'Chrome Web Store: the "Switch to Chrome to install extensions" banner is gone. Drift installs them.'],
+  ] },
   { version: '1.31.2', date: '2026-11-23', items: [
     ['new', 'Cast YouTube to your TV: "Cast to TV…" on a YouTube video opens it in the TV\'s YouTube app, at the same spot (and playlist), with Drift as the remote.'],
     ['changed', 'Speakers (Google Home / Nest speakers) are marked "Speaker · sound only" in the cast list and listed after TVs.'],

@@ -33,7 +33,9 @@ const TITLE_H = 40;       // height of the top toolbar (address bar, drag area, 
 const BOOKMARKS_H = 30;   // height of the bookmarks bar
 const RAIL_W = 52;        // width of the icon-only sidebar
 const SIDE_HEAD = 36;     // the side panel's header (title and buttons), drawn by the UI
-const RADIUS = 0;         // page corner radius (square: the page is flush with the window edges)
+// Floating pages: a gap around the page and rounded corners (Settings → Appearance). Flush: none.
+const floating = () => settings.pageStyle === 'floating' && !settings.compact;
+const pageRadius = () => (floating() && !htmlFullscreen ? Math.max(0, Math.min(20, Number(settings.corners) || 0)) : 0);
 const UI_DIR = path.join(__dirname, 'ui');
 const PAGES_DIR = path.join(__dirname, 'pages');
 const NEWTAB = 'drift://newtab/';
@@ -65,6 +67,12 @@ const DEFAULT_SETTINGS = {
   offerPasswords: true,
   zoomLevels: {},            // { host: zoom factor } for sites you zoomed
   zaps: {},                  // { host: [CSS selectors] } parts of sites you chose to hide (element zapper)
+  pageStyle: 'flush',        // 'flush': the page runs to the window's edges · 'floating': a gap and rounded corners around it
+  corners: 10,               // corner rounding of floating pages (px)
+  uiFont: 'default',         // the interface's font (see UI_FONTS in ui.js)
+  tabSize: 'normal',         // compact | normal | roomy: height of tabs in the sidebar
+  mica: false,               // Windows 11: see-through, blurred desktop behind the sidebar and toolbar
+  customCss: '',             // your own CSS for Drift's interface (Settings → Appearance → Advanced)
   dlSort: false,             // put downloads in Downloads\Videos, \Images, \Music, \Documents, \Installers, \Archives
   translateTo: 'English',    // the language "Translate page" turns pages into (with the AI panel's model)
   sidePanel: { url: '', width: 380 },   // the side panel's site and width (shared by windows)
@@ -686,7 +694,8 @@ function contentRect() {
   // The page runs to the window's right and bottom edges: one clean view, no frame around it
   // (less the side panel, when it's open).
   const sw = sideOpen() ? sideWidth(w - left) : 0;
-  return { x: left, y: top, width: Math.max(0, w - left - sw), height: Math.max(0, h - top) };
+  const m = floating() ? GAP : 0;   // floating: a gap to the right and below (and before the side panel)
+  return { x: left, y: top, width: Math.max(0, w - left - sw - m), height: Math.max(0, h - top - m) };
 }
 // Side panel (a site kept open beside the page: chat, a schedule, a feed). One per window,
 // on the right; its header is part of the UI, the site below it a page view of its own.
@@ -695,8 +704,8 @@ function sideWidth(avail) { return Math.round(Math.max(260, Math.min(settings.si
 function sideRect() {
   const [w, h] = win.getContentSize();
   const top = titleHeight() + bookmarksHeight();
-  const sw = sideWidth(w - sidebarLeft());
-  return { x: w - sw, y: top, width: sw, height: Math.max(0, h - top) };
+  const sw = sideWidth(w - sidebarLeft()), m = floating() ? GAP : 0;
+  return { x: w - sw, y: top, width: sw - m, height: Math.max(0, h - top - m) };
 }
 
 function titleHeight() {
@@ -811,7 +820,7 @@ function layout() {
     if (!p.tab.view) ensureView(p.tab);   // wake a sleeping split partner
     p.tab.lastActive = Date.now();
     p.tab.view.setBounds(p.rect);
-    p.tab.view.setBorderRadius(htmlFullscreen ? 0 : RADIUS);
+    p.tab.view.setBorderRadius(pageRadius());
   }
   const sp = ps.length === 2 && !gridOf(activeId) ? splitOf(activeId) : null;
   const gl = gridOf(activeId) && !htmlFullscreen ? cur.grid : null;
@@ -823,6 +832,7 @@ function layout() {
     const st = cur.side.tab, sr = sideRect();
     if (!st.view) ensureView(st);
     st.view.setBounds({ x: sr.x + 1, y: sr.y + SIDE_HEAD, width: sr.width - 1, height: Math.max(0, sr.height - SIDE_HEAD) });
+    st.view.setBorderRadius(pageRadius());
   }
   if (cur && cur.glance) {
     const g = cur.glance;
@@ -997,7 +1007,7 @@ function ensureView(tab, restore) {
     if (isMain || !/^https?:/.test(url) || tab.volume === 1) return;
     try { const f = webFrameMain.fromId(pid, rid); if (f && !f.isDestroyed()) f.executeJavaScript(`${AUDIO_HOOK};window.__driftAudio.set(${tab.volume});`).catch(() => {}); } catch {}
   });
-  view.setBorderRadius(RADIUS);
+  view.setBorderRadius(pageRadius());
   tab.view = view;
   tab.crashed = false;
   const wc = view.webContents;
@@ -1395,7 +1405,7 @@ function expandGlance() {
   const tab = g.tab;
   tab.glance = false;
   if (settings.wsList.length) tab.ws = curWs();
-  if (tab.view) tab.view.setBorderRadius(RADIUS);
+  if (tab.view) tab.view.setBorderRadius(pageRadius());
   const i = tabs.findIndex(t => t.id === activeId);
   tabs.splice(i >= 0 ? i + 1 : tabs.length, 0, tab);
   if (tab.openerId && !tabs.some(t => t.id === tab.openerId)) tab.openerId = null;
@@ -2348,6 +2358,8 @@ function handleShortcut(input) {
   if (mod && input.shift && !input.alt && k === 'n') { newPrivateWindow(); return true; }
   if (mod && input.alt && !input.shift && k === 'p') { setSidePanel(!(cur.side && cur.side.open)); return true; }
   if (mod && input.alt && !input.shift && k === 'i') { openAI(); return true; }
+  if (mod && input.alt && !input.shift && k === 'r') { openReader(activeTab()); return true; }
+  if (mod && input.shift && !input.alt && k.toLowerCase() === 's') { takeScreenshot(activeTab(), false); return true; }
   if (input.alt && !mod && !input.shift) {
     if (k === 'ArrowLeft') { if (wc && wc.navigationHistory.canGoBack()) wc.navigationHistory.goBack(); return true; }
     if (k === 'ArrowRight') { if (wc && wc.navigationHistory.canGoForward()) wc.navigationHistory.goForward(); return true; }
@@ -2441,6 +2453,14 @@ function pageContextMenu(tab, wc, p) {
     if (/^https?:/i.test(tab.url) && p.mediaType !== 'video') m.push({ label: 'Picture in picture', click: () => pipAny(wc, p) });
     if (/^https?:/i.test(tab.url)) m.push({ label: 'Cast to TV…', click: () => openCast(tab) });
     if (/^https?:/i.test(tab.url)) m.push({ label: 'Hide an element…', click: () => { useTab(tab); startZap(tab, { x: p.x, y: p.y }); } });
+    sep();
+    if (/^https?:/i.test(tab.url) || tab.url.startsWith('drift://reader/')) m.push({ label: tab.url.startsWith('drift://reader/') ? 'Leave reader view' : 'Reader view', accelerator: 'Ctrl+Alt+R', click: () => openReader(tab) });
+    m.push({ label: 'Screenshot', submenu: [
+      { label: 'Visible part (copy and save)', accelerator: 'Ctrl+Shift+S', click: () => takeScreenshot(tab, false) },
+      { label: 'Whole page (copy and save)', click: () => takeScreenshot(tab, true) },
+      { label: 'Open screenshots folder', click: () => { const d = path.join(app.getPath('pictures'), 'Drift Screenshots'); fs.promises.mkdir(d, { recursive: true }).then(() => shell.openPath(d)).catch(() => {}); } },
+    ] });
+    if (/^https?:/i.test(tab.url)) m.push({ label: 'QR code for this page', click: () => showQr(tab) });
     sep();
   }
   if (extensions) {
@@ -3693,6 +3713,15 @@ function setupProtocol() {
       html = html.replace('/*__DATA__*/null', () => json);   // (a function: "$&" in a search mustn't be a pattern)
       return new Response(themed(html), { headers: { 'content-type': 'text/html; charset=utf-8', 'cache-control': 'no-store' } });
     }
+    if (u.hostname === 'reader') {
+      let html = await fs.promises.readFile(path.join(PAGES_DIR, 'reader.html'), 'utf8');
+      const nonce = require('crypto').randomBytes(12).toString('base64');
+      const art = readerStore.get(String(u.searchParams.get('a') || '')) || null;
+      const orig = String(u.searchParams.get('u') || '');
+      const data = { article: art, url: /^https?:\/\//i.test(orig) ? orig : '', accent: accentColor(), dark: isDark() };
+      html = html.split('__NONCE__').join(nonce).replace('/*__DATA__*/null', () => JSON.stringify(data).replace(/</g, '\\u003c').replace(/\u2028/g, '\\u2028').replace(/\u2029/g, '\\u2029'));
+      return new Response(html, { headers: { 'content-type': 'text/html; charset=utf-8', 'cache-control': 'no-store' } });
+    }
     if (u.hostname === 'whatsnew') {
       let html = await fs.promises.readFile(path.join(PAGES_DIR, 'whatsnew.html'), 'utf8');
       const data = { entries: CHANGELOG, current: app.getVersion(), from: (u.searchParams.get('from') || '').replace(/[^\d.]/g, ''), accent: accentColor(), dark: isDark() };
@@ -3894,6 +3923,66 @@ async function translatePage(tab) {
     await run(trCode.finish(`Translated to ${lang.replace(/[<>&"]/g, '')} <small>· ${m.model.replace(/[<>&]/g, '')}</small>`));
   } finally { trRunning.delete(wc.id); }
 }
+// ---------------------------------------------------------------------------
+// Reader view, screenshots, QR codes (each loads its code only when used).
+// ---------------------------------------------------------------------------
+const readerStore = new Map();   // token -> article (the last few, so Back/Forward still work)
+async function openReader(tab) {
+  if (!tab || !tab.view) return;
+  const wc = tab.view.webContents;
+  if (tab.url.startsWith('drift://reader/')) { if (wc.navigationHistory.canGoBack()) wc.navigationHistory.goBack(); return; }
+  if (!/^https?:/i.test(tab.url)) return;
+  let art = null;
+  try { art = await wc.executeJavaScriptInIsolatedWorld(1997, [{ code: require('./reader.js').code() }]); } catch (e) { console.error('[reader]', e.message); }
+  if (!art || !art.html || (art.words || 0) < 80) return uiToast("Reader view didn't find an article on this page", 'reader', 4000);
+  const token = require('crypto').randomBytes(9).toString('hex');
+  readerStore.set(token, art);
+  while (readerStore.size > 20) readerStore.delete(readerStore.keys().next().value);
+  wc.loadURL(`drift://reader/?a=${token}&u=${encodeURIComponent(art.url)}`).catch(() => {});
+}
+const shots = new Map();   // toast token -> saved file
+async function takeScreenshot(tab, whole) {
+  if (!tab || !tab.view) return;
+  const wc = tab.view.webContents;
+  let img = null, cut = false;
+  try {
+    if (!whole) img = await wc.capturePage();
+    else {
+      const dbg = wc.debugger; let mine = false;
+      if (!dbg.isAttached()) { dbg.attach('1.3'); mine = true; }
+      try {
+        const m = await dbg.sendCommand('Page.getLayoutMetrics');
+        const cs = m.cssContentSize || m.contentSize, vp = m.cssLayoutViewport || m.layoutViewport;
+        const w = Math.max(1, Math.ceil(Math.max(cs.width, vp.clientWidth || 0))), full = Math.ceil(cs.height);
+        const h = Math.max(1, Math.min(full, 15000)); cut = full > 15000;
+        const r = await dbg.sendCommand('Page.captureScreenshot', { format: 'png', captureBeyondViewport: true, fromSurface: true, clip: { x: 0, y: 0, width: w, height: h, scale: 1 } });
+        img = nativeImage.createFromBuffer(Buffer.from(r.data, 'base64'));
+      } finally { if (mine) try { dbg.detach(); } catch {} }
+    }
+  } catch (e) { console.error('[screenshot]', e.message); }
+  if (!img || img.isEmpty()) return uiToast("Couldn't take a screenshot of this page", 'camera', 4000);
+  try { await clipboard.writeImage(img); } catch {}
+  const d = new Date(), pad = (n) => String(n).padStart(2, '0');
+  const name = `${(hostOf(tab.url) || 'Drift').replace(/[^\w.-]/g, '_')} ${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())} ${pad(d.getHours())}.${pad(d.getMinutes())}.${pad(d.getSeconds())}.png`;
+  const dir = path.join(app.getPath('pictures'), 'Drift Screenshots');
+  let saved = '';
+  try {
+    await fs.promises.mkdir(dir, { recursive: true });
+    saved = path.join(dir, name);
+    for (let n = 2; fs.existsSync(saved) && n < 100; n++) saved = path.join(dir, name.replace(/\.png$/, ` (${n}).png`));
+    await fs.promises.writeFile(saved, img.toPNG());
+  } catch (e) { saved = ''; console.error('[screenshot]', e.message); }
+  const key = 's' + Date.now(); if (saved) shots.set(key, saved);
+  while (shots.size > 20) shots.delete(shots.keys().next().value);
+  if (ui && !ui.webContents.isDestroyed()) ui.webContents.send('toast', { text: `Screenshot copied${saved ? ' and saved to Pictures' : ''}${cut ? ' (first 15,000 pixels of the page)' : ''}`, icon: 'camera', ms: 4500, action: saved ? { shot: key } : null });
+}
+function showQr(tab) {
+  if (!tab || !/^https?:/i.test(tab.url) || !ui || ui.webContents.isDestroyed()) return;
+  const qrcode = require('qrcode-generator');
+  const q = qrcode(0, 'M'); q.addData(tab.url.slice(0, 1800)); q.make();
+  ui.webContents.send('qr', { url: tab.url, title: tab.title || hostOf(tab.url), svg: q.createSvgTag({ cellSize: 6, margin: 4, scalable: true }) });
+}
+
 // ---------------------------------------------------------------------------
 // Cast to a TV (Chromecast / Google TV): the video in a tab plays on the TV, Drift is the remote.
 // ---------------------------------------------------------------------------
@@ -4100,9 +4189,19 @@ function openAI(task, text) {
 // Settings helper (also used by shortcuts)
 // ---------------------------------------------------------------------------
 
+// Windows 11's "Mica" material: the desktop shows through, blurred, behind Drift's own parts
+// (the sidebar and toolbar are drawn see-through when it's on; pages stay solid).
+function applyMica(w) {
+  if (!w || w.isDestroyed() || process.platform !== 'win32' || typeof w.setBackgroundMaterial !== 'function') return;
+  try {
+    w.setBackgroundMaterial(settings.mica ? 'mica' : 'none');
+    w.setBackgroundColor(settings.mica ? '#00000000' : (isDark() ? '#141417' : '#ebebef'));
+  } catch (e) { console.error('[mica]', e.message); }
+}
 function setSetting(key, value) {
   settings[key] = value; saveSettings();
-  if (['titleBar', 'bookmarksBar', 'sidebarRail', 'compact'].includes(key)) forEachWin(() => { if (key === 'compact' && (overlay === 'peek' || overlay === 'peektop')) overlay = null; layout(); });
+  if (key === 'mica') forEachWin(() => applyMica(win));
+  if (['titleBar', 'bookmarksBar', 'sidebarRail', 'compact', 'pageStyle', 'corners'].includes(key)) forEachWin(() => { if (key === 'compact' && (overlay === 'peek' || overlay === 'peektop')) overlay = null; layout(); });
   if (key === 'compact') updateCompactWatch();
   if (key === 'webgpu' && ui && !ui.webContents.isDestroyed()) ui.webContents.send('toast', { text: 'Restart Drift to apply the WebGPU setting.', icon: 'info' });
   if (key === 'workspaces') setWorkspacesOn(!!value);
@@ -4900,6 +4999,13 @@ function setupIPC() {
     if (!(key in DEFAULT_SETTINGS) || ['permissions', 'bounds', 'shieldsAllow', 'popupAllow', 'wsList', 'hiddenActions', 'pinnedActions', 'hiddenSites', 'unpacked', 'forceDarkOff', 'blockedSites', 'blockSites', 'zoomLevels', 'removedExtensions', 'sidePanel', 'zaps'].includes(key)) return;
     if (key === 'shields') return setShieldsGlobal(!!value);
     if (key === 'shieldsEngine') return setShieldsEngine(value === 'builtin' ? 'builtin' : 'ubo');
+    // Look settings: only known values.
+    if (key === 'pageStyle' && !['flush', 'floating'].includes(value)) return;
+    if (key === 'corners') { value = Math.round(Number(value)); if (!(value >= 0 && value <= 20)) return; }
+    if (key === 'uiFont' && !['default', 'bahnschrift', 'verdana', 'georgia', 'cascadia', 'trebuchet'].includes(value)) return;
+    if (key === 'tabSize' && !['compact', 'normal', 'roomy'].includes(value)) return;
+    if (key === 'mica') value = !!value;
+    if (key === 'customCss') value = String(value || '').slice(0, 20000);
     if (key === 'palette') {
       if (!PALETTES[value]) return;
       if (PALETTES[value].accent) settings.accent = PALETTES[value].accent;   // a theme comes with its accent (change it after if you like)
@@ -5074,6 +5180,9 @@ function setupIPC() {
     else delete store[key];
     if (store === settings.permissions) saveSettings();
   });
+  on('shot-show', (key) => { const f = shots.get(key); if (f) shell.showItemInFolder(f); });
+  on('reader', () => openReader(activeTab()));
+  on('qr-page', () => showQr(activeTab()));
   // Casting (the cast popover).
   on('cast-scan', () => castScan());
   on('cast-to', (devId) => { if (typeof devId === 'string') castTo(devId, activeTab()); });
@@ -5239,6 +5348,7 @@ function createWindow(opts = {}) {
     icon: path.join(__dirname, '..', 'build', 'icon.png'),
   });
   ctx.win = win;
+  applyMica(win);
   const wantMax = opts.snapshot ? opts.snapshot.maximized : (windows.length === 1 && settings.maximized && !opts.bounds);
   if (wantMax) win.maximize();
 

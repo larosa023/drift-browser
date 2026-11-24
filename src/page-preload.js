@@ -266,3 +266,27 @@ if (IS_WEB_PAGE) {
   }, { passive: true, capture: true });
   document.addEventListener('fullscreenchange', hide);
 }
+
+// ---------------------------------------------------------------------------
+// Chrome Web Store: Drift installs extensions from it, so its "Switch to Chrome to install
+// extensions" banner is wrong here. Hidden (only on the store, only when the page changes).
+// ---------------------------------------------------------------------------
+if (IS_WEB_PAGE && location.hostname === 'chromewebstore.google.com') {
+  const RE = /switch to (chrome|drift) to install/i;
+  let t = 0;
+  const sweep = () => {
+    t = 0;
+    const w = document.createTreeWalker(document.body || document.documentElement, NodeFilter.SHOW_TEXT);
+    for (let n; (n = w.nextNode());) {
+      if (!RE.test(n.nodeValue)) continue;
+      // The banner is the nearest box around the message that also holds its "Install" button.
+      let el = n.parentElement;
+      for (let i = 0; el && i < 6; i++, el = el.parentElement) {
+        if (el.querySelector('a, button') && el.getBoundingClientRect().height < 160) { el.style.setProperty('display', 'none', 'important'); break; }
+      }
+    }
+  };
+  const later = () => { if (!t) t = setTimeout(sweep, 150); };
+  const start = () => { sweep(); new MutationObserver(later).observe(document.body, { childList: true, subtree: true }); };
+  if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', start); else start();
+}

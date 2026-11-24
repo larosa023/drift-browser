@@ -79,6 +79,7 @@ function render() {
   setVar('--accent', (S.themeInfo && S.themeInfo.accent) || S.settings.accent);
   applyTint();
   setVar('--sw', S.settings.sidebarWidth + 'px');
+  applyLook();
   setVar('--fw', Math.round(Math.min(S.settings.sidebarWidth, 260) * 0.88) + 'px');   // slide-out width
   applyHole();
   applyWallpaper();
@@ -184,6 +185,11 @@ function renderAddr() {
   zb.title = z === 100 ? 'Zoom' : `Zoom: ${z}% · click to change or reset`;
   $('#zp-val').textContent = z + '%';
   $('#zp-reset').disabled = z === 100;
+  // Reader view: on web pages, and lit while reading (click to go back to the page).
+  const rd = $('#a-reader'), reading = url.startsWith('drift://reader/');
+  rd.hidden = !reading && (internal || !/^https?:/i.test(url));
+  setHTML(rd, icon('reader', 15)); rd.classList.toggle('on', reading);
+  rd.title = reading ? 'Leave reader view (Ctrl+Alt+R)' : 'Reader view (Ctrl+Alt+R)';
   const dk = $('#a-dark');
   dk.hidden = internal || !S.settings.forceDark;
   setHTML(dk, icon(S.nav.dark ? 'moonfill' : 'moon', 14));
@@ -301,6 +307,27 @@ function renderTabs() {
     rows.push({ t, f: f ? f.id : '', fc: f ? FOLDER_HEX[f.color] || FOLDER_HEX.blue : '', inF: f ? ' in-folder' + (last ? ' folder-last' : '') : '' });
   });
   syncKeyed(list, rows.map(r => r.t ? { ...tabRow(r.t, r.inF), f: r.f, fc: r.fc } : r));
+}
+// Look settings: font, tab size, page corners, see-through background, your own CSS.
+const UI_FONTS = {
+  default: ['Segoe UI (default)', '"Segoe UI Variable Text", "Segoe UI", system-ui, sans-serif'],
+  bahnschrift: ['Bahnschrift', 'Bahnschrift, "Segoe UI", system-ui, sans-serif'],
+  verdana: ['Verdana', 'Verdana, "Segoe UI", sans-serif'],
+  trebuchet: ['Trebuchet', '"Trebuchet MS", "Segoe UI", sans-serif'],
+  georgia: ['Georgia (serif)', 'Georgia, "Times New Roman", serif'],
+  cascadia: ['Cascadia (mono)', '"Cascadia Code", "Cascadia Mono", Consolas, ui-monospace, monospace'],
+};
+function applyLook() {
+  const st = S.settings, b = document.body;
+  setVar('--font', (UI_FONTS[st.uiFont] || UI_FONTS.default)[1]);
+  setVar('--prad', st.pageStyle === 'floating' && !st.compact ? (Number(st.corners) || 0) + 'px' : '0px');
+  b.classList.toggle('tabs-compact', st.tabSize === 'compact');
+  b.classList.toggle('tabs-roomy', st.tabSize === 'roomy');
+  b.classList.toggle('mica', !!st.mica && S.platform === 'win32');
+  b.classList.toggle('floating', st.pageStyle === 'floating' && !st.compact);
+  let el = document.getElementById('user-css');
+  if (st.customCss) { if (!el) { el = document.createElement('style'); el.id = 'user-css'; document.head.appendChild(el); } if (el.textContent !== st.customCss) el.textContent = st.customCss; }
+  else if (el) el.remove();
 }
 // The colour theme's tint on Drift's backgrounds (none = Drift's own greys).
 function applyTint() {
@@ -570,6 +597,7 @@ $('#addr').addEventListener('click', (e) => {
 });
 $('#a-star').onclick = () => send('bm-toggle');
 $('#a-dark').onclick = () => send('force-dark-site');
+$('#a-reader').onclick = () => send('reader');
 $('#a-nodl').onclick = () => send('toggle-nodl-site');
 // Zoom popover under the address bar's zoom button.
 function openZoomPop() {
@@ -947,6 +975,14 @@ function renderSettings() {
           const bg = tint ? (S.dark ? `hsl(${tint.h} ${Math.round(tint.s * .55)}% 14%)` : `hsl(${tint.h} ${Math.round(tint.s * .6)}% 88%)`) : (S.dark ? '#26262c' : '#e2e2e8');
           return `<button class="pal ${(S.themeInfo ? S.themeInfo.palette : 'default') === p.id ? 'on' : ''}" data-set="palette" data-val="${p.id}" title="${esc(p.name)}" style="--pb:${bg};--pa:${a}">${p.id === 'windows' ? icon('palette', 14) : ''}<span>${esc(p.name)}</span></button>`;
         }).join('')}</div></div>
+      <div class="row"><span class="lbl">Pages<small>${s.pageStyle === 'floating' ? 'A gap and rounded corners around the page, like Zen and Arc' : 'The page runs to the window\'s edges'}</small></span><div class="seg">
+        <button class="${s.pageStyle !== 'floating' ? 'on' : ''}" data-set="pageStyle" data-val="flush">Edge to edge</button><button class="${s.pageStyle === 'floating' ? 'on' : ''}" data-set="pageStyle" data-val="floating">Floating</button></div></div>
+      ${s.pageStyle === 'floating' ? `<div class="row" style="display:block"><span class="lbl">Corner rounding</span>
+        <div class="range-row"><input type="range" min="0" max="20" step="1" value="${s.corners}" data-range="corners" data-scale="1"><span class="val">${s.corners}px</span></div></div>` : ''}
+      ${S.platform === 'win32' ? `<div class="row"><span class="lbl">See-through background<small>Windows 11: your desktop shows through the sidebar and toolbar, blurred (Mica). Pages stay solid.</small></span>${sw('mica', s.mica)}</div>` : ''}
+      <div class="row"><span class="lbl">Font</span><select data-sel="uiFont">${Object.entries(UI_FONTS).map(([k, [n]]) => `<option value="${k}" ${k === (s.uiFont || 'default') ? 'selected' : ''}>${n}</option>`).join('')}</select></div>
+      <div class="row"><span class="lbl">Tab size</span><div class="seg">
+        ${[['compact', 'Compact'], ['normal', 'Normal'], ['roomy', 'Roomy']].map(([k, n]) => `<button class="${(s.tabSize || 'normal') === k ? 'on' : ''}" data-set="tabSize" data-val="${k}">${n}</button>`).join('')}</div></div>
       <div class="row"><span class="lbl">New tabs open your homepage<small>+ and Ctrl+T open the homepage instead of the command bar (Ctrl+Alt+T always does)</small></span>${sw('homeNewTab', s.homeNewTab)}</div>
       <div class="row"><span class="lbl">Compact mode<small>The page fills the window; the sidebar and toolbar slide in at the edges · Ctrl+Alt+C</small></span>${sw('compact', s.compact)}</div>
       <div class="row"><span class="lbl">Top toolbar<small>Address bar, window buttons and a drag area at the top</small></span>${sw('titleBar', s.titleBar)}</div>
@@ -971,6 +1007,8 @@ function renderSettings() {
       <div class="row"><span class="lbl">Show on new tab page</span>${sw('wallpaperNewTab', s.wallpaperNewTab)}</div>` : ''}
       <div class="row" style="flex-wrap:wrap"><span class="lbl">Accent color</span>
         <div class="swatches">${ACCENTS.map(c => `<button class="sw ${c === s.accent ? 'on' : ''}" style="background:${c};color:${c}" data-set="accent" data-val="${c}"></button>`).join('')}</div></div>
+      <div class="row" style="display:block"><span class="lbl">Your own CSS<small>Advanced: restyle Drift's sidebar and toolbar (not web pages). Saved when you click away. Clear it to undo.</small></span>
+        <textarea class="css-box" id="custom-css" spellcheck="false" placeholder="/* e.g. */\n#sidebar { padding-top: 14px; }\n.tab.active { outline: 1px solid var(--accent); }">${esc(s.customCss || '')}</textarea></div>
     </div>
     <div class="group"><h4>Shields</h4>
       <div class="row"><span class="lbl">Block ads & trackers<small>${s.shieldsEngine === 'ubo' ? 'Click the shield in the address bar for per-site controls' : S.blockedTotal.toLocaleString() + ' blocked this session'}</small></span>${sw('shields', s.shields)}</div>
@@ -1127,13 +1165,15 @@ $('#settings-body').addEventListener('pointerdown', (e) => { if (e.target.closes
 $('#settings-body').addEventListener('input', (e) => {
   const r = e.target.closest('[data-range]'); if (!r) return;
   const v = Number(r.value) / Number(r.dataset.scale);
-  r.nextElementSibling.textContent = r.dataset.range === 'wallpaperBlur' ? r.value + 'px' : r.value + '%';
+  r.nextElementSibling.textContent = r.dataset.range === 'wallpaperBlur' || r.dataset.range === 'corners' ? r.value + 'px' : r.value + '%';
+  if (r.dataset.range === 'corners') setVar('--prad', r.value + 'px');
   if (r.dataset.range === 'wallpaperDim') document.documentElement.style.setProperty('--wp-dim', String(v));
   if (r.dataset.range === 'wallpaperBlur') { const wp = $('#wp'); wp.style.filter = v ? `blur(${v}px)` : ''; wp.style.inset = v ? `-${v * 2}px` : '0'; }
 });
 $('#settings-body').addEventListener('change', (e) => {
   const r = e.target.closest('[data-range]');
   if (r) { send('set', r.dataset.range, Number(r.value) / Number(r.dataset.scale)); return; }
+  if (e.target.id === 'custom-css') { send('set', 'customCss', e.target.value); return; }
   if (e.target.id === 'tr-lang') { const v = e.target.value.trim(); if (v) send('set', 'translateTo', v.slice(0, 40)); else e.target.value = S.settings.translateTo; return; }
   if (e.target.id === 'ai-url') { const v = e.target.value.trim(); if (/^https?:\/\/[^\s/]+(:\d+)?\/?$/i.test(v)) send('set', 'aiUrl', v.replace(/\/$/, '')); else e.target.value = S.settings.aiUrl; return; }
   const s = e.target.closest('[data-sel]'); if (!s) return;
@@ -1800,6 +1840,7 @@ window.drift.on('toast', (t) => {
   if (t.action && t.action.bm) actions.push({ label: t.action.label, run: () => { const b = findBm(t.action.bm); if (b) editBookmark(b); } });
   if (t.action && t.action.update) actions.push({ label: t.action.label, run: () => send('update-install') });
   if (t.action && t.action.zapUndo) actions.push({ label: 'Undo', run: () => send('zap-undo', t.action.zapUndo.host, t.action.zapUndo.sels) });
+  if (t.action && t.action.shot) actions.push({ label: 'Show file', run: () => send('shot-show', t.action.shot) });
   if (t.action && t.action.dlAllow) actions.push({ label: 'Download anyway', run: () => send('dl-allow', t.action.dlAllow) });
   if (t.action && t.action.popup) {
     if (!t.action.noOpen) actions.push({ label: 'Open', run: () => send('popup-open', t.action.popup) });
@@ -1808,6 +1849,13 @@ window.drift.on('toast', (t) => {
   toast(`${icon(t.icon || 'info')}<span>${esc(t.text)}</span>`, t.ms || 3200, actions);
 });
 window.drift.on('bm-edit', (b) => editBookmark(b));
+// QR code for the page (scan it with a phone to open the page there). The picture comes from Drift.
+window.drift.on('qr', (q) => {
+  openModal(`<h3>Open on your phone</h3>
+    <div class="qr-box">${q.svg}</div>
+    <div class="qr-url" title="${esc(q.url)}">${esc(q.url)}</div>
+    <div class="actions"><span class="grow"></span><button type="button" data-m="cancel" class="primary">Done</button></div>`, null, 'button');
+});
 window.drift.on('layout', (l) => {
   content = l.content;
   const pf = $('#page-frame');

@@ -1,6 +1,6 @@
 {
   "name": "drift-browser",
-  "version": "1.31.2",
+  "version": "1.32.0",
   "description": "A lightweight Chromium browser with vertical tabs and built-in ad blocking",
   "main": "src/main.js",
   "scripts": {
@@ -20,9 +20,11 @@
   },
   "dependencies": {
     "@ghostery/adblocker-electron": "^2.20.1",
+    "@mozilla/readability": "0.6.0",
     "electron-chrome-extensions": "^4.10.0",
     "electron-chrome-web-store": "^0.13.0",
-    "electron-updater": "^6.8.11"
+    "electron-updater": "^6.8.11",
+    "qrcode-generator": "2.0.4"
   },
   "productName": "Drift",
   "build": {
