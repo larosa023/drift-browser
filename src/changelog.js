@@ -1,6 +1,12 @@
 // What's new in each release, shown on the What's new page (drift://whatsnew) after an update.
 // Newest first. Kinds: new, faster, fixed, changed. Written for people using Drift.
 module.exports = [
+  { version: '1.33.0', date: '2026-11-24', items: [
+    ['new', 'Drag to split: drag a tab from the sidebar onto the left or right half of the page. The half it will fill shows "Split on the left / right" while the page moves aside, and letting go opens the two side by side. Already in split view? The tab takes the place of the page on that side.'],
+    ['new', 'Drop a tab onto another tab in the sidebar to split them. Drag one out of the pair to put it back on its own.'],
+    ['changed', 'A split pair sits side by side in one row of the sidebar.'],
+    ['changed', 'Tabs switch when you let go of the click, so you can press and drag a tab without leaving the page you\'re on.'],
+  ] },
   { version: '1.32.0', date: '2026-11-24', items: [
     ['new', 'Reader view: the book button in the address bar (or Ctrl+Alt+R) shows just the article, with text size, sans/serif, column width and light / sepia / dark. Click it again or press Esc to go back.'],
     ['new', 'Screenshots: Ctrl+Shift+S copies what you see and saves it to Pictures\\Drift Screenshots. Right-click a page → Screenshot for the whole page.'],

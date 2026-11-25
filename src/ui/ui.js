@@ -409,8 +409,8 @@ function tabEvents(container) {
     const id = Number(el.dataset.id);
     if (e.button === 1) { e.preventDefault(); send('close-tab', id); return; }
     if (e.button !== 0) return;
-    const act = e.target.closest('[data-act]');
-    if (!act) send('activate', id, true);   // focus moves to the page on release (or after a drag)
+    // Switching happens on release (endTabDrag), so a tab can be dragged onto the page you're
+    // on to split with it. Right-click and the buttons on a tab don't switch.
   });
   container.addEventListener('click', (e) => {
     const el = e.target.closest('[data-id]'); if (!el) return;
@@ -460,18 +460,28 @@ document.addEventListener('wheel', () => hoverTab(null), { passive: true, captur
 // bookmarks bar (or a folder there) to bookmark it, or anywhere else (the page, outside the
 // window, another Drift window) to move it out: Drift decides from where the cursor ends up.
 let tabPtr = null;
-function tabDropAt(x, y) {
+function tabDropAt(x, y, dragged = tabPtr && tabPtr.id) {
   const inView = x >= 0 && y >= 0 && x < window.innerWidth && y < window.innerHeight;
   const el = inView ? document.elementFromPoint(x, y) : null;
   if (!el) return { kind: 'out' };                        // outside the window
   if (el.closest('#essentials')) return { kind: 'pin' };
   if (el.closest('#tablist, .tabs-head')) return { kind: 'list' };
   if (el.closest('#bmbar')) return { kind: 'bm', el };
-  // Over the page area: out into its own window. Anywhere else (toolbar, sidebar header): leave it.
+  // Over the page area: split view with the page you're on (its left or right half). A tab that
+  // can't be split with it (the page itself, or the multiviewer) moves out into its own window.
   const c = content;
-  if (x >= c.x && x < c.x + c.width && y >= c.y && y < c.y + c.height) return { kind: 'out' };
+  if (x >= c.x && x < c.x + c.width && y >= c.y && y < c.y + c.height) {
+    const id = dragged;
+    const inGrid = S.grid && S.grid.ids && S.grid.ids.includes(S.activeId);
+    const sp = (S.splits || []).find(s => s.a === S.activeId || s.b === S.activeId);
+    const canSplit = id != null && !inGrid && (id !== S.activeId || (sp && (sp.a === id || sp.b === id)));
+    if (canSplit) return { kind: 'split', side: x < c.x + c.width / 2 ? 'left' : 'right' };
+    return { kind: 'out' };
+  }
   return { kind: 'none' };
 }
+let splitSide = null;   // the half shown while a tab is dragged over the page
+function previewSplit(side) { if (side === splitSide) return; splitSide = side; send('split-preview', side); }
 // Where a tab dropped on Essentials goes: before the tile under or after the pointer, in
 // reading order (works for the grid and for the slim sidebar's single column).
 function essBefore(e, exceptId) {
@@ -485,6 +495,8 @@ function showTabDrop(e) {
   const d = tabDropAt(e.clientX, e.clientY);
   document.body.classList.toggle('tab-out', d.kind === 'out');
   document.querySelectorAll('.ess-drop').forEach(x => x.remove());
+  document.querySelectorAll('.drop-split').forEach(x => x.classList.remove('drop-split'));
+  previewSplit(d.kind === 'split' ? d.side : null);
   if (d.kind === 'pin') {
     const mark = document.createElement('div'); mark.className = 'ess-drop';
     const before = essBefore(e, tabPtr && tabPtr.id);
@@ -493,6 +505,7 @@ function showTabDrop(e) {
     document.querySelectorAll('.folder.drop-into').forEach(x => x.classList.remove('drop-into'));
     const L = listDrop(e, tabPtr && tabPtr.id);
     if (L.into) L.into.classList.add('drop-into');
+    else if (L.onto) L.onto.classList.add('drop-split');
     else {
       const line = document.createElement('div'); line.className = 'drop-line' + (L.folder ? ' in-folder' : '');
       if (L.folder) line.style.setProperty('--fc', (L.before || L.prev).style.getPropertyValue('--fc'));
@@ -511,6 +524,9 @@ function listDrop(e, id) {
   const rows = [...$('#tablist').querySelectorAll('.tab, .folder')].filter(r => r.dataset.id !== String(id));
   const into = rows.find(r => { if (!r.classList.contains('folder')) return false; const b = r.getBoundingClientRect(); return e.clientY >= b.top + b.height * 0.25 && e.clientY < b.bottom - b.height * 0.25; });
   if (into) return { into };
+  // Onto the middle of another tab: split view with it (the edges still reorder).
+  const onto = rows.find(r => { if (r.classList.contains('folder') || !r.classList.contains('tab')) return false; const b = r.getBoundingClientRect(); return e.clientX >= b.left && e.clientX < b.right && e.clientY >= b.top + b.height * 0.3 && e.clientY < b.bottom - b.height * 0.3; });
+  if (onto) return { onto };
   const bi = rows.findIndex(r => e.clientY < r.getBoundingClientRect().top + r.offsetHeight / 2);
   const before = bi >= 0 ? rows[bi] : null, prev = bi < 0 ? rows[rows.length - 1] : rows[bi - 1] || null;
   let folder = null;
@@ -522,11 +538,20 @@ function endTabDrag(e, cancelled) {
   const p = tabPtr; tabPtr = null;
   if (!p) return;
   try { p.container.releasePointerCapture(p.pid); } catch {}
-  if (!p.dragging) return;
+  if (!p.dragging) { if (!cancelled) send('activate', p.id, true); return; }
   const id = p.id;
   if (!cancelled) {
-    const d = tabDropAt(e.clientX, e.clientY);
-    if (d.kind === 'list') {
+    const d = tabDropAt(e.clientX, e.clientY, id);
+    if (d.kind === 'split') send('split-drop', id, d.side);
+    else if (d.kind === 'list') {
+      const L = listDrop(e, id);
+      const sp = (S.splits || []).find(s => s.a === id || s.b === id);
+      if (L.onto) {
+        // Dropped onto another tab: the two open side by side (this one on the right).
+        send('split-drop', id, 'right', Number(L.onto.dataset.id));
+      } else if (sp) send('unsplit-tab', id);   // dragged out of its pair: back to a tab of its own
+    }
+    if (d.kind === 'list' && !listDrop(e, id).onto) {
       const L = listDrop(e, id);
       const others = S.tabs.filter(t => t.id !== id);
       const pinnedCount = others.filter(t => t.pinned).length;
@@ -554,6 +579,9 @@ function endTabDrag(e, cancelled) {
     }
   }
   dragId = null;
+  // The half left empty for the preview: Drift fills it on a split drop; otherwise it closes again.
+  if (splitSide) { splitSide = null; if (cancelled || tabDropAt(e.clientX, e.clientY, id).kind !== 'split') send('split-preview', null); }
+  document.querySelectorAll('.drop-split').forEach(x => x.classList.remove('drop-split'));
   document.body.classList.remove('tab-dragging', 'tab-out');
   document.querySelectorAll('.tab.dragging, .ess.dragging').forEach(x => x.classList.remove('dragging'));
   document.querySelectorAll('.drop-line, .ess-drop').forEach(x => x.remove());
@@ -1864,6 +1892,13 @@ window.drift.on('layout', (l) => {
   document.body.classList.toggle('fullscreen', !!l.fullscreen);
   lastLayout = l;
   renderPanes(l);
+  const ph = $('#split-ph');
+  if (l.preview && !l.fullscreen) {
+    const r = l.preview.rect;
+    Object.assign(ph.style, { left: r.x + 'px', top: r.y + 'px', width: r.width + 'px', height: r.height + 'px' });
+    setHTML(ph, `<div>${icon('split', 22)}<span>Split on the ${l.preview.side}</span></div>`);
+    ph.hidden = false;
+  } else ph.hidden = true;
   document.documentElement.style.setProperty('--th', (l.titleH || 40) + 'px');
   document.documentElement.style.setProperty('--bmh', (l.bmH || 0) + 'px');
   document.documentElement.style.setProperty('--cx', content.x + 'px');

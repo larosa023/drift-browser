@@ -982,3 +982,29 @@ textarea.css-box:focus { box-shadow: inset 0 0 0 1px var(--accent); }
 .qr-box svg { width: 220px; height: 220px; border-radius: 12px; background: #fff; }
 .qr-box svg rect[fill="#ffffff"], .qr-box svg rect[fill="white"] { fill: #fff; }
 .qr-url { color: var(--muted); font-size: 12px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; text-align: center; margin-bottom: 6px; user-select: text; }
+
+/* Split pair side by side in one row of the sidebar (Zen style). The icon-only sidebar keeps
+   them stacked. Every other row stays full width. */
+#tablist { display: flex; flex-wrap: wrap; align-content: flex-start; }
+#tablist > * { flex: 0 0 100%; min-width: 0; box-sizing: border-box; }
+body:not(.rail) #tablist .tab.split-first, body.rail-open #tablist .tab.split-first,
+body:not(.rail) #tablist .tab.split-last, body.rail-open #tablist .tab.split-last {
+  flex-basis: calc(50% - 2px); border-radius: 9px; margin-bottom: 2px; gap: 7px; padding-left: 8px;
+  box-shadow: inset 0 0 0 1.5px var(--sp);
+}
+body:not(.rail) #tablist .tab.split-first, body.rail-open #tablist .tab.split-first { margin-right: 4px; }
+body:not(.rail) #tablist .tab.split-last::before, body.rail-open #tablist .tab.split-last::before,
+body:not(.rail) #tablist .tab.split-first::after, body.rail-open #tablist .tab.split-first::after { display: none; }
+#tablist > .tab.in-folder { flex-basis: calc(100% - 14px); }
+body:not(.rail) #tablist .tab.in-folder.split-first, body.rail-open #tablist .tab.in-folder.split-first,
+body:not(.rail) #tablist .tab.in-folder.split-last, body.rail-open #tablist .tab.in-folder.split-last { flex-basis: calc(50% - 9px); }
+body:not(.rail) #tablist .tab.in-folder.split-last, body.rail-open #tablist .tab.in-folder.split-last { margin-left: 0; }
+/* Drop a tab onto another to split them */
+#tablist .tab.drop-split { box-shadow: inset 0 0 0 2px var(--accent); background: color-mix(in srgb, var(--accent) 16%, transparent); }
+/* The half a dragged tab would split into */
+#split-ph { position: fixed; z-index: 1; border-radius: var(--prad, 0); display: grid; place-items: center; pointer-events: none;
+  background: color-mix(in srgb, var(--fg) 7%, var(--card-2)); box-shadow: inset 0 0 0 2px color-mix(in srgb, var(--accent) 55%, transparent);
+  animation: ph-in .12s ease-out; }
+#split-ph div { display: flex; flex-direction: column; align-items: center; gap: 8px; color: var(--muted); font-size: 13px; }
+#split-ph svg { color: var(--accent); }
+@keyframes ph-in { from { opacity: 0; } to { opacity: 1; } }

@@ -731,16 +731,78 @@ function panes() {
   const g = htmlFullscreen ? null : gridOf(t.id);
   if (g) return gridPanes(g, r);
   const sp = htmlFullscreen ? null : splitOf(t.id);
+  // While a tab is dragged over the page (to split): the half it would land in is left empty
+  // (the sidebar shows "Split on the left" there) and the page moves aside to make room.
+  const pv = !htmlFullscreen && cur && cur.splitPreview;
+  if (pv && !sp) {
+    const w1 = Math.round((r.width - GAP) / 2);
+    return [{ tab: t, rect: pv.side === 'left' ? { x: r.x + w1 + GAP, y: r.y, width: r.width - w1 - GAP, height: r.height } : { x: r.x, y: r.y, width: w1, height: r.height } }];
+  }
   if (!sp) return [{ tab: t, rect: r }];
   const A = tabs.find(x => x.id === sp.a), B = tabs.find(x => x.id === sp.b);
+  let out;
   if (sp.dir === 'col') {
     const h1 = Math.round((r.height - GAP) * sp.ratio);
-    return [{ tab: A, rect: { x: r.x, y: r.y, width: r.width, height: h1 } },
-            { tab: B, rect: { x: r.x, y: r.y + h1 + GAP, width: r.width, height: r.height - h1 - GAP } }];
+    out = [{ tab: A, rect: { x: r.x, y: r.y, width: r.width, height: h1 } },
+           { tab: B, rect: { x: r.x, y: r.y + h1 + GAP, width: r.width, height: r.height - h1 - GAP } }];
+  } else {
+    const w1 = Math.round((r.width - GAP) * sp.ratio);
+    out = [{ tab: A, rect: { x: r.x, y: r.y, width: w1, height: r.height } },
+           { tab: B, rect: { x: r.x + w1 + GAP, y: r.y, width: r.width - w1 - GAP, height: r.height } }];
   }
-  const w1 = Math.round((r.width - GAP) * sp.ratio);
-  return [{ tab: A, rect: { x: r.x, y: r.y, width: w1, height: r.height } },
-          { tab: B, rect: { x: r.x + w1 + GAP, y: r.y, width: r.width - w1 - GAP, height: r.height } }];
+  if (pv) return [out[pv.side === 'left' ? 1 : 0]];   // a split already: the pane on that side makes way
+  return out;
+}
+// The empty half while dragging a tab over the page (where it would go), for the sidebar to draw.
+function previewRect() {
+  const pv = cur && cur.splitPreview; if (!pv || htmlFullscreen) return null;
+  const r = contentRect(), t = activeTab(); if (!t) return null;
+  const sp = splitOf(t.id);
+  if (sp && sp.dir === 'col') {
+    const h1 = Math.round((r.height - GAP) * sp.ratio);
+    return pv.side === 'left' ? { x: r.x, y: r.y, width: r.width, height: h1 } : { x: r.x, y: r.y + h1 + GAP, width: r.width, height: r.height - h1 - GAP };
+  }
+  const w1 = sp ? Math.round((r.width - GAP) * sp.ratio) : Math.round((r.width - GAP) / 2);
+  return pv.side === 'left' ? { x: r.x, y: r.y, width: w1, height: r.height } : { x: r.x + w1 + GAP, y: r.y, width: r.width - w1 - GAP, height: r.height };
+}
+// Drop a tab onto the page's left or right half (or onto another tab in the sidebar): split view.
+function setSplitPreview(side) {
+  const v = side === 'left' || side === 'right' ? { side } : null;
+  const was = cur.splitPreview;
+  if ((was && was.side) === (v && v.side)) return;
+  cur.splitPreview = v; layout();
+}
+function splitDrop(id, side, baseId) {
+  cur.splitPreview = null;
+  const base = baseId != null ? findTab(Number(baseId)) : activeTab();
+  const t = findTab(Number(id));
+  if (!base || !t || t.id === base.id) { layout(); return; }
+  if (gridOf(base.id)) { layout(); return; }
+  const left = side === 'left';
+  const sp = splitOf(base.id);
+  if (sp && (sp.a === t.id || sp.b === t.id)) {
+    // Already together: just put it on that side.
+    if (left !== (sp.a === t.id)) [sp.a, sp.b] = [sp.b, sp.a];
+  } else if (sp && baseId == null) {
+    // Showing a split already: the new tab takes the place of the page on that side.
+    const old = splitOf(t.id); if (old) splits = splits.filter(x => x !== old);
+    if (gridOf(t.id)) removeFromGrid(t.id);
+    if (left) sp.a = t.id; else sp.b = t.id;
+    if (!t.pinned && base.ws) t.ws = base.ws;
+  } else {
+    if (base.id !== activeId) { activeId = base.id; }
+    splitWith(t.id);
+    const s2 = splitOf(base.id);
+    if (s2 && left) [s2.a, s2.b] = [t.id, base.id];
+  }
+  // The sidebar order follows the screen: left tab first.
+  const s3 = splitOf(t.id);
+  if (s3) {
+    const A = findTab(s3.a), B = findTab(s3.b);
+    if (A && B && !A.pinned && !B.pinned) { tabs.splice(tabs.indexOf(A), 1); tabs.splice(tabs.indexOf(B), 0, A); }
+  }
+  activate(t.id);
+  layout(); push(); saveSession();
 }
 
 // With the sidebar collapsed to icons (or hidden), notifications from the sidebar would sit
@@ -846,7 +908,7 @@ function layout() {
   restack();
   ui.webContents.send('layout', { content: r, fullscreen: htmlFullscreen || win.isFullScreen(), titleH: titleHeight(), bmH: bookmarksHeight(), left: sidebarLeft(),
     panes: ps.map(p => ({ id: p.tab ? p.tab.id : 0, rect: p.rect })), split: sp ? { dir: sp.dir, ratio: sp.ratio } : null, grid: gl ? { n: ps.length, audio: gl.audio } : null, activeId,
-    side: sideOpen() ? { ...sideRect(), head: SIDE_HEAD } : null });
+    side: sideOpen() ? { ...sideRect(), head: SIDE_HEAD } : null, preview: previewRect() && { rect: previewRect(), side: cur.splitPreview.side } });
 }
 
 function setOverlay(mode, keepFocus) {
@@ -4960,6 +5022,9 @@ function setupIPC() {
     tabDroppedOutside(t, p.x, p.y);
   });
   on('tab-drag-start', (id) => perfNote(`tab drag start: tab ${id}`));
+  on('split-preview', (side) => setSplitPreview(side));
+  on('split-drop', (id, side, baseId) => splitDrop(id, side, baseId));
+  on('unsplit-tab', (id) => { const sp = splitOf(Number(id)); if (sp) { splits = splits.filter(x => x !== sp); layout(); push(); saveSession(); } });
   on('whats-new', () => createTab('drift://whatsnew/'));
   on('open-history', () => openHistory());
   on('open-files', (paths) => { if (Array.isArray(paths)) openFiles(paths.slice(0, 20)); });
