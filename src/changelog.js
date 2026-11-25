@@ -1,6 +1,10 @@
 // What's new in each release, shown on the What's new page (drift://whatsnew) after an update.
 // Newest first. Kinds: new, faster, fixed, changed. Written for people using Drift.
 module.exports = [
+  { version: '1.33.2', date: '2026-11-25', items: [
+    ['fixed', 'Volume mixer: now reaches players it used to miss. That covers players a site keeps out of the page, players inside page components, and players in embeds from other sites (like a Spotify or YouTube player on another site). It also finds them again each time a new clip starts.'],
+    ['fixed', 'The "reload to apply" message only shows when the sound really can\'t be changed while it plays.'],
+  ] },
   { version: '1.33.1', date: '2026-11-25', items: [
     ['fixed', 'Volume mixer: works on music sites whose player isn\'t part of the page (and so was never found), and on tabs whose volume you set before they play: once a tab\'s volume is changed, it applies from the start of every page load in that tab.'],
     ['fixed', 'If a page started its sound in a way Drift can\'t reach while it plays, changing its volume now says so and offers to reload the tab, instead of the slider doing nothing.'],

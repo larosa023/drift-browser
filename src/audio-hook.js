@@ -108,6 +108,8 @@
     }
   }).observe(document.documentElement || document, { childList: true, subtree: true });
 
+  // Drift found a player this page made (off the page, or inside a component): take it in.
+  S.adopt = (el) => { if (el instanceof HTMLMediaElement) apply(el); };
   // What the tab volume reaches here: playing media and Web Audio outputs.
   S.report = () => {
     let media = 0;
