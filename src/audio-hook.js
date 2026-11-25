@@ -39,6 +39,11 @@
     } catch { /* already routed by the page, or not allowed */ }
   }
 
+  // Gain changes glide over a few milliseconds, so dragging the slider doesn't click or crackle.
+  function glide(param, v) {
+    try { const c = param.__ctx; param.cancelScheduledValues(c.currentTime); param.setTargetAtTime(v, c.currentTime, 0.015); }
+    catch { param.value = v; }
+  }
   function apply(el) {
     if (!(el instanceof HTMLMediaElement)) return;
     if (!intended.has(el)) {
@@ -48,7 +53,7 @@
     const want = intended.get(el);
     if (S.gain > 1) route(el);
     const g = routed.get(el);
-    if (g) { realSet.call(el, want); g.gain.value = S.gain; }
+    if (g) { realSet.call(el, want); g.gain.__ctx = g.context; glide(g.gain, S.gain); }
     else realSet.call(el, Math.max(0, Math.min(1, want * Math.min(S.gain, 1))));
   }
 
@@ -121,6 +126,6 @@
     S.gain = Math.max(0, Math.min(6, Number(g) || 0));
     scan(document);
     for (const r of elements) { const el = r.deref(); if (el) apply(el); else elements.delete(r); }
-    for (const r of masters) { const m = r.deref(); if (m) m.gain.value = S.gain; else masters.delete(r); }
+    for (const r of masters) { const m = r.deref(); if (m) { m.gain.__ctx = m.context; glide(m.gain, S.gain); } else masters.delete(r); }
   };
 })();

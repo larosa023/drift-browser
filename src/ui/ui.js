@@ -684,7 +684,7 @@ $('#btn-settings').onclick = async () => {
 $('#btn-downloads').onclick = () => { togglePanel('downloads'); if (panel === 'downloads') send('downloads-seen'); };
 $('#btn-extensions').onclick = () => togglePanel('extensions');
 $('#btn-volume').onclick = () => togglePanel('volume');
-$('#vol-reset').onclick = () => S.tabs.filter(t => t.volume !== 1).forEach(t => send('tab-volume', t.id, 1));
+$('#vol-reset').onclick = () => S.tabs.filter(t => volOf(t) !== 1).forEach(t => sendVolume(t.id, 1, true));
 $('#ext-store').onclick = () => send('ext-store');
 $('#dl-folder').onclick = () => send('open-downloads-folder');
 document.querySelectorAll('[data-close]').forEach(b => b.onclick = () => togglePanel(null));
@@ -1481,6 +1481,10 @@ const toSlider = (v) => v <= 1 ? v * 200 : 200 + (v - 1) * 50;     // 0..300
 const fromSlider = (x) => x <= 200 ? x / 200 : 1 + (x - 200) / 50;  // -> 0..3
 let volKey = '';
 let draggingVol = null;
+// Levels this window just set: shown (and used by the scroll wheel) until Drift's own state,
+// which updates a moment later, has caught up.
+const volLocal = new Map();   // tab id -> { v, at }
+function volOf(t) { const l = volLocal.get(t.id); if (l && performance.now() - l.at < 1500) return l.v; volLocal.delete(t.id); return t.volume; }
 
 function renderVolume() {
   const list = S.tabs.filter(t => t.hadAudio || t.audible || t.volume !== 1);
@@ -1504,8 +1508,8 @@ function renderVolume() {
   for (const t of list) {
     const row = body.querySelector(`[data-vol="${t.id}"]`); if (!row) continue;
     const r = row.querySelector('input');
-    if (draggingVol !== t.id) r.value = toSlider(t.volume);
-    paintVol(row, draggingVol === t.id ? fromSlider(Number(r.value)) : t.volume);
+    if (draggingVol !== t.id) r.value = toSlider(volOf(t));
+    paintVol(row, draggingVol === t.id ? fromSlider(Number(r.value)) : volOf(t));
   }
 }
 function paintVol(row, v) {
@@ -1515,23 +1519,37 @@ function paintVol(row, v) {
   pct.textContent = Math.round(v * 100) + '%';
   pct.classList.toggle('boost', v > 1.001);
 }
-let volRaf = 0;
 $('#volume-body').addEventListener('input', (e) => {
   if (e.target.type !== 'range') return;
   const row = e.target.closest('[data-vol]'); const id = Number(row.dataset.vol);
   let v = fromSlider(Number(e.target.value));
   if (Math.abs(v - 1) < 0.03) { v = 1; }            // gentle snap to 100%
   draggingVol = id; paintVol(row, v);
-  cancelAnimationFrame(volRaf); volRaf = requestAnimationFrame(() => send('tab-volume', id, v));
+  sendVolume(id, v);
 });
-$('#volume-body').addEventListener('change', () => { draggingVol = null; });
+// At most ~30 updates a second while dragging (a 240 Hz screen would otherwise send 240), and
+// always the final value.
+let volLast = 0, volTimer = 0, volPending = null;
+function sendVolume(id, v, now = false) {
+  volLocal.set(id, { v, at: performance.now() });
+  volPending = [id, v];
+  const go = () => { volTimer = 0; volLast = performance.now(); if (volPending) { send('tab-volume', ...volPending); volPending = null; } };
+  if (now) { clearTimeout(volTimer); return go(); }
+  if (volTimer) return;
+  const wait = Math.max(0, 33 - (performance.now() - volLast));
+  if (!wait) go(); else volTimer = setTimeout(go, wait);
+}
+$('#volume-body').addEventListener('change', (e) => {
+  if (e.target.type === 'range') { const row = e.target.closest('[data-vol]'); let v = fromSlider(Number(e.target.value)); if (Math.abs(v - 1) < 0.03) v = 1; sendVolume(Number(row.dataset.vol), v, true); }
+  draggingVol = null;
+});
 $('#volume-body').addEventListener('pointerup', () => { draggingVol = null; });
 $('#volume-body').addEventListener('click', (e) => {
   const row = e.target.closest('[data-vol]'); const act = e.target.closest('[data-act]');
   if (!row || !act) return;
   const id = Number(row.dataset.vol);
   if (act.dataset.act === 'mute') send('toggle-mute', id);
-  if (act.dataset.act === 'reset') send('tab-volume', id, 1);
+  if (act.dataset.act === 'reset') sendVolume(id, 1, true);
   if (act.dataset.act === 'go') send('activate', id);
 });
 
@@ -1542,8 +1560,8 @@ function wheelVolume(e) {
   e.preventDefault();
   const t = S.tabs.find(x => x.id === Number(el.dataset.id)); if (!t) return;
   const step = e.deltaY < 0 ? 0.1 : -0.1;
-  const v = Math.max(0, Math.min(3, Math.round((t.volume + step) * 10) / 10));
-  send('tab-volume', t.id, v);
+  const v = Math.max(0, Math.min(3, Math.round((volOf(t) + step) * 10) / 10));
+  sendVolume(t.id, v, true);
   toast(`${icon('sound')}<span>${esc(tabTitle(t))} — ${Math.round(v * 100)}%</span>`);
 }
 $('#tablist').addEventListener('wheel', wheelVolume, { passive: false });

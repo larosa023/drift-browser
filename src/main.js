@@ -1130,7 +1130,7 @@ function wireTab(tab, wc) {
   // Parts of the site you hid with the zapper stay hidden (set as soon as the page exists).
   wc.on('dom-ready', () => applyZaps(wc));
   wc.on('did-navigate', (_e, url) => {
-    tab.__volReloadOffered = false;
+    tab.__volReloadOffered = false; tab.__volReached = false;
     if (hostOf(url) !== tab.iconHost) tab.iconHost = '';
     if (hostOf(url) !== hostOf(tab.url)) tab.favicon = faviconStore[hostOf(url)] || '';
     tab.url = url; addHistory(url, wc.getTitle()); upd();
@@ -2693,24 +2693,19 @@ function volSessions(wc) {
   }
   return [undefined, ...wc.__driftFrameSessions];
 }
-async function reachHiddenAudio(wc) {
-  const dbg = wc.debugger, out = { media: 0, playing: 0, lostContexts: 0, masters: 0 };
-  const sessions = volSessions(wc);
+async function reachHiddenAudio(wc, heavy = true) {
+  const dbg = wc.debugger, out = { media: 0, playing: 0, lostContexts: 0, masters: 0, searched: 0 };
+  volSessions(wc);
   await new Promise(r => setTimeout(r, 150));   // embeds attached just now report in
   for (const sid of [undefined, ...(wc.__driftFrameSessions || [])]) {
     const send = (m, p) => dbg.sendCommand(m, p, sid);
+    let playing = 0;
     try {
-      const proto = await send('Runtime.evaluate', { expression: 'HTMLMediaElement.prototype', objectGroup: 'drift-vol' });
-      if (proto.result && proto.result.objectId) {
-        const all = await send('Runtime.queryObjects', { prototypeObjectId: proto.result.objectId, objectGroup: 'drift-vol' });
-        const r = await send('Runtime.callFunctionOn', { objectId: all.objects.objectId, returnByValue: true, functionDeclaration:
-          // (the list also holds the prototypes, e.g. HTMLAudioElement.prototype: skipped)
-          'function () { const s = globalThis.__driftAudio; let n = 0, p = 0; for (const el of this) { try { if (Object.prototype.hasOwnProperty.call(el, "constructor")) continue; n++; if (!el.paused) p++; if (s && s.adopt) s.adopt(el); } catch (e) {} } return [n, p]; }' });
-        const [n, p] = (r.result && r.result.value) || [0, 0];
-        out.media += n; out.playing += p;
-      }
-      // Players on the page but inside web components (shadow DOM), which the hook's own search
-      // can't see: found through the page's structure.
+      // 1. What the hook already reaches (free).
+      const rep = await send('Runtime.evaluate', { expression: 'globalThis.__driftAudio && globalThis.__driftAudio.report ? globalThis.__driftAudio.report() : null', returnByValue: true }).catch(() => null);
+      const rv = rep && rep.result && rep.result.value;
+      if (rv) { playing += rv.media; out.masters += rv.masters; }
+      // 2. Players inside web components (shadow DOM): through the page's structure (cheap).
       try {
         await send('DOM.getDocument', { depth: 0 });
         const q = await send('DOM.performSearch', { query: 'audio, video', includeUserAgentShadowDOM: false });
@@ -2719,23 +2714,41 @@ async function reachHiddenAudio(wc) {
           for (const nodeId of nodeIds) {
             const o = await send('DOM.resolveNode', { nodeId, objectGroup: 'drift-vol' }).catch(() => null);
             if (o && o.object && o.object.objectId) await send('Runtime.callFunctionOn', { objectId: o.object.objectId, functionDeclaration: 'function () { const s = globalThis.__driftAudio; if (s && s.adopt && this instanceof HTMLMediaElement) { s.adopt(this); return !this.paused; } return false; }', returnByValue: true })
-              .then(r => { if (r.result && r.result.value) out.playing++; }).catch(() => {});
+              .then(r => { if (r.result && r.result.value) { playing++; out.media++; } }).catch(() => {});
           }
         }
         if (q.searchId) send('DOM.discardSearchResults', { searchId: q.searchId }).catch(() => {});
       } catch {}
-      const cproto = await send('Runtime.evaluate', { expression: 'typeof BaseAudioContext === "function" ? BaseAudioContext.prototype : null', objectGroup: 'drift-vol' });
-      if (cproto.result && cproto.result.objectId) {
-        const all = await send('Runtime.queryObjects', { prototypeObjectId: cproto.result.objectId, objectGroup: 'drift-vol' });
-        const r = await send('Runtime.callFunctionOn', { objectId: all.objects.objectId, returnByValue: true, functionDeclaration:
-          'function () { let lost = 0, ok = 0; for (const c of this) { try { if (Object.prototype.hasOwnProperty.call(c, "constructor") || c.state !== "running") continue; if (c.__driftMaster) ok++; else lost++; } catch (e) {} } return [lost, ok]; }' });
-        const [lost, ok] = (r.result && r.result.value) || [0, 0];
-        out.lostContexts += lost; out.masters += ok;
+      // 3. Only if nothing playing was found yet: search the page's memory for players it keeps
+      //    out of the page. (This makes the page's engine tidy its memory first, which can
+      //    pause a heavy page briefly, so it's the last resort, once per page.)
+      if (!playing && heavy) {
+        out.searched++;
+        const proto = await send('Runtime.evaluate', { expression: 'HTMLMediaElement.prototype', objectGroup: 'drift-vol' });
+        if (proto.result && proto.result.objectId) {
+          const all = await send('Runtime.queryObjects', { prototypeObjectId: proto.result.objectId, objectGroup: 'drift-vol' });
+          const r = await send('Runtime.callFunctionOn', { objectId: all.objects.objectId, returnByValue: true, functionDeclaration:
+            // (the list also holds the prototypes, e.g. HTMLAudioElement.prototype: skipped)
+            'function () { const s = globalThis.__driftAudio; let n = 0, p = 0; for (const el of this) { try { if (Object.prototype.hasOwnProperty.call(el, "constructor")) continue; n++; if (!el.paused) p++; if (s && s.adopt) s.adopt(el); } catch (e) {} } return [n, p]; }' });
+          const [n, p] = (r.result && r.result.value) || [0, 0];
+          out.media += n; playing += p;
+        }
+      }
+      // 4. Still nothing: is there Web Audio here the hook can't reach (to offer a reload)?
+      if (!playing && heavy) {
+        const cproto = await send('Runtime.evaluate', { expression: 'typeof BaseAudioContext === "function" ? BaseAudioContext.prototype : null', objectGroup: 'drift-vol' });
+        if (cproto.result && cproto.result.objectId) {
+          const all = await send('Runtime.queryObjects', { prototypeObjectId: cproto.result.objectId, objectGroup: 'drift-vol' });
+          const r = await send('Runtime.callFunctionOn', { objectId: all.objects.objectId, returnByValue: true, functionDeclaration:
+            'function () { let lost = 0, ok = 0; for (const c of this) { try { if (Object.prototype.hasOwnProperty.call(c, "constructor") || c.state !== "running") continue; if (c.__driftMaster) ok++; else lost++; } catch (e) {} } return [lost, ok]; }' });
+          const [lost, ok] = (r.result && r.result.value) || [0, 0];
+          out.lostContexts += lost; out.masters += ok;
+        }
       }
     } catch (e) { console.error('[volume] reach', sid || 'page', e.message); }
+    out.playing += playing;
     send('Runtime.releaseObjectGroup', { objectGroup: 'drift-vol' }).catch(() => {});
   }
-  void sessions;
   return out;
 }
 // After a change on a tab that's playing: hand any hidden players to the hook; if the page's sound
@@ -2745,8 +2758,21 @@ function checkVolumeReach(tab) {
   tab.__volCheck = setTimeout(async () => {
     if (!tab.view || tab.volume === 1) return;
     const wc = tab.view.webContents; if (wc.isDestroyed()) return;
-    const found = await reachHiddenAudio(wc);
+    if (!tab.audible) return;   // nothing playing: the hook takes players as they start (checked again then)
+    // Cheap checks first. Most players look at their own position every moment (for a
+    // progress bar), which hands them to the hook by itself: give that a moment before the
+    // memory search, which can pause a heavy page briefly.
+    let found = await reachHiddenAudio(wc, false);
+    if (!found.playing) {
+      await new Promise(r => setTimeout(r, 700));
+      if (!tab.view || wc.isDestroyed() || tab.volume === 1) return;
+      found = await reachHiddenAudio(wc, false);
+      if (!found.playing) found = await reachHiddenAudio(wc, true);
+    }
     tab.__volReach = found;
+    // Searched: no need again until the page changes (a heavy page can stutter for a moment
+    // while its memory is searched, so it happens once per page, not on every change).
+    if (found.media || found.masters || found.lostContexts) tab.__volReached = true;
     if (!tab.audible || tab.muted || tab.__volReloadOffered) return;
     // Playing players now follow the slider; Web Audio already routed through Drift does too.
     if (found.playing || (found.masters && !found.lostContexts)) return;
@@ -2754,19 +2780,26 @@ function checkVolumeReach(tab) {
     tab.__volReloadOffered = true;
     const c = ctxOfTab(tab);
     if (c && c.ui && !c.ui.webContents.isDestroyed()) c.ui.webContents.send('toast', { text: `This page started its sound before you changed the volume. Reload it to apply ${Math.round(tab.volume * 100)}%`, icon: 'sound', ms: 9000, action: { reloadTab: tab.id } });
-  }, 900);
+  }, 600);
 }
 
-function applyVolume(tab) {
+// Frames that already have the hook just get the new level (a tiny script); the hook itself is
+// sent only to frames that don't have it yet.
+function applyVolume(tab, { early = true } = {}) {
   if (!tab.view) return;
   const wc = tab.view.webContents;
   if (wc.isDestroyed()) return;
-  earlyAudio(tab);
-  const code = `${AUDIO_HOOK};window.__driftAudio.set(${tab.volume});`;
+  if (early) earlyAudio(tab);
+  const v = tab.volume;
+  const quick = `window.__driftAudio ? (window.__driftAudio.set(${v}), true) : false`;
+  const full = `${AUDIO_HOOK};window.__driftAudio.set(${v});`;
   let frames = [];
   try { frames = wc.mainFrame.framesInSubtree; } catch {}
   for (const f of frames) {
-    try { if (!f.isDestroyed()) f.executeJavaScript(code).catch(() => {}); } catch {}
+    try {
+      if (f.isDestroyed()) continue;
+      f.executeJavaScript(quick).then((had) => { if (!had && !f.isDestroyed() && tab.volume === v) f.executeJavaScript(full).catch(() => {}); }).catch(() => {});
+    } catch {}
   }
 }
 
@@ -2775,12 +2808,21 @@ function setTabVolume(id, v) {
   tab.volume = Math.round(Math.max(0, Math.min(3, Number(v) || 0)) * 100) / 100;
   tab.hadAudio = true;
   if (tab.muted && tab.volume > 0 && tab.view) { tab.muted = false; tab.view.webContents.setAudioMuted(false); }
-  applyVolume(tab);
-  checkVolumeReach(tab);
-  push();
+  // While the slider moves only the level changes; the slower parts wait until it settles:
+  // registering the hook for future loads, the one-time search for hidden players, and
+  // updating the sidebar.
+  applyVolume(tab, { early: false });
+  clearTimeout(tab.__volSettle);
+  tab.__volSettle = setTimeout(() => {
+    if (!tab.view || tab.view.webContents.isDestroyed()) return;
+    earlyAudio(tab);
+    if (!tab.__volReached) checkVolumeReach(tab);
+    const c = ctxOfTab(tab); if (c) push(c);
+  }, 350);
 }
-// Players a page starts later (a new clip) are found again when the tab starts playing.
-function recheckVolume(tab) { if (tab.volume !== 1 && tab.view) checkVolumeReach(tab); }
+// A clip that starts on a page not yet searched since it loaded: search it (once). Pages that
+// were searched already catch new players themselves (the hook watches play()).
+function recheckVolume(tab) { if (tab.volume !== 1 && tab.view && !tab.__volReached) checkVolumeReach(tab); }
 
 function toggleMute(id) {
   const tab = tabs.find(t => t.id === id); if (!tab || !tab.view) return;

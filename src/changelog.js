@@ -1,6 +1,11 @@
 // What's new in each release, shown on the What's new page (drift://whatsnew) after an update.
 // Newest first. Kinds: new, faster, fixed, changed. Written for people using Drift.
 module.exports = [
+  { version: '1.33.3', date: '2026-11-25', items: [
+    ['improved', 'Volume mixer is smooth: dragging a slider only changes the level, and the slower setup happens once when you let go, so pages keep running smoothly while you drag. The sound glides to the new level instead of stepping (no crackle).'],
+    ['improved', 'Fewer updates while dragging (about 30 a second instead of one per screen refresh on high-refresh monitors), and the deep search for hidden players only runs when nothing quicker finds them, once per page.'],
+    ['fixed', 'Scrolling quickly on a tab\'s speaker icon now counts every notch, and the slider no longer jumps back for a moment after you let go.'],
+  ] },
   { version: '1.33.2', date: '2026-11-25', items: [
     ['fixed', 'Volume mixer: now reaches players it used to miss. That covers players a site keeps out of the page, players inside page components, and players in embeds from other sites (like a Spotify or YouTube player on another site). It also finds them again each time a new clip starts.'],
     ['fixed', 'The "reload to apply" message only shows when the sound really can\'t be changed while it plays.'],
