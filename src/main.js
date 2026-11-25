@@ -1130,6 +1130,7 @@ function wireTab(tab, wc) {
   // Parts of the site you hid with the zapper stay hidden (set as soon as the page exists).
   wc.on('dom-ready', () => applyZaps(wc));
   wc.on('did-navigate', (_e, url) => {
+    tab.__volReloadOffered = false;
     if (hostOf(url) !== tab.iconHost) tab.iconHost = '';
     if (hostOf(url) !== hostOf(tab.url)) tab.favicon = faviconStore[hostOf(url)] || '';
     tab.url = url; addHistory(url, wc.getTitle()); upd();
@@ -2647,10 +2648,52 @@ function tabContextMenu(id) {
 // the page: see audio-hook.js). 0 = silent, 1 = normal, up to 3 = 300% boost.
 // ---------------------------------------------------------------------------
 
+// Once a tab's volume is changed, the hook also runs at the very start of every page load in
+// that tab (before the page's own audio code), so it reaches all of the page's sound. Only on
+// such tabs: other sites never see it.
+function earlyAudio(tab) {
+  const wc = tab.view && tab.view.webContents;
+  if (!wc || wc.isDestroyed()) return;
+  const dbg = wc.debugger;
+  const want = tab.volume === 1 ? null : tab.volume;
+  if (wc.__driftAudioVol === want) return;
+  const old = wc.__driftAudioScript;
+  wc.__driftAudioScript = null; wc.__driftAudioVol = want;
+  if (old && dbg.isAttached()) dbg.sendCommand('Page.removeScriptToEvaluateOnNewDocument', { identifier: old }).catch(() => {});
+  if (want === null) return;
+  try { if (!dbg.isAttached()) dbg.attach('1.3'); } catch { return; }
+  if (!wc.__driftAudioDetach) {
+    wc.__driftAudioDetach = true;
+    dbg.on('detach', () => { wc.__driftAudioScript = null; wc.__driftAudioVol = undefined; });   // DevTools or a crash: added again on the next change or load
+  }
+  dbg.sendCommand('Page.addScriptToEvaluateOnNewDocument', { source: `${AUDIO_HOOK};window.__driftAudio.set(${want});` })
+    .then((r) => { if (wc.__driftAudioVol === want) wc.__driftAudioScript = r.identifier; else dbg.sendCommand('Page.removeScriptToEvaluateOnNewDocument', { identifier: r.identifier }).catch(() => {}); })
+    .catch(() => { wc.__driftAudioVol = undefined; });
+}
+// After a change on a tab that's playing: if the hook found nothing it can turn up or down (the
+// page's sound was set up before the hook, in ways it can't reach), offer to reload the tab.
+let volCheck = 0;
+function checkVolumeReach(tab) {
+  clearTimeout(volCheck);
+  volCheck = setTimeout(async () => {
+    if (!tab.view || !tab.audible || tab.muted || tab.volume === 1 || tab.__volReloadOffered) return;
+    const wc = tab.view.webContents; if (wc.isDestroyed()) return;
+    let media = 0, masters = 0;
+    for (const f of wc.mainFrame.framesInSubtree) {
+      try { const r = await f.executeJavaScript('window.__driftAudio && window.__driftAudio.report ? window.__driftAudio.report() : null'); if (r) { media += r.media; masters += r.masters; } } catch {}
+    }
+    if (media || masters || !tab.audible) return;
+    tab.__volReloadOffered = true;
+    const c = ctxOfTab(tab);
+    if (c && c.ui && !c.ui.webContents.isDestroyed()) c.ui.webContents.send('toast', { text: `This page started its sound before you changed the volume. Reload it to apply ${Math.round(tab.volume * 100)}%`, icon: 'sound', ms: 9000, action: { reloadTab: tab.id } });
+  }, 900);
+}
+
 function applyVolume(tab) {
   if (!tab.view) return;
   const wc = tab.view.webContents;
   if (wc.isDestroyed()) return;
+  earlyAudio(tab);
   const code = `${AUDIO_HOOK};window.__driftAudio.set(${tab.volume});`;
   let frames = [];
   try { frames = wc.mainFrame.framesInSubtree; } catch {}
@@ -2660,11 +2703,12 @@ function applyVolume(tab) {
 }
 
 function setTabVolume(id, v) {
-  const tab = tabs.find(t => t.id === id); if (!tab) return;
+  const tab = findTab(Number(id)); if (!tab) return;
   tab.volume = Math.round(Math.max(0, Math.min(3, Number(v) || 0)) * 100) / 100;
   tab.hadAudio = true;
   if (tab.muted && tab.volume > 0 && tab.view) { tab.muted = false; tab.view.webContents.setAudioMuted(false); }
   applyVolume(tab);
+  checkVolumeReach(tab);
   push();
 }
 
@@ -5245,6 +5289,7 @@ function setupIPC() {
     else delete store[key];
     if (store === settings.permissions) saveSettings();
   });
+  on('reload-tab', (id) => { const t = findTab(Number(id)); if (t && t.view && !t.view.webContents.isDestroyed()) t.view.webContents.reload(); });
   on('shot-show', (key) => { const f = shots.get(key); if (f) shell.showItemInFolder(f); });
   on('reader', () => openReader(activeTab()));
   on('qr-page', () => showQr(activeTab()));

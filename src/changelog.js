@@ -1,6 +1,10 @@
 // What's new in each release, shown on the What's new page (drift://whatsnew) after an update.
 // Newest first. Kinds: new, faster, fixed, changed. Written for people using Drift.
 module.exports = [
+  { version: '1.33.1', date: '2026-11-25', items: [
+    ['fixed', 'Volume mixer: works on music sites whose player isn\'t part of the page (and so was never found), and on tabs whose volume you set before they play: once a tab\'s volume is changed, it applies from the start of every page load in that tab.'],
+    ['fixed', 'If a page started its sound in a way Drift can\'t reach while it plays, changing its volume now says so and offers to reload the tab, instead of the slider doing nothing.'],
+  ] },
   { version: '1.33.0', date: '2026-11-24', items: [
     ['new', 'Drag to split: drag a tab from the sidebar onto the left or right half of the page. The half it will fill shows "Split on the left / right" while the page moves aside, and letting go opens the two side by side. Already in split view? The tab takes the place of the page on that side.'],
     ['new', 'Drop a tab onto another tab in the sidebar to split them. Drag one out of the pair to put it back on its own.'],

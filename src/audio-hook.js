@@ -62,9 +62,17 @@
     },
   });
 
-  // Media that never touches the DOM (new Audio()) is caught when it starts playing.
+  // Media that never touches the DOM (new Audio()) is caught when it starts playing, or, if it
+  // was already playing before this ran, the next time the page looks at it (players check
+  // their position and state all the time).
   const origPlay = proto.play;
   proto.play = function () { try { apply(this); } catch {} return origPlay.apply(this, arguments); };
+  for (const k of ['currentTime', 'paused', 'duration', 'ended']) {
+    const d = Object.getOwnPropertyDescriptor(proto, k);
+    if (!d || !d.get) continue;
+    const get = d.get;
+    Object.defineProperty(proto, k, { ...d, get() { if (!intended.has(this)) { try { apply(this); } catch {} } return get.call(this); } });
+  }
 
   // Web Audio made by the page: a master gain sits in front of each destination.
   // Normally page-preload.js installs this at document start; if it didn't run
@@ -100,6 +108,13 @@
     }
   }).observe(document.documentElement || document, { childList: true, subtree: true });
 
+  // What the tab volume reaches here: playing media and Web Audio outputs.
+  S.report = () => {
+    let media = 0;
+    for (const r of elements) { const el = r.deref(); if (el && !el.paused) media++; }
+    let masters = 0; for (const r of window.__driftMasters || []) if (r.deref()) masters++;
+    return { media, masters };
+  };
   S.set = (g) => {
     S.gain = Math.max(0, Math.min(6, Number(g) || 0));
     scan(document);

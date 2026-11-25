@@ -1868,6 +1868,7 @@ window.drift.on('toast', (t) => {
   if (t.action && t.action.bm) actions.push({ label: t.action.label, run: () => { const b = findBm(t.action.bm); if (b) editBookmark(b); } });
   if (t.action && t.action.update) actions.push({ label: t.action.label, run: () => send('update-install') });
   if (t.action && t.action.zapUndo) actions.push({ label: 'Undo', run: () => send('zap-undo', t.action.zapUndo.host, t.action.zapUndo.sels) });
+  if (t.action && t.action.reloadTab) actions.push({ label: 'Reload', run: () => send('reload-tab', t.action.reloadTab) });
   if (t.action && t.action.shot) actions.push({ label: 'Show file', run: () => send('shot-show', t.action.shot) });
   if (t.action && t.action.dlAllow) actions.push({ label: 'Download anyway', run: () => send('dl-allow', t.action.dlAllow) });
   if (t.action && t.action.popup) {
