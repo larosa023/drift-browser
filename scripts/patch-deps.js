@@ -253,3 +253,22 @@ for (const variant of ['cjs/browser-action.js', 'esm/browser-action.mjs']) {
     console.log('patch-deps: patched electron-chrome-extensions preload (sidePanel)');
   }
 }
+
+// electron-chrome-extensions (main process): an extension page asking for events while its
+// extension is briefly unloaded (an update from the Web Store, or Drift reloading it to add its
+// worker helper) threw, and Drift showed that as an error box. Its pages ask again once it's
+// back, so the request is just skipped.
+for (const variant of ['cjs/index.js', 'esm/index.mjs']) {
+  const f = path.join(__dirname, '..', 'node_modules', 'electron-chrome-extensions', 'dist', ...variant.split('/'));
+  if (!fs.existsSync(f)) continue;
+  let s = fs.readFileSync(f, 'utf8');
+  const MARK7 = '/* drift: unloaded extension listener v1 */';
+  if (s.includes(MARK7)) continue;
+  const from = '      throw new Error(`extension not registered in session [extensionId:${extensionId}]`);';
+  if (!s.includes(from)) throw new Error(`patch-deps: addListener changed in ${variant}; update scripts/patch-deps.js`);
+  s = s.replace(from, `      ${MARK7}
+      console.warn(\`[ext] skipped '\${eventName}' listener: extension \${extensionId} isn't loaded right now\`);
+      return;`);
+  fs.writeFileSync(f, s);
+  console.log(`patch-deps: patched electron-chrome-extensions ${variant} (unloaded extension listener)`);
+}

@@ -1,6 +1,9 @@
 // What's new in each release, shown on the What's new page (drift://whatsnew) after an update.
 // Newest first. Kinds: new, faster, fixed, changed. Written for people using Drift.
 module.exports = [
+  { version: '1.33.4', date: '2026-11-25', items: [
+    ['fixed', 'No more "A JavaScript error occurred in the main process" box when an extension updates or installs (seen with Hoopology Play Finder). An extension\'s page asking for events while the extension is briefly reloading is now skipped; it asks again a moment later.'],
+  ] },
   { version: '1.33.3', date: '2026-11-25', items: [
     ['improved', 'Volume mixer is smooth: dragging a slider only changes the level, and the slower setup happens once when you let go, so pages keep running smoothly while you drag. The sound glides to the new level instead of stepping (no crackle).'],
     ['improved', 'Fewer updates while dragging (about 30 a second instead of one per screen refresh on high-refresh monitors), and the deep search for hidden players only runs when nothing quicker finds them, once per page.'],

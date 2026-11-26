@@ -3459,9 +3459,16 @@ function stopSwBridge(id) { const v = swBridges.get(id); swBridges.delete(id); i
 async function onExtLoadedSw(ext) {
   if (!ext) return;
   if (needsSwShim(ext.manifest) && prepareSwShim(ext.path)) {
-    // Just installed: load it again with the helper in place.
+    // Just installed or updated: load it again with the helper in place (its helper page is
+    // closed first, so nothing of it is left asking for events while it's away).
     setTimeout(async () => {
-      try { extApi().removeExtension(ext.id); const e2 = await extApi().loadExtension(ext.path, { allowFileAccess: true }); startSwBridge(e2); await startWorker(e2); } catch (e) { console.error('[ext] reload with helper', e.message); }
+      stopSwBridge(ext.id);
+      try {
+        extApi().removeExtension(ext.id);
+        const e2 = await extApi().loadExtension(ext.path, { allowFileAccess: true });
+        startSwBridge(e2);
+        await startWorker(e2).catch(() => {});
+      } catch (e) { console.error('[ext] reload with helper', e.message); }
     }, 50);
     return;
   }
@@ -5837,6 +5844,9 @@ function setupWidevine() {
 // events may still arrive. Errors from those are logged rather than shown as a crash dialog.
 process.on('uncaughtException', (e) => {
   if (quitting || /has been destroyed/i.test(e && e.message || '')) { console.error('[main] ignored during teardown:', e && e.stack || e); return; }
+  // A request from an extension that went wrong (for example while it was being updated) only
+  // affects that extension, which asks again: logged, not shown as a crash.
+  if (/electron-chrome-(extensions|web-store)/.test(e && e.stack || '')) { console.error('[ext] error from an extension request:', e && e.stack || e); return; }
   console.error(e);
   try { dialog.showErrorBox('A JavaScript error occurred in the main process', String(e && e.stack || e)); } catch {}
 });
