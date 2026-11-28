@@ -1,6 +1,9 @@
 // What's new in each release, shown on the What's new page (drift://whatsnew) after an update.
 // Newest first. Kinds: new, faster, fixed, changed. Written for people using Drift.
 module.exports = [
+  { version: '1.33.7', date: '2026-11-28', items: [
+    ['fixed', 'Links, reload and Back doing nothing on some sites (like Letterboxd) unless you middle-clicked. Those pages ask "Leave site?" before you go, and that question was silently answered "Stay". Now you just leave.'],
+  ] },
   { version: '1.33.6', date: '2026-11-28', items: [
     ['changed', 'Page scrollbars match Drift: a slim rounded bar that takes your theme\'s accent colour when you hover or grab it, and follows theme changes right away. Sites that style their own scrollbars keep theirs.'],
     ['new', 'Settings → Look → Page scrollbars: Drift, Hidden (scroll with the wheel, touchpad or keys), or Windows\' own.'],

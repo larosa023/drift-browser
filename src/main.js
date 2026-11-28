@@ -6042,6 +6042,10 @@ if (!app.requestSingleInstanceLock(launchRequest)) {
       wc.on('before-input-event', (_e2, ie) => { if (ie.type === 'keyDown') { wc.__act = Date.now(); wc.__dlLeft = 3; } });
       wc.on('input-event', (_e2, ie) => { if (ie.type === 'touchStart' || ie.type === 'gestureTap') { wc.__act = Date.now(); wc.__dlLeft = 3; } });
     }
+    // A page asking "Leave site? Changes you made may not be saved" (a beforeunload prompt):
+    // Electron cancels the navigation without a word unless told otherwise, so links, reload
+    // and Back did nothing on those sites until the page was closed. Leave, as asked.
+    wc.on('will-prevent-unload', (e) => e.preventDefault());
     // Blocked sites, before the restart that blocks them completely: no page or frame (a video
     // player inside a stream site, say) from them loads, typed, clicked or redirected to.
     wc.on('will-frame-navigate', (e) => { if (isBlockSiteUrl(e.url)) e.preventDefault(); });
