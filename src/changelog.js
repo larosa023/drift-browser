@@ -1,6 +1,9 @@
 // What's new in each release, shown on the What's new page (drift://whatsnew) after an update.
 // Newest first. Kinds: new, faster, fixed, changed. Written for people using Drift.
 module.exports = [
+  { version: '1.33.5', date: '2026-11-28', items: [
+    ['changed', 'Drift\'s own look for its questions. "Save password?" and site permission requests are now a small card under the toolbar instead of a plain Windows box, and confirmations like deleting history or adding an extension are Drift dialogs. Esc cancels, Enter picks the highlighted button.'],
+  ] },
   { version: '1.33.4', date: '2026-11-25', items: [
     ['fixed', 'No more "A JavaScript error occurred in the main process" box when an extension updates or installs (seen with Hoopology Play Finder). An extension\'s page asking for events while the extension is briefly reloading is now skipped; it asks again a moment later.'],
   ] },

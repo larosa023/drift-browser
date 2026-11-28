@@ -1008,3 +1008,34 @@ body:not(.rail) #tablist .tab.in-folder.split-last, body.rail-open #tablist .tab
 #split-ph div { display: flex; flex-direction: column; align-items: center; gap: 8px; color: var(--muted); font-size: 13px; }
 #split-ph svg { color: var(--accent); }
 @keyframes ph-in { from { opacity: 0; } to { opacity: 1; } }
+
+/* Drift's question boxes (in place of Windows' message boxes) */
+#ask-wrap { position: fixed; inset: 0; z-index: 21; }
+#ask-wrap.dialog { background: rgba(0,0,0,.42); display: flex; justify-content: center; align-items: flex-start; padding-top: 16vh; animation: fade .12s ease-out; }
+body.light #ask-wrap.dialog { background: rgba(20,20,30,.22); }
+#ask { outline: none; background: var(--bg); color: var(--fg); border-radius: 14px; box-shadow: 0 0 0 1px var(--border), 0 24px 70px rgba(0,0,0,.5); animation: pop .14s ease-out; }
+#ask-wrap.dialog #ask { width: min(440px, calc(100vw - 48px)); padding: 18px; }
+#ask-wrap.card #ask { position: fixed; width: 384px; padding: 14px; box-shadow: 0 0 0 1px var(--border), 0 14px 40px rgba(0,0,0,.45); }
+#ask .ask-head { display: flex; gap: 12px; align-items: flex-start; }
+#ask .ask-ic { flex: none; width: 34px; height: 34px; border-radius: 10px; display: grid; place-items: center; color: var(--accent); background: color-mix(in srgb, var(--accent) 16%, transparent); }
+#ask .ask-ic.t-warning, #ask .ask-ic.t-error { color: #ff7b6b; background: rgba(255,110,90,.14); }
+#ask .ask-img { flex: none; width: 34px; height: 34px; border-radius: 8px; object-fit: contain; }
+#ask .ask-text { flex: 1; min-width: 0; }
+#ask .ask-kicker { font-size: 11.5px; color: var(--muted); margin-bottom: 2px; }
+#ask .ask-msg { font-size: 14px; font-weight: 600; line-height: 1.35; overflow-wrap: anywhere; }
+#ask .ask-detail { margin-top: 6px; font-size: 12.5px; line-height: 1.45; color: var(--muted); white-space: pre-line; max-height: 40vh; overflow: auto; overflow-wrap: anywhere; user-select: text; }
+#ask .ask-x { flex: none; width: 26px; height: 26px; margin: -4px -4px 0 0; border-radius: 7px; display: grid; place-items: center; color: var(--muted); }
+#ask .ask-x:hover { background: var(--hover); color: var(--fg); }
+#ask .ask-check { display: flex; align-items: center; gap: 8px; margin: 12px 0 0 46px; font-size: 12.5px; color: var(--muted); cursor: pointer; }
+#ask .ask-check input { accent-color: var(--accent); margin: 0; }
+#ask .ask-btns { display: flex; gap: 8px; margin-top: 16px; flex-wrap: wrap; }
+#ask .ask-btns .grow { flex: 1; }
+#ask-wrap.card .ask-btns { margin-left: 46px; margin-top: 12px; }
+#ask .ask-btns button { padding: 7px 14px; border-radius: 8px; background: var(--hover); font-weight: 500; font-size: 13px; }
+#ask .ask-btns button:hover { background: var(--press); }
+#ask .ask-btns button.primary { background: var(--accent); color: #fff; }
+#ask .ask-btns button.primary:hover { filter: brightness(1.08); }
+#ask .ask-btns button.danger { background: #e5484d; color: #fff; }
+#ask .ask-btns button:focus-visible { outline: none; box-shadow: 0 0 0 2px var(--bg), 0 0 0 3.5px color-mix(in srgb, var(--accent) 55%, transparent); }
+#ask .ask-btns button.risky { color: #e5484d; }
+#ask .ask-btns button { padding: 7px 13px; }

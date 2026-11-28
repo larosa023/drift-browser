@@ -61,7 +61,7 @@ function render() {
   b.classList.toggle('light', !S.dark);
   b.classList.toggle('hidden-bar', S.settings.sidebarHidden);
   b.classList.toggle('docked', !S.settings.sidebarHidden);
-  b.classList.toggle('over-palette', ['palette', 'modal', 'extmenu', 'siteinfo', 'dlmenu', 'railpeek', 'bmpop', 'zoompop', 'castpop'].includes(S.overlay));
+  b.classList.toggle('over-palette', ['palette', 'modal', 'extmenu', 'siteinfo', 'dlmenu', 'railpeek', 'bmpop', 'zoompop', 'castpop', 'ask'].includes(S.overlay));
   b.classList.toggle('rail', !!S.settings.sidebarRail && !S.settings.sidebarHidden);
   b.classList.toggle('bm-on', !!S.settings.titleBar && !!S.settings.bookmarksBar);
   b.classList.toggle('over-peek', S.overlay === 'peek');
@@ -150,6 +150,7 @@ function render() {
   if (S.overlay !== 'dlmenu') $('#dlmenu-wrap').hidden = true; else renderDlMenu();
   if (S.overlay !== 'zoompop') $('#zoompop-wrap').hidden = true;
   if (S.overlay !== 'castpop' && !$('#castpop-wrap').hidden && !pendingOverlay) closeCastPop(true);
+  syncAsk();
   if (S.overlay !== 'railpeek' && document.body.classList.contains('rail-open') && !(pendingOverlay && pendingOverlay.mode === 'railpeek')) instantRail(() => document.body.classList.remove('rail-open', 'rail-in', 'rail-closing'));
   if (S.overlay !== 'bmpop') closeBmPopups(true);
   if (panel === 'passwords') renderPasswords();
@@ -232,7 +233,7 @@ function placeActions() {
 
 function applyHole() {
   const w = $('#wash');
-  if (S && ['palette', 'modal', 'extmenu', 'siteinfo', 'dlmenu', 'railpeek', 'bmpop', 'zoompop', 'castpop'].includes(S.overlay)) {
+  if (S && ['palette', 'modal', 'extmenu', 'siteinfo', 'dlmenu', 'railpeek', 'bmpop', 'zoompop', 'castpop', 'ask'].includes(S.overlay)) {
     const { x, y, width: cw, height: ch } = content;
     w.style.clipPath = `polygon(evenodd, 0 0, 100% 0, 100% 100%, 0 100%, 0 0, ${x}px ${y}px, ${x + cw}px ${y}px, ${x + cw}px ${y + ch}px, ${x}px ${y + ch}px, ${x}px ${y}px)`;
   } else w.style.clipPath = '';
@@ -748,6 +749,7 @@ function overlayVisible(mode) {
     case 'bmpop': return !$('#bmpop-wrap').hidden;
     case 'zoompop': return !$('#zoompop-wrap').hidden;
     case 'castpop': return !$('#castpop-wrap').hidden;
+    case 'ask': return !$('#ask-wrap').hidden;
     default: return true;   // palette, modal and peek are drawn straight from the state
   }
 }
@@ -2341,3 +2343,76 @@ document.addEventListener('keydown', (e) => {
   if (e.key === 'Escape') closeCastPop();
   else if (e.key === ' ' && castS.s && !e.target.closest('input')) { e.preventDefault(); send('cast-cmd', castS.s.state === 'PLAYING' ? 'pause' : 'play'); }
 });
+
+// ---------------------------------------------------------------------- Drift's question boxes
+// In place of Windows' plain message boxes (save password, delete?, add extension?…): a dialog in
+// the window, or for save password and site permissions a small card under the address bar that
+// leaves the page usable. Several at once wait their turn. Enter = the suggested button, Esc = cancel.
+const askQ = []; let askCur = null;
+window.drift.on('ask', (a) => { askQ.push(a); if (!askCur) nextAsk(); });
+function nextAsk() {
+  askCur = askQ.shift() || null;
+  if (!askCur) { hideAsk(); return; }
+  renderAsk(askCur);
+  raiseOverlay('ask');
+}
+function hideAsk() {
+  $('#ask-wrap').hidden = true;
+  if (pendingOverlay && pendingOverlay.mode === 'ask') pendingOverlay = null;
+  if (S && S.overlay === 'ask') send('overlay', null);
+}
+// Another popup (the command bar, a menu) can take over the window for a moment: the question
+// waits underneath and comes back when that closes.
+function syncAsk() {
+  if (!askCur) return;
+  const mine = S.overlay === 'ask' || (pendingOverlay && pendingOverlay.mode === 'ask');
+  $('#ask-wrap').hidden = !mine;
+  if (!S.overlay && !pendingOverlay) { $('#ask-wrap').hidden = false; raiseOverlay('ask'); }
+}
+function renderAsk(a) {
+  const w = $('#ask-wrap'), box = $('#ask');
+  w.className = a.kind === 'card' ? 'card' : 'dialog';
+  const glyph = a.img ? `<img class="ask-img" src="${esc(a.img)}" alt="">`
+    : `<span class="ask-ic t-${esc(a.type || 'none')}">${icon(a.glyph || 'info', 18)}</span>`;
+  // The suggested button is the bright one. On a warning, a destructive choice ("Delete") is
+  // red: filled when it's the suggested one, red text when the safe choice is.
+  const btns = a.buttons.map((t, i) => {
+    const risky = a.type === 'warning' && i !== a.cancelId;
+    const cls = i === a.defaultId ? (risky ? 'danger' : 'primary') : (risky ? 'risky' : '');
+    return `<button type="button" data-i="${i}" class="${cls}">${esc(t)}</button>`;
+  });
+  box.innerHTML = `
+    <div class="ask-head">${glyph}<div class="ask-text">
+      ${a.title && a.kind === 'card' ? `<div class="ask-kicker">${esc(a.title)}</div>` : ''}
+      <div class="ask-msg">${esc(a.message || a.title || '')}</div>
+      ${a.detail ? `<div class="ask-detail">${esc(a.detail)}</div>` : ''}
+    </div>${a.kind === 'card' ? `<button type="button" class="ask-x" data-i="${a.cancelId}" title="Close (Esc)">${icon('x', 14)}</button>` : ''}</div>
+    ${a.checkbox ? `<label class="ask-check"><input type="checkbox" ${a.checked ? 'checked' : ''}><span>${esc(a.checkbox)}</span></label>` : ''}
+    <div class="ask-btns">${a.kind === 'card' ? '' : '<span class="grow"></span>'}${btns.join('')}</div>`;
+  placeAsk();
+  w.hidden = false;
+  setTimeout(() => { const d = box.querySelector(`.ask-btns [data-i="${a.defaultId}"]`) || box; d.focus({ preventScroll: true }); }, 30);
+}
+// The card sits at the top right of the page, under the toolbar.
+function placeAsk() {
+  const box = $('#ask');
+  if ($('#ask-wrap').className !== 'card') { box.style.left = box.style.top = ''; return; }
+  box.style.left = Math.max(8, content.x + content.width - 384 - 12) + 'px';
+  box.style.top = (content.y + 10) + 'px';
+}
+function answerAsk(i) {
+  const a = askCur; if (!a) return;
+  const cb = $('#ask .ask-check input');
+  send('ask-reply', a.id, i, cb ? cb.checked : undefined);
+  askCur = null;
+  if (askQ.length) nextAsk(); else hideAsk();
+}
+$('#ask').addEventListener('click', (e) => { const b = e.target.closest('[data-i]'); if (b) answerAsk(Number(b.dataset.i)); });
+$('#ask').addEventListener('keydown', (e) => {
+  if (!askCur) return;
+  if (e.key === 'Escape') { e.preventDefault(); answerAsk(askCur.cancelId); }
+  else if (e.key === 'Enter' && !e.target.closest('button')) { e.preventDefault(); answerAsk(askCur.defaultId); }
+});
+// Clicking outside: the card counts that as "not now"; a dialog stays until answered.
+$('#ask-wrap').addEventListener('mousedown', (e) => { if (e.target.id === 'ask-wrap' && askCur && askCur.kind === 'card') answerAsk(askCur.cancelId); });
+window.drift.on('layout', () => { if (askCur) placeAsk(); });

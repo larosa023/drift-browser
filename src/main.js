@@ -914,7 +914,7 @@ function layout() {
 function setOverlay(mode, keepFocus) {
   overlay = mode;
   layout();
-  if (['palette', 'modal', 'extmenu', 'siteinfo', 'dlmenu', 'bmpop', 'zoompop', 'castpop'].includes(mode)) ui.webContents.focus();
+  if (['palette', 'modal', 'extmenu', 'siteinfo', 'dlmenu', 'bmpop', 'zoompop', 'castpop', 'ask'].includes(mode)) ui.webContents.focus();
   else if (!keepFocus) focusPage();   // keepFocus: an extension popup just opened and must keep focus
   push();
 }
@@ -1630,7 +1630,7 @@ async function deleteWorkspace(id) {
   const dctx = cur;
   const mine = allTabs().filter(t => !t.pinned && t.ws === id);
   if (mine.length) {
-    const r = await dialog.showMessageBox(win, { type: 'warning', buttons: ['Delete', 'Cancel'], defaultId: 1, cancelId: 1, noLink: true,
+    const r = await askBox(win, { type: 'warning', buttons: ['Delete', 'Cancel'], defaultId: 1, cancelId: 1, noLink: true,
       message: `Delete the workspace “${w.name}”?`, detail: `Its ${mine.length} tab${mine.length === 1 ? '' : 's'} will close.` });
     if (r.response !== 0) return;
   }
@@ -3506,7 +3506,7 @@ async function setupExtensions(ses) {
     },
     removeWindow(w) { const c = ctxOfWin(w); if (c && c.win && !c.win.isDestroyed()) c.win.close(); },
     async requestPermissions(ext, perms) {
-      const r = await dialog.showMessageBox(win, {
+      const r = await askBox(win, {
         type: 'question', buttons: ['Allow', 'Deny'], defaultId: 0, cancelId: 1,
         message: `${localize(ext.name, ext)} wants additional access`,
         detail: [...(perms.permissions || []), ...(perms.origins || [])].join('\n'),
@@ -3526,7 +3526,7 @@ async function setupExtensions(ses) {
       session: ses,
       // Ask before installing, like Chrome's "Add extension?" prompt.
       beforeInstall: async (d) => {
-        const r = await dialog.showMessageBox(win, {
+        const r = await askBox(win, {
           type: 'question', buttons: ['Add extension', 'Cancel'], defaultId: 0, cancelId: 1,
           title: 'Add extension', message: `Add “${d.localizedName}” to Drift?`,
           detail: describePermissions(d.manifest), icon: d.icon && !d.icon.isEmpty() ? d.icon : undefined,
@@ -3588,7 +3588,7 @@ async function removeExtension(id) {
   if (id === uboId) return;   // built in: turned off from Settings → Shields instead
   const ext = extApi().getExtension(id); if (!ext) return;
   const name = localize(ext.manifest.name || ext.name, ext);
-  const r = await dialog.showMessageBox(win, { type: 'question', buttons: ['Remove', 'Cancel'], defaultId: 0, cancelId: 1, message: `Remove “${name}”?` });
+  const r = await askBox(win, { type: 'question', buttons: ['Remove', 'Cancel'], defaultId: 0, cancelId: 1, message: `Remove “${name}”?` });
   if (r.response !== 0) return;
   if (settings.unpacked.includes(ext.path)) {
     extApi().removeExtension(id);
@@ -3615,7 +3615,7 @@ async function loadUnpacked() {
     if (!settings.unpacked.includes(dir)) { settings.unpacked.push(dir); saveSettings(); }
     sendExtensions();
   } catch (e) {
-    dialog.showMessageBox(win, { type: 'error', message: "Couldn't load that extension", detail: e.message });
+    askBox(win, { type: 'error', message: "Couldn't load that extension", detail: e.message });
   }
 }
 
@@ -3651,7 +3651,8 @@ function setupPermissions(ses, store) {
     try { origin = new URL(details.requestingUrl || wc.getURL()).origin; } catch {}
     const key = `${origin}|${perm}`;
     if (key in P()) return cb(P()[key]);
-    const r = await dialog.showMessageBox(win, {
+    const r = await askBox(win, {
+      kind: 'card',
       type: 'question', buttons: ['Allow', 'Block'], defaultId: 1, cancelId: 1,
       title: 'Permission request', message: `${hostOf(origin) || 'This site'} wants to ${ASK[perm]}`,
       checkboxLabel: 'Remember my choice for this site', checkboxChecked: true,
@@ -3864,7 +3865,7 @@ function setupDownloads(ses) {
     if (risky) {
       item.pause();
       const host = hostOf(pageUrl) || hostOf(item.getURL()) || 'a site';
-      dialog.showMessageBox(win, { type: 'warning', buttons: ['Discard', 'Keep'], defaultId: 0, cancelId: 0, noLink: true,
+      askBox(win, { type: 'warning', buttons: ['Discard', 'Keep'], defaultId: 0, cancelId: 0, noLink: true,
         title: 'Keep this file?', message: `${name} can change your computer`,
         detail: `It's a program or script file from ${host}. Files like this can install malware. Keep it only if you trust ${host} and meant to download it.` })
         .then(r => { if (r.response === 1) { try { item.resume(); } catch {} } else { try { item.cancel(); } catch {} } })
@@ -4489,7 +4490,7 @@ async function chooseWallpaper() {
     filters: [{ name: 'Images', extensions: ['jpg', 'jpeg', 'png', 'webp', 'gif', 'avif', 'bmp'] }] });
   if (r.canceled || !r.filePaths[0]) return; if (!windows.includes(dlgCtx)) return; useWin(dlgCtx);
   try { useWallpaperFile(r.filePaths[0], path.extname(r.filePaths[0]).toLowerCase()); }
-  catch (e) { dialog.showMessageBox(win, { type: 'error', message: "Couldn't use that image", detail: e.message }); }
+  catch (e) { askBox(win, { type: 'error', message: "Couldn't use that image", detail: e.message }); }
 }
 
 // ---------------------------------------------------------------------------
@@ -4655,7 +4656,7 @@ async function importBookmarksFrom(source) {
     sendBookmarks();
     ui.webContents.send('toast', { text: `Imported ${n} bookmark${n === 1 ? '' : 's'} from ${name}`, icon: 'starfill' });
   } catch (e) {
-    dialog.showMessageBox(win, { type: 'error', message: "Couldn't import bookmarks", detail: e.message });
+    askBox(win, { type: 'error', message: "Couldn't import bookmarks", detail: e.message });
   }
 }
 
@@ -4671,6 +4672,33 @@ async function exportBookmarks() {
 // ---------------------------------------------------------------------------
 // Passwords
 // ---------------------------------------------------------------------------
+
+// Drift's own question box, in place of Windows' plain one: same options and same answer as
+// dialog.showMessageBox ({ response, checkboxChecked }). kind 'card' shows it as a small card
+// under the address bar (save password, site permissions); otherwise a dialog in the window.
+// Falls back to the Windows box only if the window's interface isn't there to show it.
+const asks = new Map(); let askSeq = 0;
+function askBox(w, o = {}) {
+  const c = windows.find(x => x.win === w) || cur;
+  const u = c && c.ui && !c.ui.webContents.isDestroyed() && !c.ui.webContents.isLoading() ? c.ui.webContents : null;
+  if (!u) return dialog.showMessageBox(w, o);
+  const buttons = (o.buttons && o.buttons.length ? o.buttons : ['OK']).map(String);
+  const cancelId = Number.isInteger(o.cancelId) ? o.cancelId : (buttons.length > 1 ? buttons.length - 1 : 0);
+  let icon = '';
+  try { if (o.icon && typeof o.icon !== 'string' && !o.icon.isEmpty()) icon = o.icon.resize({ width: 48 }).toDataURL(); } catch {}
+  return new Promise((resolve) => {
+    const id = ++askSeq;
+    asks.set(id, { resolve, cancelId, check: !!o.checkboxChecked, ctx: c });
+    u.send('ask', { id, kind: o.kind === 'card' ? 'card' : 'dialog', type: o.type || 'none', glyph: typeof o.icon === 'string' ? o.icon : '',
+      img: icon, title: String(o.title || ''), message: String(o.message || ''), detail: String(o.detail || ''), buttons,
+      defaultId: Number.isInteger(o.defaultId) ? o.defaultId : 0, cancelId, checkbox: o.checkboxLabel ? String(o.checkboxLabel) : '', checked: !!o.checkboxChecked });
+  });
+}
+function answerAsk(id, response, checked) {
+  const a = asks.get(id); if (!a) return;
+  asks.delete(id);
+  a.resolve({ response: Number.isInteger(response) && response >= 0 ? response : a.cancelId, checkboxChecked: checked === undefined ? a.check : !!checked });
+}
 
 let pendingLogin = null;     // { wcId, url, username, password, timer }
 
@@ -4689,7 +4717,8 @@ async function offerSavePassword() {
   if (same && same.password === p.password) return;
   const host = hostOf(p.url);
   const from = wcToTab.get(p.wcId); if (from) useTab(from);
-  const r = await dialog.showMessageBox(win, {
+  const r = await askBox(win, {
+    kind: 'card', icon: 'key',
     type: 'question', title: 'Save password',
     message: same ? `Update your saved password for ${host}?` : `Save password for ${host}?`,
     detail: p.username ? `Username: ${p.username}` : 'No username was detected.',
@@ -4707,15 +4736,15 @@ async function importPasswords() {
   try {
     const res = passwords.importCSV(fs.readFileSync(r.filePaths[0], 'utf8'));
     sendPasswords();
-    dialog.showMessageBox(win, { type: 'info', message: 'Passwords imported',
+    askBox(win, { type: 'info', message: 'Passwords imported',
       detail: `${res.added} added, ${res.updated} updated${res.skipped ? `, ${res.skipped} skipped (duplicates or not a website login)` : ''}.\n\nThe CSV file still contains your passwords in plain text. Delete it once you've checked everything imported.` });
   } catch (e) {
-    dialog.showMessageBox(win, { type: 'error', message: "Couldn't import passwords", detail: e.message });
+    askBox(win, { type: 'error', message: "Couldn't import passwords", detail: e.message });
   }
 }
 
 async function exportPasswords() {
-  const ok = await dialog.showMessageBox(win, { type: 'warning', buttons: ['Export', 'Cancel'], defaultId: 1, cancelId: 1,
+  const ok = await askBox(win, { type: 'warning', buttons: ['Export', 'Cancel'], defaultId: 1, cancelId: 1,
     message: 'Export passwords?', detail: 'The exported file is NOT encrypted. Anyone who can open it can read all your passwords.' });
   if (ok.response !== 0) return;
   const dlgCtx = cur;   // the dialog stays open while other windows' events change the current one
@@ -5268,7 +5297,7 @@ function setupIPC() {
   });
   on('remove-allow', (host) => { settings.shieldsAllow = settings.shieldsAllow.filter(h => h !== host); saveSettings(); push(); });
   on('clear-data', async () => {
-    const r = await dialog.showMessageBox(win, { type: 'warning', buttons: ['Clear', 'Cancel'], defaultId: 1, cancelId: 1,
+    const r = await askBox(win, { type: 'warning', buttons: ['Clear', 'Cancel'], defaultId: 1, cancelId: 1,
       message: 'Clear browsing data?', detail: 'This removes history, cookies, site data, cache and saved site permissions. You will be signed out of websites.' });
     if (r.response !== 0) return;
     history.clear(); histVer++; topCache = null; writeJSON('history.json', []);
@@ -5408,6 +5437,7 @@ function setupIPC() {
     else delete store[key];
     if (store === settings.permissions) saveSettings();
   });
+  on('ask-reply', (id, response, checked) => answerAsk(Number(id), Number(response), checked));
   on('reload-tab', (id) => { const t = findTab(Number(id)); if (t && t.view && !t.view.webContents.isDestroyed()) t.view.webContents.reload(); });
   on('shot-show', (key) => { const f = shots.get(key); if (f) shell.showItemInFolder(f); });
   on('reader', () => openReader(activeTab()));
@@ -5482,7 +5512,7 @@ function setupIPC() {
   });
   on('pw-delete', async (id) => {
     const e = passwords.get(id); if (!e) return;
-    const r = await dialog.showMessageBox(win, { type: 'question', buttons: ['Delete', 'Cancel'], defaultId: 0, cancelId: 1,
+    const r = await askBox(win, { type: 'question', buttons: ['Delete', 'Cancel'], defaultId: 0, cancelId: 1,
       message: `Delete the saved password for ${hostOf(e.url)}?`, detail: e.username ? `Username: ${e.username}` : '' });
     if (r.response === 0) { passwords.remove(id); sendPasswords(); }
   });
@@ -5662,7 +5692,7 @@ function createWindow(opts = {}) {
       if (snap.tabs.length) { closedTabs.push({ window: snap }); if (closedTabs.length > 25) closedTabs.shift(); }
     }
   }));
-  win.on('closed', () => closeWindowCtx(ctx));
+  win.on('closed', () => { for (const [id, a] of asks) if (a.ctx === ctx) answerAsk(id, -1); closeWindowCtx(ctx); });
 
   // First pages.
   const snap = opts.snapshot;
