@@ -70,6 +70,7 @@ const DEFAULT_SETTINGS = {
   pageStyle: 'flush',        // 'flush': the page runs to the window's edges · 'floating': a gap and rounded corners around it
   corners: 10,               // corner rounding of floating pages (px)
   uiFont: 'default',         // the interface's font (see UI_FONTS in ui.js)
+  scrollbars: 'drift',       // drift | hidden | system: page scrollbars (slim and themed, hidden, or Windows' own)
   tabSize: 'normal',         // compact | normal | roomy: height of tabs in the sidebar
   mica: false,               // Windows 11: see-through, blurred desktop behind the sidebar and toolbar
   customCss: '',             // your own CSS for Drift's interface (Settings → Appearance → Advanced)
@@ -1128,7 +1129,7 @@ function wireTab(tab, wc) {
   });
   wc.on('did-redirect-navigation', (d) => { if (d.isMainFrame) notePendingNav(d.url, wc.id); });
   // Parts of the site you hid with the zapper stay hidden (set as soon as the page exists).
-  wc.on('dom-ready', () => applyZaps(wc));
+  wc.on('dom-ready', () => { applyZaps(wc); applyScrollbars(wc); });
   wc.on('did-navigate', (_e, url) => {
     tab.__volReloadOffered = false; tab.__volReached = false;
     if (hostOf(url) !== tab.iconHost) tab.iconHost = '';
@@ -3996,6 +3997,32 @@ function setupProtocol() {
 // ---------------------------------------------------------------------------
 const zapperCode = require('./zapper.js');
 const zapHost = (url) => { try { return new URL(url).hostname.replace(/^www\./, '').toLowerCase(); } catch { return ''; } };
+// Page scrollbars in Drift's style: a slim rounded bar that takes the theme's accent when you
+// grab it. Sites that style their own scrollbars keep theirs.
+const sbPages = new Set();
+function scrollbarCss() {
+  const m = settings.scrollbars;
+  if (m === 'system') return '';
+  if (m === 'hidden') return '::-webkit-scrollbar{display:none!important}';
+  const a = /^#[0-9a-f]{6}$/i.test(accentColor() || '') ? accentColor() : PALETTES.default.accent;
+  return '::-webkit-scrollbar{width:12px;height:12px;background:transparent}' +
+    '::-webkit-scrollbar-track,::-webkit-scrollbar-corner{background:transparent}' +
+    '::-webkit-scrollbar-button{display:none}' +
+    '::-webkit-scrollbar-thumb{background-color:rgba(128,128,128,.42);background-clip:padding-box;border:4px solid transparent;border-radius:8px}' +
+    `::-webkit-scrollbar-thumb:hover{background-color:${a}b3;border-width:3px}` +
+    `::-webkit-scrollbar-thumb:active{background-color:${a};border-width:3px}`;
+}
+function applyScrollbars(wc, again) {
+  if (!wc || wc.isDestroyed()) return;
+  if (!sbPages.has(wc)) { sbPages.add(wc); wc.once('destroyed', () => sbPages.delete(wc)); }
+  const old = wc.__sbKey; wc.__sbKey = null;
+  if (again && old) wc.removeInsertedCSS(old).catch(() => {});
+  const css = scrollbarCss(); if (!css) return;
+  // Author level (not user): Electron can only take back author-level styles, and the page's own
+  // scrollbar rules still come after ours, so sites that style theirs keep them.
+  wc.insertCSS(css).then((k) => { if (!wc.isDestroyed()) wc.__sbKey = k; }).catch(() => {});
+}
+function refreshScrollbars() { for (const wc of sbPages) applyScrollbars(wc, true); }
 function zapCss(list) { return list.map(sel => `${sel}{display:none!important}`).join('\n'); }
 function applyZaps(wc) {
   try {
@@ -4429,6 +4456,7 @@ function setSetting(key, value) {
   if (key === 'mica') forEachWin(() => applyMica(win));
   if (['titleBar', 'bookmarksBar', 'sidebarRail', 'compact', 'pageStyle', 'corners'].includes(key)) forEachWin(() => { if (key === 'compact' && (overlay === 'peek' || overlay === 'peektop')) overlay = null; layout(); });
   if (key === 'compact') updateCompactWatch();
+  if (['scrollbars', 'accent', 'palette'].includes(key)) refreshScrollbars();
   if (key === 'webgpu' && ui && !ui.webContents.isDestroyed()) ui.webContents.send('toast', { text: 'Restart Drift to apply the WebGPU setting.', icon: 'info' });
   if (key === 'workspaces') setWorkspacesOn(!!value);
   if (key === 'theme') nativeTheme.themeSource = value;
@@ -5261,6 +5289,7 @@ function setupIPC() {
     if (key === 'corners') { value = Math.round(Number(value)); if (!(value >= 0 && value <= 20)) return; }
     if (key === 'uiFont' && !['default', 'bahnschrift', 'verdana', 'georgia', 'cascadia', 'trebuchet'].includes(value)) return;
     if (key === 'tabSize' && !['compact', 'normal', 'roomy'].includes(value)) return;
+    if (key === 'scrollbars' && !['drift', 'hidden', 'system'].includes(value)) return;
     if (key === 'mica') value = !!value;
     if (key === 'customCss') value = String(value || '').slice(0, 20000);
     if (key === 'palette') {
@@ -5939,7 +5968,7 @@ if (!app.requestSingleInstanceLock(launchRequest)) {
     setupIPC();
     setupPageIPC();
     // The Windows accent colour changed (Match Windows follows it).
-    try { systemPreferences.on('accent-color-changed', () => { winThemeCache = null; if (settings.palette === 'windows') push(); }); } catch {}
+    try { systemPreferences.on('accent-color-changed', () => { winThemeCache = null; if (settings.palette === 'windows') { push(); refreshScrollbars(); } }); } catch {}
     nativeTheme.on('updated', () => {
       push(); refreshNewTabs(); folderMenuIcon = null; prepareBookmarkMenuIcons();
       for (const t of allTabs()) if (t.view && !t.view.webContents.isDestroyed()) t.view.setBackgroundColor(baseFor(t.view.webContents.getURL()));

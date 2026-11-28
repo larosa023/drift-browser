@@ -1013,6 +1013,8 @@ function renderSettings() {
       <div class="row"><span class="lbl">Font</span><select data-sel="uiFont">${Object.entries(UI_FONTS).map(([k, [n]]) => `<option value="${k}" ${k === (s.uiFont || 'default') ? 'selected' : ''}>${n}</option>`).join('')}</select></div>
       <div class="row"><span class="lbl">Tab size</span><div class="seg">
         ${[['compact', 'Compact'], ['normal', 'Normal'], ['roomy', 'Roomy']].map(([k, n]) => `<button class="${(s.tabSize || 'normal') === k ? 'on' : ''}" data-set="tabSize" data-val="${k}">${n}</button>`).join('')}</div></div>
+      <div class="row"><span class="lbl">Page scrollbars<small>${s.scrollbars === 'hidden' ? 'Hidden; scroll with the wheel, touchpad or keys' : s.scrollbars === 'system' ? 'Windows\' own scrollbars' : 'Slim and rounded; takes your accent colour when you grab it'}</small></span><div class="seg">
+        ${[['drift', 'Drift'], ['hidden', 'Hidden'], ['system', 'Windows']].map(([k, n]) => `<button class="${(s.scrollbars || 'drift') === k ? 'on' : ''}" data-set="scrollbars" data-val="${k}">${n}</button>`).join('')}</div></div>
       <div class="row"><span class="lbl">New tabs open your homepage<small>+ and Ctrl+T open the homepage instead of the command bar (Ctrl+Alt+T always does)</small></span>${sw('homeNewTab', s.homeNewTab)}</div>
       <div class="row"><span class="lbl">Compact mode<small>The page fills the window; the sidebar and toolbar slide in at the edges · Ctrl+Alt+C</small></span>${sw('compact', s.compact)}</div>
       <div class="row"><span class="lbl">Top toolbar<small>Address bar, window buttons and a drag area at the top</small></span>${sw('titleBar', s.titleBar)}</div>
